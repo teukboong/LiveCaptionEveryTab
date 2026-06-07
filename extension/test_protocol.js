@@ -36,6 +36,10 @@ assert.equal(context.lccCanonicalPageTranslateStream("FINAL"), "final");
 assert.equal(context.lccCanonicalPageTranslateStream("streaming"), "partial");
 assert.equal(context.lccCanonicalUiMode("ADVANCED"), "advanced");
 assert.equal(context.lccCanonicalUiMode("expert"), "simple");
+assert.equal(context.lccCanonicalBoolean("false", true), false);
+assert.equal(context.lccCanonicalBoolean("ON", false), true);
+assert.equal(context.lccCanonicalBoolean("maybe", true), true);
+assert.equal(context.lccCanonicalBoolean("", false), false);
 assert.equal(context.lccNormalizeSettings({ targetLang: "hindi" }).targetLang, "Hindi");
 assert.equal(context.lccNormalizeSettings({ uiLang: "EN" }).uiLang, "en");
 assert.equal(context.lccNormalizeSettings({ asrEngine: "QWEN3" }).asrEngine, "qwen3");
@@ -56,9 +60,14 @@ assert.equal(context.lccNormalizeSettings({ pageTranslateStream: "FINAL" }).page
 assert.equal(context.lccNormalizeSettings({ pageTranslateStream: "bogus" }).pageTranslateStream, "partial");
 assert.equal(context.lccNormalizeSettings({ uiMode: "ADVANCED" }).uiMode, "advanced");
 assert.equal(context.lccNormalizeSettings({ uiMode: "expert" }).uiMode, "simple");
-assert.equal(context.lccNormalizeSettings({ pageBilingual: false }).pageBilingual, false);
+assert.equal(context.lccNormalizeSettings({ showSource: "false" }).showSource, false);
+assert.equal(context.lccNormalizeSettings({ videoDelay: "1" }).videoDelay, true);
+assert.equal(context.lccNormalizeSettings({ accuracyMode: "true" }).accuracyMode, true);
+assert.equal(context.lccNormalizeSettings({ autoPrime: "off" }).autoPrime, false);
+assert.equal(context.lccNormalizeSettings({ debugSync: "yes" }).debugSync, true);
+assert.equal(context.lccNormalizeSettings({ pageBilingual: "false" }).pageBilingual, false);
 assert.equal(context.lccNormalizeSettings({}).pageBilingual, true);
-assert.equal(context.lccNormalizeSettings({ pageVerify: true }).pageVerify, true);
+assert.equal(context.lccNormalizeSettings({ pageVerify: "true" }).pageVerify, true);
 assert.equal(context.lccNormalizeSettings({}).pageVerify, false);
 const clamped = context.lccNormalizeSettings({
   fontSize: "999",
@@ -93,6 +102,11 @@ assert.equal(context.lccBuildBridgeConfig({ register: "NEWS" }, "").register, "n
 assert.equal(context.lccBuildBridgeConfig({ latencyMode: "fast" }, "").latencyMode, "aggressive");
 assert.equal(context.lccBuildBridgeConfig({ runMode: "BOTH" }, "").runMode, "both");
 assert.equal(context.lccBuildBridgeConfig({ pageTranslateStream: "FINAL" }, "").pageTranslateStream, "final");
+assert.equal(context.lccBuildBridgeConfig({ accuracyMode: "true" }, "").accuracyMode, true);
+assert.equal(context.lccBuildBridgeConfig({ autoPrime: "false" }, "page title").autoPrime, false);
+assert.equal(context.lccBuildBridgeConfig({ autoPrime: "false" }, "page title").contextHint, "");
+assert.equal(context.lccBuildBridgeConfig({ pageBilingual: "false" }, "").pageBilingual, false);
+assert.equal(context.lccBuildBridgeConfig({ pageVerify: "true" }, "").pageVerify, true);
 assert.equal(context.lccBuildBridgeConfig({ vadLevel: "-7" }, "").vadLevel, 0);
 assert.equal(context.lccBuildBridgeConfig({ sentSilenceMs: "99999" }, "").sentSilenceMs, 2500);
 assert.equal(Object.hasOwn(context.lccBuildBridgeConfig({ uiLang: "en" }, ""), "uiLang"), false);
@@ -111,6 +125,7 @@ assert.equal(context.lccBuildBridgeConfig({ pageRegister: "CHAT" }, "").pageRegi
 
 const popupHtml = fs.readFileSync(path.join(root, "extension", "popup.html"), "utf8");
 const popupJs = fs.readFileSync(path.join(root, "extension", "popup.js"), "utf8");
+const contentJs = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
 assert.match(popupHtml, /<select id="targetLang"><\/select>/, "popup target select is populated from protocol.js");
 assert.match(popupHtml, /<select id="uiLang"><\/select>/, "popup UI-language select is populated from protocol.js");
 assert.match(popupHtml, /id="pageTranslate"/, "popup exposes the page translation toggle");
@@ -134,6 +149,21 @@ assert.match(
   popupJs,
   /if \(!r\.done\) pollInstall\(\);[\s\S]*else \{[\s\S]*setInstBusy\(false\);[\s\S]*if \(r\.ok\)[\s\S]*else setInstStatus\(tr\("installFailed"/,
   "popup install resume shows both completed and failed terminal status",
+);
+assert.match(
+  contentJs,
+  /let settings = globalThis\.lccNormalizeSettings\(\{\}\);/,
+  "content overlay starts from canonical shared defaults",
+);
+assert.match(
+  contentJs,
+  /settings = globalThis\.lccNormalizeSettings\(\{ \.\.\.settings, \.\.\.r\["lcc-settings"\] \}\);/,
+  "content overlay normalizes stored settings before applying them",
+);
+assert.match(
+  contentJs,
+  /settings = globalThis\.lccNormalizeSettings\(\{ \.\.\.settings, \.\.\.ch\["lcc-settings"\]\.newValue \}\);/,
+  "content overlay normalizes live setting changes before applying them",
 );
 
 console.log("test_protocol: OK (target/UI language settings stay canonical through protocol.js)");

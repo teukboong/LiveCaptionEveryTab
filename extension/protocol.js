@@ -70,6 +70,15 @@ function lccCanonicalLowerToken(value, allowed, fallback) {
   return allowed.includes(raw) ? raw : fallback;
 }
 
+function lccCanonicalBoolean(value, fallback) {
+  if (value === true || value === false) return value;
+  if (value == null || String(value).trim() === "") return !!fallback;
+  const raw = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(raw)) return true;
+  if (["false", "0", "no", "off"].includes(raw)) return false;
+  return !!fallback;
+}
+
 function lccClampNumber(value, fallback, min, max) {
   const n = (value == null || String(value).trim() === "") ? Number(fallback) : Number(value);
   const safe = Number.isFinite(n) ? n : fallback;
@@ -97,6 +106,7 @@ globalThis.LCC_ASR_ENGINES = LCC_ASR_ENGINES;
 globalThis.LCC_LATENCY_MODES = LCC_LATENCY_MODES;
 globalThis.LCC_PAGE_TRANSLATE_STREAMS = LCC_PAGE_TRANSLATE_STREAMS;
 globalThis.LCC_UI_MODES = LCC_UI_MODES;
+globalThis.lccCanonicalBoolean = lccCanonicalBoolean;
 globalThis.lccCanonicalTargetLang = lccCanonicalTargetLang;
 globalThis.lccCanonicalUiLang = function lccCanonicalUiLang(value, fallback = "ko") {
   return lccCanonicalLowerToken(value, LCC_UI_LANGS.map((lang) => lang.value), fallback);
@@ -149,6 +159,11 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   out.latencyMode = globalThis.lccCanonicalLatencyMode(out.latencyMode);
   out.runMode = globalThis.lccCanonicalRunMode(out.runMode);
   out.uiMode = globalThis.lccCanonicalUiMode(out.uiMode);
+  out.showSource = lccCanonicalBoolean(out.showSource, LCC_DEFAULT_SETTINGS.showSource);
+  out.videoDelay = lccCanonicalBoolean(out.videoDelay, LCC_DEFAULT_SETTINGS.videoDelay);
+  out.accuracyMode = lccCanonicalBoolean(out.accuracyMode, LCC_DEFAULT_SETTINGS.accuracyMode);
+  out.autoPrime = lccCanonicalBoolean(out.autoPrime, LCC_DEFAULT_SETTINGS.autoPrime);
+  out.debugSync = lccCanonicalBoolean(out.debugSync, LCC_DEFAULT_SETTINGS.debugSync);
   out.fontSize = lccClampNumber(out.fontSize, LCC_DEFAULT_SETTINGS.fontSize, 14, 44);
   out.bottomPct = lccClampNumber(out.bottomPct, LCC_DEFAULT_SETTINGS.bottomPct, 2, 80);
   out.leftPct = lccClampNumber(out.leftPct, LCC_DEFAULT_SETTINGS.leftPct, 5, 95);
@@ -160,8 +175,8 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   out.pageTranslateMinChars = lccClampInteger(out.pageTranslateMinChars, LCC_DEFAULT_SETTINGS.pageTranslateMinChars, 1, 80);
   out.pageTranslateMaxChars = lccClampInteger(out.pageTranslateMaxChars, LCC_DEFAULT_SETTINGS.pageTranslateMaxChars, 80, 8000);
   out.pageTranslateStream = globalThis.lccCanonicalPageTranslateStream(out.pageTranslateStream);
-  out.pageBilingual = out.pageBilingual !== false;
-  out.pageVerify = out.pageVerify === true;
+  out.pageBilingual = lccCanonicalBoolean(out.pageBilingual, LCC_DEFAULT_SETTINGS.pageBilingual);
+  out.pageVerify = lccCanonicalBoolean(out.pageVerify, LCC_DEFAULT_SETTINGS.pageVerify);
   return out;
 };
 globalThis.lccRunModeIncludesPage = function lccRunModeIncludesPage(mode) {
@@ -174,7 +189,7 @@ globalThis.lccRunModeIncludesCaption = function lccRunModeIncludesCaption(mode) 
 };
 globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageContext) {
   const s = globalThis.lccNormalizeSettings(settings);
-  const auto = (s.autoPrime ?? true) ? (pageContext || "") : "";
+  const auto = s.autoPrime === true ? (pageContext || "") : "";
   const hint = [s.contextHint || "", auto].filter(Boolean).join("; ").slice(0, 200);
   const pageHint = [s.pageContextHint || s.contextHint || "", auto].filter(Boolean).join("; ").slice(0, 240);
   return {
@@ -192,10 +207,10 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
     pageRegister: globalThis.lccCanonicalRegister(s.pageRegister),
     pageGlossary: s.pageGlossary || "",
     pageTranslateStream: globalThis.lccCanonicalPageTranslateStream(s.pageTranslateStream),   // content+offscreen read it; bridge ignores
-    pageBilingual: s.pageBilingual !== false,     // content-only: hover shows the original
+    pageBilingual: s.pageBilingual === true,      // content-only: hover shows the original
     pageVerify: s.pageVerify === true,            // content-only: re-check cached labels in idle
 
-    accuracyMode: s.accuracyMode ?? false,
-    autoPrime: s.autoPrime ?? true,
+    accuracyMode: s.accuracyMode === true,
+    autoPrime: s.autoPrime === true,
   };
 };

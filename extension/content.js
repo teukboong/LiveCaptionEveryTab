@@ -1,6 +1,6 @@
 // Caption overlay over the YouTube/Twitch player. Display settings come from storage.local.
 let box = null;
-let settings = { fontSize: 25, bottomPct: 12, leftPct: 50, showSource: true, syncOffsetMs: 0, debugSync: false };
+let settings = globalThis.lccNormalizeSettings({});
 let lccPeek = false;   // #4 ghost: Alt (Option) held -> temporarily reveal the source line even when hidden
 let lccLastSrc = "";   // #7: latest source line, used to prefill the live glossary bar
 const LCC_IS_TOP = (window.top === window);
@@ -115,14 +115,14 @@ function setLinesSplit(srcText, koStable, koDraft, debugText) {
 try {
   if (chrome.storage && chrome.storage.local) {
     chrome.storage.local.get("lcc-settings").then((r) => {
-      if (r["lcc-settings"]) { settings = { ...settings, ...r["lcc-settings"] }; applySettings(); }
+      if (r["lcc-settings"]) { settings = globalThis.lccNormalizeSettings({ ...settings, ...r["lcc-settings"] }); applySettings(); }
     });
   }
   if (chrome.storage && chrome.storage.onChanged) {
     chrome.storage.onChanged.addListener((ch, area) => {
       if (area === "local" && ch["lcc-settings"] && ch["lcc-settings"].newValue) {
         const oldOffset = settings.syncOffsetMs || 0;
-        settings = { ...settings, ...ch["lcc-settings"].newValue };
+        settings = globalThis.lccNormalizeSettings({ ...settings, ...ch["lcc-settings"].newValue });
         console.log("[lcc] settings → bottom", settings.bottomPct, "left", settings.leftPct, "size", settings.fontSize);
         applySettings();
         if ((settings.syncOffsetMs || 0) !== oldOffset) lccReclockPending();
