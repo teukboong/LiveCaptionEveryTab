@@ -15,7 +15,9 @@ const PCM_BUFFER_BYTES = PCM_RATE * 2 * 6;                // keep up to 6s while
 const WS_BACKPRESSURE_BYTES = PCM_BUFFER_BYTES * 2;         // browser WebSocket send buffer cap
 const DOM_BATCH_QUEUE_BYTES = 128 * 1024;                  // bound page translation backlog if the bridge restarts
 const BACKGROUND_WARN_INTERVAL_MS = 2000;
+const BRIDGE_WARN_INTERVAL_MS = 2000;
 let lastBackgroundWarnAt = 0;
+let lastBridgeWarnAt = 0;
 
 function errorText(e) {
   return String(e && e.message || e || "unknown error");
@@ -39,6 +41,13 @@ function sendBackgroundBestEffort(msg, label) {
   } catch (e) {
     warnBackgroundDelivery(label, e);
   }
+}
+
+function warnBridgeMessage(e) {
+  const now = Date.now();
+  if (now - lastBridgeWarnAt < BRIDGE_WARN_INTERVAL_MS) return;
+  lastBridgeWarnAt = now;
+  console.warn("[lcc-offscreen] bridge message ignored:", errorText(e));
 }
 
 function report(text) {
@@ -131,7 +140,9 @@ function connectWS() {
           d.type === "err" || d.type === "notice") {   // surface bridge diagnostics (e.g. ASR switch failure) — content.js renders them
         sendBackgroundBestEffort({ route: "background", ...d }, d.type || "bridge-message");
       }
-    } catch (_) {}
+    } catch (err) {
+      warnBridgeMessage(err);
+    }
   };
 }
 function sendBridgeConfig() {
