@@ -552,6 +552,25 @@ const lccPageTranslateNodes = new Set();     // every node we hold state for (re
 const lccPageTranslateState = new WeakMap(); // node -> per-node DOM state
 const lccPageTranslateRequests = new Map();  // requestId -> { keys:[sourceKey], timer }
 const lccPageTranslateStats = { resultSeen: 0, applied: 0, dropNoNode: 0, dropSource: 0, dropChanged: 0, dropEmpty: 0 };
+// Time-sliced scan: a persistent TreeWalker advanced in idle chunks so a huge DOM never blocks the main
+// thread, plus a one-shot below-fold prefetch so scrolling lands on already-translated text.
+const LCC_PAGE_SCAN_SLICE_MS = 6;            // main-thread budget per scan chunk
+const LCC_PAGE_SCAN_CHUNK_NODES = 250;       // hard node cap per chunk (belt + suspenders)
+const LCC_PAGE_PREFETCH_MAX_NODES = 2200;    // bound whole-page prefetch on pathological pages
+let lccPageScanCursor = null;                // { walker, prefetch, seen } across chunks
+let lccPageScanIdleId = 0;
+let lccPagePrefetchTimer = 0;
+let lccPagePrefetchDone = false;             // whole-doc prefetch already queued for this page
+let lccPagePrefetchScanning = false;         // true only inside a prefetch chunk -> relax the viewport gate
+// Cross-site UI-label cache: short labels learned anywhere (model-sourced) render instantly everywhere,
+// across sessions. Keyed by target language only; bootstrapped from the static seed in page-seed.js.
+const LCC_PAGE_LABEL_KEY = "lcc-page-label-cache-v1";
+const LCC_PAGE_LABEL_MAX_CHARS = 24;
+const LCC_PAGE_LABEL_MAX_ENTRIES = 600;
+let lccPageLabelNs = "";
+let lccPageLabelCache = new Map();
+let lccPageLabelLoaded = false;
+let lccPageLabelPersistTimer = null;
 const LCC_PAGE_CACHE_KEY = "lcc-page-translation-cache-v1";
 const LCC_PAGE_CACHE_MAX_PAGES = 12;
 const LCC_PAGE_CACHE_MAX_ENTRIES = 900;
@@ -598,7 +617,66 @@ function lccPageSourceKey(source) {
   const norm = lccPageSourceNorm(source);
   return norm.length + ":" + lccPageHash(norm);
 }
+function lccPageLabelNamespace() {
+  return String((lccPageTranslateSettings && lccPageTranslateSettings.targetLang) || "");
+}
+async function lccPageLoadLabelCache() {
+  const ns = lccPageLabelNamespace();
+  if (lccPageLabelLoaded && lccPageLabelNs === ns) return;
+  lccPageLabelNs = ns;
+  lccPageLabelLoaded = false;
+  lccPageLabelCache = new Map();
+  try {
+    const r = await chrome.storage.local.get(LCC_PAGE_LABEL_KEY);
+    if (ns !== lccPageLabelNamespace()) return;          // target changed mid-load -> let the next call redo
+    const lang = r[LCC_PAGE_LABEL_KEY] && r[LCC_PAGE_LABEL_KEY].langs && r[LCC_PAGE_LABEL_KEY].langs[ns];
+    const entries = lang && lang.entries || {};
+    for (const [key, rec] of Object.entries(entries)) {
+      if (rec && typeof rec.source === "string" && typeof rec.target === "string") lccPageLabelCache.set(key, rec);
+    }
+  } catch (_) {}
+  const seed = (globalThis.LCC_PAGE_SEED && globalThis.LCC_PAGE_SEED[ns]) || null;   // bootstrap; never overwrites learned
+  if (seed) {
+    for (const en of Object.keys(seed)) {
+      const norm = lccPageSourceNorm(en);
+      const rendered = String(seed[en] || "").trim();
+      if (!norm || !rendered) continue;
+      const key = lccPageSourceKey(norm);
+      if (!lccPageLabelCache.has(key)) lccPageLabelCache.set(key, { source: norm, target: rendered, t: 0, seed: true });
+    }
+  }
+  lccPageLabelLoaded = true;
+}
+function lccPageLabelRemember(norm, key, target) {
+  if (!lccPageLabelLoaded || norm.length > LCC_PAGE_LABEL_MAX_CHARS) return;
+  lccPageLabelCache.delete(key);
+  lccPageLabelCache.set(key, { source: norm, target, t: Date.now() });
+  while (lccPageLabelCache.size > LCC_PAGE_LABEL_MAX_ENTRIES) {
+    lccPageLabelCache.delete(lccPageLabelCache.keys().next().value);
+  }
+  lccPageScheduleLabelPersist();
+}
+function lccPageScheduleLabelPersist() {
+  if (!lccPageLabelNs || lccPageLabelPersistTimer) return;
+  lccPageLabelPersistTimer = setTimeout(async () => {
+    lccPageLabelPersistTimer = null;
+    const ns = lccPageLabelNs;
+    const rows = [...lccPageLabelCache.entries()].filter(([, rec]) => rec && !rec.seed)   // seed re-applies on load
+      .sort((a, b) => (b[1].t || 0) - (a[1].t || 0)).slice(0, LCC_PAGE_LABEL_MAX_ENTRIES);
+    try {
+      const r = await chrome.storage.local.get(LCC_PAGE_LABEL_KEY);
+      const store = r[LCC_PAGE_LABEL_KEY] && typeof r[LCC_PAGE_LABEL_KEY] === "object" ? r[LCC_PAGE_LABEL_KEY] : {};
+      const langs = store.langs && typeof store.langs === "object" ? store.langs : {};
+      const entries = {};
+      for (const [key, rec] of rows) entries[key] = { source: rec.source, target: rec.target, t: rec.t };
+      langs[ns] = { t: Date.now(), entries };
+      const keep = Object.entries(langs).sort((a, b) => ((b[1] && b[1].t) || 0) - ((a[1] && a[1].t) || 0)).slice(0, 12);
+      await chrome.storage.local.set({ [LCC_PAGE_LABEL_KEY]: { version: 1, langs: Object.fromEntries(keep) } });
+    } catch (_) {}
+  }, 400);
+}
 async function lccPageLoadCache() {
+  await lccPageLoadLabelCache();
   const ns = lccPageCacheNamespace();
   if (lccPageTranslateCacheLoaded && lccPageTranslateCacheNs === ns) return;
   const seq = ++lccPageTranslateCacheSeq;
@@ -642,10 +720,17 @@ function lccPageScheduleCachePersist() {
   }, 250);
 }
 function lccPageCachedTarget(source) {
-  if (!lccPageTranslateCacheLoaded) return "";
   const norm = lccPageSourceNorm(source);
-  const rec = lccPageTranslateCache.get(lccPageSourceKey(norm));
-  return rec && rec.source === norm ? rec.target : "";
+  const key = lccPageSourceKey(norm);
+  if (lccPageTranslateCacheLoaded) {                       // this page's cache first (most context-specific)
+    const rec = lccPageTranslateCache.get(key);
+    if (rec && rec.source === norm) return rec.target;
+  }
+  if (lccPageLabelLoaded) {                                // then the cross-site label cache + seed
+    const rec = lccPageLabelCache.get(key);
+    if (rec && rec.source === norm) return rec.target;
+  }
+  return "";
 }
 function lccPageRememberCache(source, target) {
   const norm = lccPageSourceNorm(source);
@@ -658,6 +743,7 @@ function lccPageRememberCache(source, target) {
     lccPageTranslateCache.delete(lccPageTranslateCache.keys().next().value);
   }
   lccPageScheduleCachePersist();
+  if (norm.length <= LCC_PAGE_LABEL_MAX_CHARS) lccPageLabelRemember(norm, key, rendered);   // short -> cross-site
 }
 function lccPageTextParts(raw) {
   const text = String(raw || "");
@@ -670,12 +756,16 @@ function lccPageHasLetters(text) {
   try { return /[\p{L}]/u.test(text); }
   catch (_) { return /[A-Za-z\u00c0-\uffff]/.test(text); }
 }
-function lccPageNodeVisible(parent) {
+function lccPageNodeStyled(parent) {
   if (!parent || !parent.isConnected) return false;
   const style = window.getComputedStyle(parent);
   if (!style || style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
   const rect = parent.getBoundingClientRect();
-  return rect.width > 0 && rect.height > 0 && rect.bottom >= -200 && rect.top <= window.innerHeight + 600;
+  return rect.width > 0 && rect.height > 0;
+}
+function lccPageNearViewport(parent) {
+  const rect = parent.getBoundingClientRect();
+  return rect.bottom >= -200 && rect.top <= (window.innerHeight || 0) + 600;
 }
 function lccPageInViewport(parent) {
   if (!parent) return false;
@@ -712,7 +802,8 @@ function lccPageNodeAllowed(node) {
   if (!parent || parent.closest(LCC_PAGE_EXCLUDE_SELECTOR)) return false;
   const state = lccPageTranslateState.get(node);
   if (state && state.translatedFull && node.nodeValue === state.translatedFull) return false;
-  if (!lccPageNodeVisible(parent)) return false;
+  if (!lccPageNodeStyled(parent)) return false;
+  if (!lccPagePrefetchScanning && !lccPageNearViewport(parent)) return false;   // prefetch relaxes the window
   const { core } = lccPageTextParts(node.nodeValue);
   const minChars = Number(lccPageTranslateSettings.pageTranslateMinChars) || 2;
   const maxChars = Number(lccPageTranslateSettings.pageTranslateMaxChars) || 900;
@@ -809,11 +900,72 @@ function lccPageRoot() {
   try { return document.querySelector(selector) || document.body || document.documentElement; }
   catch (_) { return document.body || document.documentElement; }
 }
+function lccPageRequestIdle(fn, timeout) {
+  if (typeof requestIdleCallback === "function") return requestIdleCallback(fn, { timeout });
+  return setTimeout(fn, 16);
+}
+function lccPageCancelIdle(id) {
+  if (!id) return;
+  if (typeof cancelIdleCallback === "function") { try { cancelIdleCallback(id); } catch (_) {} }
+  clearTimeout(id);
+}
+function lccPageNow() {
+  return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+}
+function lccPageStartScan(prefetch) {
+  lccPageCancelIdle(lccPageScanIdleId); lccPageScanIdleId = 0;
+  if (!lccPageTranslateOn || !LCC_IS_TOP) { lccPageScanCursor = null; return; }
+  const root = lccPageRoot();
+  if (!root) { lccPageScanCursor = null; return; }
+  lccPageScanCursor = { walker: document.createTreeWalker(root, NodeFilter.SHOW_TEXT), prefetch: !!prefetch, seen: 0 };
+  lccPageScanChunk();
+}
+function lccPageScanChunk() {
+  lccPageScanIdleId = 0;
+  const cur = lccPageScanCursor;
+  if (!cur || !lccPageTranslateOn) { lccPageScanCursor = null; return; }
+  const t0 = lccPageNow();
+  let processed = 0;
+  lccPagePrefetchScanning = cur.prefetch;     // lccPageNodeAllowed relaxes the viewport gate while this is set
+  try {
+    let node = cur.walker.nextNode();
+    while (node) {
+      lccPageQueueNode(node);
+      cur.seen += 1;
+      processed += 1;
+      if (cur.prefetch && cur.seen >= LCC_PAGE_PREFETCH_MAX_NODES) { cur.capped = true; node = null; break; }
+      if (processed >= LCC_PAGE_SCAN_CHUNK_NODES || (lccPageNow() - t0) > LCC_PAGE_SCAN_SLICE_MS) {
+        lccPageScanIdleId = lccPageRequestIdle(lccPageScanChunk, 400);   // resume next idle tick
+        return;                                                          // (finally restores the flag)
+      }
+      node = cur.walker.nextNode();
+    }
+  } finally {
+    lccPagePrefetchScanning = false;
+  }
+  lccPageScanCursor = null;                    // walker exhausted (or prefetch hit its cap)
+  if (cur.prefetch) {
+    lccPagePrefetchDone = true;
+    if (cur.capped) try { console.debug("[lcc] page prefetch capped at", LCC_PAGE_PREFETCH_MAX_NODES, "nodes"); } catch (_) {}
+  } else {
+    lccPageMaybePrefetch();                    // viewport pass done -> prefetch the rest when idle
+  }
+}
+function lccPageMaybePrefetch() {
+  if (!lccPageTranslateOn || !LCC_IS_TOP || lccPagePrefetchDone || lccPageScanCursor || lccPagePrefetchTimer) return;
+  if (lccPageHotQueue.length || lccPageColdQueue.length || lccPageTranslateRequests.size) return;
+  lccPagePrefetchTimer = lccPageRequestIdle(() => {
+    lccPagePrefetchTimer = 0;
+    if (lccPagePrefetchDone || lccPageScanCursor) return;
+    if (lccPageHotQueue.length || lccPageColdQueue.length || lccPageTranslateRequests.size) return;   // still idle?
+    lccPageStartScan(true);                    // whole-doc relaxed scan -> off-screen text queued as cold
+  }, 1500);
+}
 function lccPageScheduleScan(ms = 180) {
   if (lccPageTranslateScanTimer) clearTimeout(lccPageTranslateScanTimer);
   lccPageTranslateScanTimer = setTimeout(() => {
     lccPageTranslateScanTimer = null;
-    lccPageScanNode(lccPageRoot());
+    lccPageStartScan(false);                   // near-viewport, time-sliced; prefetch fires separately when idle
   }, ms);
 }
 function lccPageScheduleFlush(ms) {
@@ -860,6 +1012,11 @@ function lccPageFlush() {
 function lccPageClearTransient(restore) {
   if (lccPageTranslateFlushTimer) { clearTimeout(lccPageTranslateFlushTimer); lccPageTranslateFlushTimer = null; }
   if (lccPageTranslateScanTimer) { clearTimeout(lccPageTranslateScanTimer); lccPageTranslateScanTimer = null; }
+  lccPageCancelIdle(lccPageScanIdleId); lccPageScanIdleId = 0;
+  lccPageCancelIdle(lccPagePrefetchTimer); lccPagePrefetchTimer = 0;
+  lccPageScanCursor = null;
+  lccPagePrefetchScanning = false;
+  lccPagePrefetchDone = false;
   lccPageHotQueue.length = 0;
   lccPageColdQueue.length = 0;
   lccPageWork.clear();
@@ -1009,6 +1166,7 @@ function lccPageTranslateDone(msg) {            // batch finished; any still-pen
   if (req) for (const key of req.keys) lccPageRequeueKey(key);
   lccPageTranslateRequests.delete(requestId);
   if (lccPageHotQueue.length || lccPageColdQueue.length) lccPageScheduleFlush(120);
+  else lccPageMaybePrefetch();                  // visible + queued work drained -> prefetch the rest when idle
 }
 function lccPageTranslateRetry(msg) {           // busy/timeout -> requeue the whole request with backoff
   const requestId = String(msg.request_id || "");
