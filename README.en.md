@@ -7,6 +7,9 @@
 On YouTube, Twitch, **X**, or any site, it captures the browser tab's audio and uses a **local Gemma-4** to transcribe + translate, showing 2-line captions (source / your language) over the video. (Tab capture is domain-agnostic, so any tab with sound works.)
 For transcription you pick in the popup between **Granite Speech 4.1** (strong English) and **Qwen3-ASR** (multilingual incl. Japanese/Korean). Both emit punctuation and casing natively, and gate silence with `[no speech]`.
 
+> The world holds endless video and audio, yet the language barrier still stands as a **content barrier**.
+> This was built in the spirit of poking one small hole in that wall.
+
 ## Why this exists (similar tools already exist)
 
 Realtime captioning/translation tools mostly split into two camps, and the combination **"in the browser / any live tab / fully local LLM by-meaning translation"** was missing — this fills that gap.

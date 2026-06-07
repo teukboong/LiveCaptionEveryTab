@@ -7,6 +7,9 @@
 En YouTube, Twitch, **X** o cualquier sitio, captura el audio de la pestaña del navegador y usa un **Gemma-4 local** para transcribir + traducir, mostrando subtítulos de 2 líneas (original / tu idioma) sobre el vídeo. (La captura de pestaña es independiente del dominio, así que funciona en cualquier pestaña con sonido.)
 Para la transcripción eliges en el popup entre **Granite Speech 4.1** (fuerte en inglés) y **Qwen3-ASR** (multilingüe, incl. japonés/coreano). Ambos generan puntuación y mayúsculas de forma nativa, y filtran el silencio con `[no speech]`.
 
+> El mundo está lleno de incontables vídeos y audios, pero la barrera del idioma sigue siendo una **barrera de contenido**.
+> Esto se hizo con el ánimo de abrir un pequeño hueco en ese muro.
+
 ## Por qué existe (ya hay herramientas parecidas)
 
 Las herramientas de subtitulado/traducción en tiempo real se dividen en dos grupos, y la combinación **"en el navegador / cualquier pestaña en vivo / traducción por significado con LLM totalmente local"** estaba vacía — esto llena ese hueco.
