@@ -162,6 +162,16 @@ with tempfile.TemporaryDirectory() as tmp:
         host.INSTALL_LOG = str(log_path)
         host.INSTALLER = str(installer)
 
+        host._write_install_status({"done": False, "ok": True, "tier": "lite"})
+        check("install_status.atomic_write_tmp_absent", status_path.with_suffix(status_path.suffix + ".tmp").exists(), False)
+        check("install_status.atomic_write_json", json.loads(status_path.read_text()).get("tier"), "lite")
+
+        status_path.write_text("{")
+        broken = host.do_install_status()
+        check("install_status.broken_json_ok", broken.get("ok"), False)
+        check("install_status.broken_json_done", broken.get("done"), True)
+        check("install_running.broken_json", host._install_running(), None)
+
         status_path.write_text(json.dumps({"tier": "lite", "done": False, "ok": True, "ts": int(time.time())}))
         fresh_seed = host.do_install_status()
         check("install_status.fresh_seed_done", fresh_seed.get("done"), False)

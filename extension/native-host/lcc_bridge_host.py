@@ -321,10 +321,8 @@ def _python_ok(path):
 
 def _install_running():
     """The live install status dict if a download is in progress (pid alive, not done), else None."""
-    try:
-        with open(INSTALL_STATUS) as f:
-            st = json.load(f)
-    except Exception:
+    st = _install_status_for_running_check()
+    if not st:
         return None
     if st.get("done"):
         return None
@@ -346,11 +344,54 @@ def _install_pid_active(pid):
 
 
 def _write_install_status(st):
+    tmp = INSTALL_STATUS + ".tmp"
     try:
-        with open(INSTALL_STATUS, "w") as f:
+        with open(tmp, "w") as f:
             json.dump(st, f)
-    except Exception:
-        pass
+        os.replace(tmp, INSTALL_STATUS)
+    except Exception as e:
+        hlog(f"install status write err: {e}")
+        try:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        except Exception:
+            pass
+
+
+def _read_install_status():
+    try:
+        with open(INSTALL_STATUS) as f:
+            return json.load(f), None
+    except FileNotFoundError:
+        return None, None
+    except Exception as e:
+        return None, e
+
+
+def _install_status_read_error(e):
+    return {
+        "ok": False,
+        "done": True,
+        "error": f"설치 상태 파일을 읽지 못했습니다: {e}. 다시 설치를 시작하세요.",
+    }
+
+
+def _install_status_for_running_check():
+    st, err = _read_install_status()
+    if err:
+        hlog(f"install status read err: {err}")
+        return None
+    return st
+
+
+def _install_status_for_user():
+    st, err = _read_install_status()
+    if err:
+        hlog(f"install status read err: {err}")
+        return _install_status_read_error(err)
+    if st is None:
+        return {"ok": True, "idle": True}
+    return st
 
 
 def _install_status_failure(st, error):
@@ -390,11 +431,11 @@ def do_install(msg=None):
 
 
 def do_install_status():
-    try:
-        with open(INSTALL_STATUS) as f:
-            st = json.load(f)
-    except Exception:
-        return {"ok": True, "idle": True}
+    st = _install_status_for_user()
+    if not st.get("ok", True):
+        return st
+    if st.get("idle"):
+        return st
     if st.get("done"):
         return {"ok": True, **st}
     pid = st.get("pid")
