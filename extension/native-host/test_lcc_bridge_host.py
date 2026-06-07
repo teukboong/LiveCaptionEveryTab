@@ -226,6 +226,15 @@ check("asr.invalid", host._asr_engine({"asrEngine": "whisper"}), "granite")
 check("cli.status", host._cli_msg(["status"]), {"cmd": "status"})
 check("cli.stop", host._cli_msg(["stop"]), {"cmd": "stop"})
 check("cli.start_asr", host._cli_msg(["start", "--asr", "parakeet"]), {"cmd": "start", "asrEngine": "parakeet"})
+old_do_status = host.do_status
+try:
+    host.do_status = lambda: {"ok": True, "marker": "status-default"}
+    check("handler.missing_cmd_defaults_status", host.handle_message({}).get("marker"), "status-default")
+    check("handler.unknown_cmd_fails", host.handle_message({"cmd": "wat"}).get("ok"), False)
+except Exception as e:
+    fails.append(f"handler checks raised: {e!r}")
+finally:
+    host.do_status = old_do_status
 try:
     host._cli_msg(["install", "--tier", "full"])
 except ValueError:

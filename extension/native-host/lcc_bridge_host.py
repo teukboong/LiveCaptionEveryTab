@@ -450,7 +450,7 @@ def do_install_status():
 
 
 def handle_message(msg):
-    cmd = (msg.get("cmd") or "status").lower()
+    cmd = str(msg.get("cmd") or "status").strip().lower()
     hlog(f"cmd={cmd}")
     if cmd == "start":
         return do_start(msg)
@@ -470,7 +470,9 @@ def handle_message(msg):
             "pid": data.get("pid"),
             "detail": data,
         }
-    return do_status()
+    if cmd == "status":
+        return do_status()
+    return {"ok": False, "error": f"unknown command: {cmd}"}
 
 
 def _cli_msg(argv):
