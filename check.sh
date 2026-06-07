@@ -48,3 +48,4 @@ for js_file in extension/*.js; do
 done
 node extension/test_protocol.js
 node extension/test_extension_actions.js
+node extension/test_delay_runtime.js

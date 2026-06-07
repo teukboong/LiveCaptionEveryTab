@@ -7,6 +7,32 @@
   const MAX_CAPTURE_FPS = 60;
   const SUB_LINGER_MS = 1500;   // the last cue lingers this long past its end when no next cue (readability)
   const SUB_FAIL_OPEN_MS = 6500; // if timing/cue routing drifts, still surface a fresh caption instead of silence
+  const RUNTIME_WARN_INTERVAL_MS = 2000;
+  let lastRuntimeWarnAt = 0;
+
+  function errorText(e) {
+    return String(e && e.message || e || "unknown error");
+  }
+
+  function warnRuntimeDelivery(label, e) {
+    const now = Date.now();
+    if (now - lastRuntimeWarnAt < RUNTIME_WARN_INTERVAL_MS) return;
+    lastRuntimeWarnAt = now;
+    console.warn("[lcc-vd] runtime delivery failed:", label, errorText(e));
+  }
+
+  function sendRuntimeBestEffort(msg, label) {
+    try {
+      const p = chrome.runtime.sendMessage(msg);
+      if (p && typeof p.then === "function") {
+        p
+          .then((res) => { if (res && res.ok === false) warnRuntimeDelivery(label, res.error || res.msg || "not ok"); })
+          .catch((e) => warnRuntimeDelivery(label, e));
+      }
+    } catch (e) {
+      warnRuntimeDelivery(label, e);
+    }
+  }
 
   function getSource(video) {
     let e = srcCache.get(video);
@@ -41,7 +67,10 @@
     let ctx, src;
     try { ({ ctx, src } = getSource(video)); }
     catch (e) { return report("오디오 가로채기 실패(DRM/중복?): " + e.message); }
-    if (ctx.state === "suspended") { try { await ctx.resume(); } catch (_) {} }
+    if (ctx.state === "suspended") {
+      try { await ctx.resume(); }
+      catch (e) { return report("오디오 컨텍스트 재개 실패: " + errorText(e)); }
+    }
     src.disconnect();   // clear any prior routing before we re-wire
 
     const s = { delaySec, video, ctx, src, raf: 0, buf: [], canvas: null, node: null,
@@ -219,7 +248,7 @@
     }
     // Hand undelayed PCM to the offscreen relay. chrome messaging doesn't preserve ArrayBuffers,
     // so send a plain number array; offscreen rebuilds the Int16Array.
-    chrome.runtime.sendMessage({ target: "background", type: "vd-pcm", pcm: Array.from(pcm) });
+    sendRuntimeBestEffort({ target: "background", type: "vd-pcm", pcm: Array.from(pcm) }, "vd-pcm");
   }
 
   // Pick the cue whose window brackets the frame currently on screen and render it via the shared

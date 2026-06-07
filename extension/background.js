@@ -5,6 +5,33 @@
 importScripts("protocol.js");
 console.log("[lcc] background service worker loaded");
 
+const LCC_OFFSCREEN_WARN_INTERVAL_MS = 2000;
+let lccLastOffscreenWarnAt = 0;
+
+function lccErrorText(e) {
+  return String(e && e.message || e || "unknown error");
+}
+
+function warnOffscreenDelivery(label, e) {
+  const now = Date.now();
+  if (now - lccLastOffscreenWarnAt < LCC_OFFSCREEN_WARN_INTERVAL_MS) return;
+  lccLastOffscreenWarnAt = now;
+  console.warn("[lcc] offscreen delivery failed:", label, lccErrorText(e));
+}
+
+function sendOffscreenBestEffort(msg, label) {
+  try {
+    const p = chrome.runtime.sendMessage(msg);
+    if (p && typeof p.then === "function") {
+      p
+        .then((res) => { if (res && res.ok === false) warnOffscreenDelivery(label, res.error || res.msg || "not ok"); })
+        .catch((e) => warnOffscreenDelivery(label, e));
+    }
+  } catch (e) {
+    warnOffscreenDelivery(label, e);
+  }
+}
+
 function sendTab(tabId, msg) {
   if (tabId == null) return;
   try {
@@ -61,12 +88,12 @@ async function resendStart() {
   if (!captioning && !pageTranslating) return;
   const config = await bridgeConfig();
   if (captioning && mode === "video") {
-    chrome.runtime.sendMessage({ target: "offscreen", cmd: "start-relay", delaySec, pageContext: pageContext || "", config });
+    sendOffscreenBestEffort({ target: "offscreen", cmd: "start-relay", delaySec, pageContext: pageContext || "", config }, "start-relay");
   } else if (captioning && mode === "audio" && pendingStreamId != null) {
-    chrome.runtime.sendMessage({ target: "offscreen", cmd: "start", streamId: pendingStreamId, delaySec, pageContext: pageContext || "", config });
+    sendOffscreenBestEffort({ target: "offscreen", cmd: "start", streamId: pendingStreamId, delaySec, pageContext: pageContext || "", config }, "start");
   }
   if (pageTranslating && pageTabId != null) {
-    chrome.runtime.sendMessage({ target: "offscreen", cmd: "start-page", pageContext: pageContext || "", config });
+    sendOffscreenBestEffort({ target: "offscreen", cmd: "start-page", pageContext: pageContext || "", config }, "start-page");
     sendTab(pageTabId, { type: "page-translate-start", settings: config });
   }
 }
@@ -106,7 +133,7 @@ async function startAudio(streamId, tabId, delaySec, pageContext) {
   const config = await bridgeConfig();
   await chrome.storage.session.set({ capturing: true, captioning: true, mode: "audio", capturedTabId: tabId, pendingStreamId: streamId, pageContext: pageContext || "", delaySec: dsec });
   await ensureOffscreen();
-  chrome.runtime.sendMessage({ target: "offscreen", cmd: "start", streamId, delaySec: dsec, pageContext: pageContext || "", config });   // warm path; offscreen-ready handshake re-delivers if missed
+  sendOffscreenBestEffort({ target: "offscreen", cmd: "start", streamId, delaySec: dsec, pageContext: pageContext || "", config }, "start");   // warm path; offscreen-ready handshake re-delivers if missed
   chrome.action.setBadgeText({ text: "ON" });
   chrome.action.setBadgeBackgroundColor({ color: "#16a34a" });
   sendTab(tabId, { type: "status", on: true, mode: "audio", playbackDelayMs: Math.round(dsec * 1000) });
@@ -121,7 +148,7 @@ async function startVideo(tabId, delaySec, pageContext) {
   // Set session state BEFORE creating the offscreen doc so resendStart() can recover params.
   await chrome.storage.session.set({ capturing: true, captioning: true, mode: "video", capturedTabId: tabId, pendingStreamId: null, pageContext: pageContext || "", delaySec: dsec });
   await ensureOffscreen();                           // offscreen owns the bridge WS (page CSP/origin can't open one)
-  chrome.runtime.sendMessage({ target: "offscreen", cmd: "start-relay", delaySec: dsec, pageContext: pageContext || "", config });   // warm path; offscreen-ready handshake re-delivers if missed
+  sendOffscreenBestEffort({ target: "offscreen", cmd: "start-relay", delaySec: dsec, pageContext: pageContext || "", config }, "start-relay");   // warm path; offscreen-ready handshake re-delivers if missed
   chrome.action.setBadgeText({ text: "ON" });
   chrome.action.setBadgeBackgroundColor({ color: "#16a34a" });
   sendTab(tabId, { type: "status", on: true, mode: "video", playbackDelayMs: Math.round(dsec * 1000) });
@@ -139,7 +166,7 @@ async function startPage(tabId, pageContext) {
   } catch (_) {}
   await chrome.storage.session.set({ capturing: true, pageTranslating: true, pageTabId: tabId, pageContext: pageContext || "", pageUrl });
   await ensureOffscreen();
-  chrome.runtime.sendMessage({ target: "offscreen", cmd: "start-page", pageContext: pageContext || "", config });
+  sendOffscreenBestEffort({ target: "offscreen", cmd: "start-page", pageContext: pageContext || "", config }, "start-page");
   sendTab(tabId, { type: "page-translate-start", settings: config });
   chrome.action.setBadgeText({ text: "ON" });
   chrome.action.setBadgeBackgroundColor({ color: "#16a34a" });
@@ -199,7 +226,7 @@ async function forward(msg) {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === "vd-pcm") { chrome.runtime.sendMessage({ target: "offscreen", cmd: "pcm", pcm: msg.pcm }); return; }   // delay.js -> offscreen relay (video mode)
+  if (msg.type === "vd-pcm") { sendOffscreenBestEffort({ target: "offscreen", cmd: "pcm", pcm: msg.pcm }, "vd-pcm"); return; }   // delay.js -> offscreen relay (video mode)
   if (msg.type === "offscreen-ready") { resendStart(); return; }   // offscreen loaded -> (re)deliver start params
   if (msg.type === "popup-status") {
     chrome.storage.session.get(["captioning", "pageTranslating", "capturing", "wsOpen"]).then(({ captioning, pageTranslating, capturing, wsOpen }) => {
@@ -221,7 +248,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const config = await bridgeConfig();
       await chrome.storage.session.set({ pageContext: nextContext, pageUrl: nextUrl });
       await ensureOffscreen();
-      chrome.runtime.sendMessage({ target: "offscreen", cmd: "start-page", pageContext: nextContext, config });
+      sendOffscreenBestEffort({ target: "offscreen", cmd: "start-page", pageContext: nextContext, config }, "start-page");
       sendResponse({ ok: true, pageTranslating: true, settings: config });
     }).catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
     return true;

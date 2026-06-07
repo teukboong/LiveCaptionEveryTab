@@ -181,9 +181,10 @@ async function runPopupStartWithCleanup(reply) {
   return popup;
 }
 
-async function runBackgroundMessage(message, {
+function loadBackgroundHarness({
   failLocalRemove = false,
   failOffscreenMessage = false,
+  failOffscreenPcm = false,
   failSessionSet = false,
   pageTranslating = false,
   senderTabId,
@@ -194,6 +195,7 @@ async function runBackgroundMessage(message, {
   const sessionSet = [];
   const sessionRemoved = [];
   const tabMessages = [];
+  const warnings = [];
 
   const chrome = {
     action: {
@@ -215,6 +217,9 @@ async function runBackgroundMessage(message, {
         runtimeMessages.push(msg);
         if (failOffscreenMessage && msg && msg.cmd === "dom-translate-batch") {
           return Promise.resolve({ ok: false, error: "offscreen batch failed" });
+        }
+        if (failOffscreenPcm && msg && msg.cmd === "pcm") {
+          return Promise.resolve({ ok: false, error: "offscreen pcm failed" });
         }
         return Promise.resolve({ ok: true });
       },
@@ -257,7 +262,14 @@ async function runBackgroundMessage(message, {
     },
   };
 
-  const context = { chrome, console: { error: console.error, log() {}, warn: console.warn } };
+  const context = {
+    chrome,
+    console: {
+      error: console.error,
+      log() {},
+      warn(...args) { warnings.push(args.map((arg) => String(arg)).join(" ")); },
+    },
+  };
   context.globalThis = context;
   vm.createContext(context);
   context.importScripts = (...files) => {
@@ -267,14 +279,30 @@ async function runBackgroundMessage(message, {
   };
   vm.runInContext(fs.readFileSync(path.join(extensionRoot, "background.js"), "utf8"), context, { filename: "background.js" });
   assert.equal(typeof listener, "function");
+  return { listener, localRemoved, runtimeMessages, sessionRemoved, sessionSet, tabMessages, warnings, senderTabId };
+}
+
+async function runBackgroundMessage(message, options = {}) {
+  const harness = loadBackgroundHarness(options);
 
   const response = await new Promise((resolve) => {
-    const sender = senderTabId == null ? {} : { tab: { id: senderTabId } };
-    const keepsChannelOpen = listener(message, sender, resolve);
+    const sender = harness.senderTabId == null ? {} : { tab: { id: harness.senderTabId } };
+    const keepsChannelOpen = harness.listener(message, sender, resolve);
     assert.equal(keepsChannelOpen, true);
   });
 
-  return { localRemoved, response, runtimeMessages, sessionRemoved, sessionSet, tabMessages };
+  return { ...harness, response };
+}
+
+async function runBackgroundOneWay(message, options = {}) {
+  const harness = loadBackgroundHarness(options);
+  const responses = [];
+  const sender = harness.senderTabId == null ? {} : { tab: { id: harness.senderTabId } };
+  const keepsChannelOpen = harness.listener(message, sender, (res) => responses.push(res));
+  assert.equal(keepsChannelOpen, undefined);
+  await flushMicrotasks();
+  await flushMicrotasks();
+  return { ...harness, responses };
 }
 
 function runBackgroundClearTranscript(options) {
@@ -342,7 +370,16 @@ function runBackgroundClearTranscript(options) {
   });
   assert.deepEqual(plain(backgroundPageBatchFailure.response), { ok: false, error: "offscreen batch failed" });
 
-  console.log("test_extension_actions: OK (popup/background cleanup, transcript clear, and page batch paths pass)");
+  const backgroundPcmFailure = await runBackgroundOneWay(
+    { type: "vd-pcm", pcm: [1, 2, 3] },
+    { failOffscreenPcm: true },
+  );
+  assert.deepEqual(plain(backgroundPcmFailure.runtimeMessages), [
+    { target: "offscreen", cmd: "pcm", pcm: [1, 2, 3] },
+  ]);
+  assert.match(backgroundPcmFailure.warnings.join("\n"), /offscreen delivery failed: vd-pcm offscreen pcm failed/);
+
+  console.log("test_extension_actions: OK (popup/background cleanup, transcript clear, page batch, and video PCM paths pass)");
 })().catch((e) => {
   console.error(e);
   process.exit(1);
