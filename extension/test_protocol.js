@@ -213,9 +213,24 @@ assert.match(
   "background acknowledges AI request delivery failures",
 );
 assert.match(
+  backgroundJs,
+  /if \(msg\.type === "page-translate-batch"\) \{[\s\S]*chrome\.storage\.session\.get\(\["pageTranslating", "pageTabId"\]\)[\s\S]*if \(!pageTranslating \|\| tabId == null \|\| pageTabId !== tabId\) return null;[\s\S]*cmd: "dom-translate-batch"/,
+  "background routes page translation batches only for the active page tab",
+);
+assert.match(
   offscreenJs,
   /else if \(msg\.cmd === "ask"\) \{[\s\S]*sendResponse\(\{ ok: true \}\);[\s\S]*sendResponse\(\{ ok: false, error: String\(e && e\.message \|\| e\) \}\);[\s\S]*\}/,
   "offscreen acknowledges AI request handling",
+);
+assert.match(
+  offscreenJs,
+  /function queueOrSendDomBatch\(msg\) \{[\s\S]*if \(!msg\.requestId \|\| !Array\.isArray\(msg\.items\) \|\| !msg\.items\.length\) return;[\s\S]*if \(pageActive && lccWsCanSendControl\(\) && domBatchQueue\.length === 0\)/,
+  "offscreen preserves page translation batches while page mode is warming",
+);
+assert.match(
+  offscreenJs,
+  /function flushDomBatches\(\) \{[\s\S]*if \(!pageActive \|\| !lccWsCanSendControl\(\) \|\| !domBatchQueue\.length\) return;/,
+  "offscreen flushes page translation batches only after page mode is active",
 );
 
 console.log("test_protocol: OK (target/UI language settings stay canonical through protocol.js)");

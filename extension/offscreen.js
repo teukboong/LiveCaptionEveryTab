@@ -208,7 +208,7 @@ async function startPage(pageContext, config) {
 }
 
 function queueOrSendDomBatch(msg) {
-  if (!pageActive || !msg.requestId || !Array.isArray(msg.items) || !msg.items.length) return;
+  if (!msg.requestId || !Array.isArray(msg.items) || !msg.items.length) return;
   const payload = {
     type: "dom_translate_batch",
     request_id: String(msg.requestId),
@@ -222,7 +222,7 @@ function queueOrSendDomBatch(msg) {
   if (!payload.items.length) return;
   const raw = JSON.stringify(payload);
   const bytes = raw.length * 2;
-  if (lccWsCanSendControl() && domBatchQueue.length === 0) {
+  if (pageActive && lccWsCanSendControl() && domBatchQueue.length === 0) {
     ws.send(raw);
     return;
   }
@@ -236,7 +236,7 @@ function queueOrSendDomBatch(msg) {
 }
 
 function flushDomBatches() {
-  if (!lccWsCanSendControl() || !domBatchQueue.length) return;
+  if (!pageActive || !lccWsCanSendControl() || !domBatchQueue.length) return;
   while (domBatchQueue.length && lccWsCanSendControl()) {
     const raw = domBatchQueue.shift();
     domBatchBytes -= raw.length * 2;

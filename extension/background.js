@@ -271,8 +271,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "page-translate-batch") {
     const tabId = sender && sender.tab && sender.tab.id;
-    ensureOffscreen()
-      .then(() => chrome.runtime.sendMessage({ target: "offscreen", cmd: "dom-translate-batch", tabId, requestId: msg.requestId, items: msg.items || [] }))
+    chrome.storage.session.get(["pageTranslating", "pageTabId"])
+      .then(({ pageTranslating, pageTabId }) => {
+        if (!pageTranslating || tabId == null || pageTabId !== tabId) return null;
+        return ensureOffscreen()
+          .then(() => chrome.runtime.sendMessage({ target: "offscreen", cmd: "dom-translate-batch", tabId, requestId: msg.requestId, items: msg.items || [] }));
+      })
       .catch((e) => console.error("[lcc] page batch route", e));
     return;
   }
