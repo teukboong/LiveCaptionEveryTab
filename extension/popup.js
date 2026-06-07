@@ -397,15 +397,27 @@ async function getPageContext(tabId) {
   }
 }
 async function saveSettings(pushConfig = false, resetTranslationContext = false) {
-  await chrome.storage.local.set({ "lcc-settings": settings });
-  if (pushConfig) chrome.runtime.sendMessage({ type: "popup-config-update", resetTranslationContext });
+  try {
+    await chrome.storage.local.set({ "lcc-settings": settings });
+    if (pushConfig) await pushBridgeConfigNow(resetTranslationContext);
+  } catch (e) {
+    status.textContent = tr("failurePrefix") + (e && e.message || e);
+  }
+}
+async function pushBridgeConfigNow(resetTranslationContext = false) {
+  const pushed = await chrome.runtime.sendMessage({ type: "popup-config-update", resetTranslationContext });
+  if (pushed && pushed.ok === false) throw new Error(pushed.error || tr("failurePrefix").trim());
 }
 let _pushCfgTimer = null;
 function pushBridgeConfigDebounced(ms = 400, resetTranslationContext = false) {   // free-text inputs fire per keystroke; coalesce the live bridge push
   if (_pushCfgTimer) clearTimeout(_pushCfgTimer);
-  _pushCfgTimer = setTimeout(() => {
+  _pushCfgTimer = setTimeout(async () => {
     _pushCfgTimer = null;
-    chrome.runtime.sendMessage({ type: "popup-config-update", resetTranslationContext });
+    try {
+      await pushBridgeConfigNow(resetTranslationContext);
+    } catch (e) {
+      status.textContent = tr("failurePrefix") + (e && e.message || e);
+    }
   }, ms);
 }
 for (const [key, id] of Object.entries(RANGES)) {

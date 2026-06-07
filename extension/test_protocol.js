@@ -163,6 +163,16 @@ assert.match(
   "popup waits for AI request acknowledgement before leaving the pending state",
 );
 assert.match(
+  popupJs,
+  /async function pushBridgeConfigNow\(resetTranslationContext = false\) \{[\s\S]*const pushed = await chrome\.runtime\.sendMessage\(\{ type: "popup-config-update", resetTranslationContext \}\);[\s\S]*if \(pushed && pushed\.ok === false\) throw new Error/,
+  "popup waits for live config push acknowledgement",
+);
+assert.match(
+  popupJs,
+  /_pushCfgTimer = setTimeout\(async \(\) => \{[\s\S]*await pushBridgeConfigNow\(resetTranslationContext\);[\s\S]*status\.textContent = tr\("failurePrefix"\) \+ \(e && e\.message \|\| e\);/,
+  "popup reports debounced live config push failures",
+);
+assert.match(
   contentJs,
   /let settings = globalThis\.lccNormalizeSettings\(\{\}\);/,
   "content overlay starts from canonical shared defaults",
@@ -209,6 +219,11 @@ assert.match(
 );
 assert.match(
   backgroundJs,
+  /if \(msg\.type === "popup-config-update"\) \{[\s\S]*if \(!captioning && !pageTranslating\) return \{ ok: true, applied: false \};[\s\S]*await ensureOffscreen\(\);[\s\S]*cmd: "config", config[\s\S]*return \{ ok: true, applied: true \};[\s\S]*sendResponse\(res \|\| \{ ok: true \}\)[\s\S]*return true;/,
+  "background acknowledges live config update success or failure",
+);
+assert.match(
+  backgroundJs,
   /if \(msg\.type === "lcc-ask"\) \{[\s\S]*chrome\.runtime\.sendMessage\(\{ target: "offscreen", cmd: "ask"[\s\S]*sendResponse\(res && res\.ok === false \? res : \{ ok: true \}\)[\s\S]*sendResponse\(\{ ok: false, error: String\(e && e\.message \|\| e\) \}\)[\s\S]*return true;/,
   "background acknowledges AI request delivery failures",
 );
@@ -221,6 +236,11 @@ assert.match(
   offscreenJs,
   /else if \(msg\.cmd === "ask"\) \{[\s\S]*sendResponse\(\{ ok: true \}\);[\s\S]*sendResponse\(\{ ok: false, error: String\(e && e\.message \|\| e\) \}\);[\s\S]*\}/,
   "offscreen acknowledges AI request handling",
+);
+assert.match(
+  offscreenJs,
+  /else if \(msg\.cmd === "config"\) \{[\s\S]*sendBridgeConfig\(\);[\s\S]*sendResponse\(\{ ok: true \}\);[\s\S]*sendResponse\(\{ ok: false, error: String\(e && e\.message \|\| e\) \}\);[\s\S]*\}/,
+  "offscreen acknowledges live config updates",
 );
 assert.match(
   offscreenJs,

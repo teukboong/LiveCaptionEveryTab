@@ -228,15 +228,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "popup-cleanup") { cleanup().then(() => sendResponse({ ok: true })); return true; }
   if (msg.type === "popup-config-update") {
-    chrome.storage.session.get(["captioning", "pageTranslating", "pageTabId"]).then(({ captioning, pageTranslating, pageTabId }) => {
-      if (!captioning && !pageTranslating) return;
-      bridgeConfig().then((config) => {
-        chrome.runtime.sendMessage({ target: "offscreen", cmd: "config", config });
-        if (pageTranslating && pageTabId != null) sendTab(pageTabId, { type: "page-translate-config", settings: config });
-        if (msg.resetTranslationContext) resetTranslationContext();
-      });
-    });
-    return;
+    chrome.storage.session.get(["captioning", "pageTranslating", "pageTabId"]).then(async ({ captioning, pageTranslating, pageTabId }) => {
+      if (!captioning && !pageTranslating) return { ok: true, applied: false };
+      const config = await bridgeConfig();
+      await ensureOffscreen();
+      const pushed = await chrome.runtime.sendMessage({ target: "offscreen", cmd: "config", config });
+      if (pushed && pushed.ok === false) return pushed;
+      if (pageTranslating && pageTabId != null) sendTab(pageTabId, { type: "page-translate-config", settings: config });
+      if (msg.resetTranslationContext) resetTranslationContext();
+      return { ok: true, applied: true };
+    })
+      .then((res) => sendResponse(res || { ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+    return true;
   }
   if (msg.type === "popup-clear-transcript") { clearTranscript(msg.tabId).then(() => sendResponse({ ok: true })); return true; }
   if (msg.type === "popup-start") {

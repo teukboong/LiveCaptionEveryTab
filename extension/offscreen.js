@@ -30,8 +30,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   else if (msg.cmd === "start-relay") startRelay(msg.pageContext || "", msg.delaySec, msg.config).catch((e) => report("relay 시작 실패: " + (e && e.message || e)));
   else if (msg.cmd === "start-page") startPage(msg.pageContext || "", msg.config).catch((e) => report("페이지 번역 시작 실패: " + (e && e.message || e)));
   else if (msg.cmd === "config") {
-    currentConfig = msg.config || {};
-    sendBridgeConfig();
+    try {
+      currentConfig = msg.config || {};
+      sendBridgeConfig();
+      sendResponse({ ok: true });
+    } catch (e) {
+      sendResponse({ ok: false, error: String(e && e.message || e) });
+    }
   }
   else if (msg.cmd === "pcm") { if (relayMode && msg.pcm && msg.pcm.length) queueOrSendPcm(Int16Array.from(msg.pcm)); }   // video-mode PCM from delay.js
   else if (msg.cmd === "dom-translate-batch") queueOrSendDomBatch(msg);
