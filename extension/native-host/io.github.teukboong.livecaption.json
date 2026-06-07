@@ -1,0 +1,9 @@
+{
+  "name": "io.github.teukboong.livecaption",
+  "description": "Live Caption bridge launcher (start/stop the local Gemma-4 server)",
+  "path": "__HOST_PATH__",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://ddcflpihicaobncgpmadoipiofpllgnl/"
+  ]
+}

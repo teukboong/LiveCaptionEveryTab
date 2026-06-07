@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.DS_Store
+*.pem
+extension/native-host/.crx-private-key.pem
+# repo-local virtualenv + user config (keep .env.example tracked)
+/.venv/
+.env
+.env.policy
+.env.cuda

@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "live-caption-kr"
+version = "0.1.0"
+description = "Realtime foreign->Korean captions for any browser tab, fully local (Gemma 4 + Granite/Qwen3 ASR)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "teukboong" }]
+keywords = ["captions", "subtitles", "asr", "translation", "mlx", "gemma", "local-llm"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+
+# Core deps run the bridge itself (VAD + WebSocket + model download + memory probe) on EITHER backend.
+dependencies = [
+    "silero-vad",
+    "onnxruntime",
+    "websockets",
+    "numpy",
+    "huggingface_hub",
+    "psutil",          # reliable cross-platform "available memory" for translation tiering (vm_stat fallback)
+]
+
+[project.optional-dependencies]
+# Apple Silicon (default backend): in-process MLX for ASR + Gemma-4 translation.
+mlx = [
+    "mlx-lm",
+    # mlx-audio runs the granite/qwen3 ASR engines. granite-speech-4.1's conv fix is only on git main
+    # (not PyPI 0.4.3). PIN A COMMIT before release for reproducibility; swap to "mlx-audio>=0.4.4" once cut.
+    "mlx-audio @ git+https://github.com/Blaizzy/mlx-audio.git",
+]
+# Windows + NVIDIA via WSL2: the bridge talks OpenAI-compatible HTTP (stdlib urllib) to llama.cpp + an ASR
+# server, so no extra Python deps beyond core. The GPU servers (llama.cpp, transformers asr_server) install
+# separately on the GPU box — see SETUP-windows.md.
+cuda = []
+# Power-user low-latency English ASR on CPU (off the GPU). Optional; pinned per backend_parakeet.py.
+parakeet = ["sherpa-onnx==1.13.2"]
+
+[project.urls]
+Homepage = "https://github.com/teukboong/live-caption-kr"
+Repository = "https://github.com/teukboong/live-caption-kr"
+
+# This repo ships runnable scripts (bridge/, extension/), not an importable library — install only resolves
+# dependencies. Tell setuptools there are no packages/modules to build so `pip install '.[mlx]'` just works.
+[tool.setuptools]
+py-modules = []

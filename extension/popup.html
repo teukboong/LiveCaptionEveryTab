@@ -1,0 +1,93 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    * { box-sizing: border-box; }
+    body { width: 300px; font-family: system-ui, sans-serif; padding: 12px; margin: 0; color: #222; }
+    button { width: 100%; padding: 11px; font-size: 15px; font-weight: 700; border: 0; border-radius: 8px; cursor: pointer; color: #fff; }
+    .start { background: #16a34a; }
+    .stop  { background: #dc2626; }
+    #status { margin: 9px 0; font-size: 12px; color: #555; text-align: center; line-height: 1.4; }
+    hr { border: 0; border-top: 1px solid #eee; margin: 10px 0; }
+    .row { display: flex; align-items: center; gap: 8px; margin: 9px 0; font-size: 12px; }
+    .row label { flex: 0 0 76px; color: #444; }
+    .row input[type=range] { flex: 1 1 0; min-width: 0; }
+    .row .val { flex: 0 0 48px; text-align: right; color: #111; font-variant-numeric: tabular-nums; }
+    .row select, .row input[type=text] { flex: 1 1 0; min-width: 0; font-size: 12px; padding: 3px; }
+    .chk { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 9px 0; }
+    .hint { font-size: 11px; color: #999; margin-top: 8px; line-height: 1.4; }
+    h4 { margin: 4px 0 2px; font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: .04em; }
+    .aibtn { width: auto; flex: 0 0 auto; padding: 6px 10px; font-size: 12px; background: #16a34a; }
+    .minibtn { width: auto; flex: 1 1 0; padding: 6px; font-size: 11px; background: #6b7280; }
+    #aiResult { font-size: 12px; line-height: 1.5; color: #1d1d1d; white-space: pre-wrap; max-height: 150px; overflow-y: auto; margin: 7px 0; }
+    #aiResult:empty { display: none; }
+    #hist { max-height: 170px; overflow-y: auto; margin: 7px 0; }
+    #hist:empty { display: none; }
+    .h-row { padding: 5px 0; border-bottom: 1px solid #f0f0f0; }
+    .h-t { font-size: 10px; color: #16a34a; font-variant-numeric: tabular-nums; }
+    .h-src { font-size: 11px; color: #888; line-height: 1.35; }
+    .h-ko { font-size: 12px; color: #111; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <button id="btn" class="start">▶ 자막 시작</button>
+  <div id="conn" style="font-size:11px;text-align:center;margin:6px 0 0"></div>
+  <div id="status">로컬 브릿지(server.py) 실행 중이어야 함</div>
+  <div class="row" style="gap:6px; margin-top:6px;">
+    <button id="bridgeBtn" class="minibtn" style="background:#0284c7;">🚀 브릿지 켜기</button>
+    <button id="bridgeStopBtn" class="minibtn" style="background:#6b7280; flex:0 0 auto; padding:6px 10px;" title="브릿지 끄기">⏹</button>
+    <span id="bridgeStatus" style="font-size:11px; color:#666; flex:1 1 0; text-align:right;"></span>
+  </div>
+  <hr />
+
+  <h4>자막 기록 · AI</h4>
+  <div class="row" style="gap:6px;">
+    <button id="aiSum" class="aibtn">✨ 요약</button>
+    <input type="text" id="aiQ" placeholder="이 영상에 질문…" />
+  </div>
+  <div id="aiResult"></div>
+  <div id="hist"></div>
+  <div class="row" style="gap:6px;">
+    <button id="exportMd" class="minibtn">⬇ .md 저장</button>
+    <button id="clearTr" class="minibtn">기록 지우기</button>
+  </div>
+  <hr />
+
+  <h4>전사 엔진</h4>
+  <div class="row"><label>ASR</label><select id="asrEngine">
+    <option value="granite">Granite (영어)</option>
+    <option value="qwen3">Qwen3-ASR (일어·다국어)</option>
+  </select></div>
+  <div class="hint">Granite=영어 충실 · Qwen3=일어/한국어 등 다국어 구두점 · 실행 중이면 다음 발화부터</div>
+
+  <h4>번역</h4>
+  <div class="row"><label>대상 언어</label><select id="targetLang">
+    <option>Korean</option><option>English</option><option>Japanese</option><option>Chinese</option>
+    <option>Spanish</option><option>French</option><option>German</option>
+  </select></div>
+
+  <h4>영상 종류</h4>
+  <div class="row"><label>프리셋</label><select id="contentType">
+    <option value="general">일반 · 잡담</option>
+    <option value="conference">컨퍼런스 · 강연</option>
+    <option value="news">뉴스 · 인터뷰</option>
+    <option value="streaming">개인 스트리밍</option>
+  </select></div>
+  <div class="hint">말투·지연을 콘텐츠에 맞게 한 번에 — 강연=격식·안정, 뉴스=균형, 스트리밍=구어·즉각 · 실행 중 적용</div>
+
+  <h4>자막 표시</h4>
+  <div class="row"><label>글자 크기</label><input type="range" id="fontSize" min="14" max="44" /><span class="val" id="fontSizeV"></span></div>
+  <div class="row"><label>상하 위치</label><input type="range" id="bottomPct" min="2" max="80" /><span class="val" id="bottomPctV"></span></div>
+  <div class="row"><label>좌우 위치</label><input type="range" id="leftPct" min="5" max="95" /><span class="val" id="leftPctV"></span></div>
+  <div class="chk"><input type="checkbox" id="showSource" /><label for="showSource">원문 줄 표시</label></div>
+
+  <h4>싱크</h4>
+  <div class="row"><label>재생 지연</label><input type="range" id="delaySec" min="0" max="12" step="0.5" /><span class="val" id="delaySecV"></span></div>
+  <div class="chk"><input type="checkbox" id="videoDelay" /><label for="videoDelay">🎬 영상도 지연 (유튜브/X · DRM 불가)</label></div>
+  <div class="hint">기본은 소리만 지연. 영상 지연을 켜면 자막을 미리 보여줌(lookahead).</div>
+
+  <script src="protocol.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

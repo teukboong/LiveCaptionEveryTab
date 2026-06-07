@@ -1,0 +1,40 @@
+#lcc-overlay {
+  position: fixed;
+  left: 50%;
+  bottom: 12%;
+  transform: translateX(-50%);
+  max-width: 82vw;
+  z-index: 2147483647;
+  pointer-events: none;
+  text-align: center;
+  display: none;
+  background: rgba(0, 0, 0, 0.62);
+  padding: 8px 18px;
+  border-radius: 10px;
+  font-family: "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+}
+#lcc-src {
+  color: #d8d8d8;
+  font-size: 17px;
+  line-height: 1.3;
+  text-shadow: 0 1px 2px #000;
+}
+#lcc-ko {
+  color: #fff;
+  font-size: 25px;
+  font-weight: 700;
+  line-height: 1.35;
+  margin-top: 4px;
+  text-shadow: 0 1px 3px #000;
+}
+#lcc-debug {
+  display: none;
+  color: #7dd3fc;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1.25;
+  margin-top: 5px;
+  opacity: 0.9;
+  text-shadow: 0 1px 2px #000;
+  white-space: normal;
+}
