@@ -502,7 +502,8 @@ btn.onclick = async () => {
     const wantsCaption = globalThis.lccRunModeIncludesCaption(settings.runMode);
     const wantsPage = globalThis.lccRunModeIncludesPage(settings.runMode);
     if (!wantsCaption && !wantsPage) { status.textContent = tr("chooseRunMode"); return; }
-    await chrome.runtime.sendMessage({ type: "popup-cleanup" });   // release stale stream/DOM state before a fresh run
+    const cleaned = await chrome.runtime.sendMessage({ type: "popup-cleanup" });   // release stale stream/DOM state before a fresh run
+    if (cleaned && cleaned.ok === false) throw new Error(cleaned.error || tr("stopFailed"));
     if (wantsCaption) {
       let started;
       if (settings.videoDelay) {

@@ -173,6 +173,11 @@ assert.match(
   "popup reports debounced live config push failures",
 );
 assert.match(
+  popupJs,
+  /const cleaned = await chrome\.runtime\.sendMessage\(\{ type: "popup-cleanup" \}\);[\s\S]*if \(cleaned && cleaned\.ok === false\) throw new Error/,
+  "popup waits for stale cleanup acknowledgement before starting",
+);
+assert.match(
   contentJs,
   /let settings = globalThis\.lccNormalizeSettings\(\{\}\);/,
   "content overlay starts from canonical shared defaults",
