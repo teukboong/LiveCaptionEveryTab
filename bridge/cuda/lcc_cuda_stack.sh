@@ -49,15 +49,17 @@ listener_pids() {
 
 stop_port() {
   local port="$1"
-  local pids
-  pids="$(listener_pids "$port" || true)"
-  [ -z "$pids" ] && return 0
-  kill $pids 2>/dev/null || true
+  local pids=()
+  mapfile -t pids < <(listener_pids "$port" || true)
+  [ "${#pids[@]}" -eq 0 ] && return 0
+  kill "${pids[@]}" 2>/dev/null || true
   for _ in $(seq 1 20); do
     is_listening "$port" || return 0
     sleep 0.25
   done
-  kill -9 $pids 2>/dev/null || true
+  if is_listening "$port"; then
+    kill -9 "${pids[@]}" 2>/dev/null || true
+  fi
 }
 
 wait_health() {
@@ -163,6 +165,7 @@ case "$CMD" in
     stop_port "$BRIDGE_PORT"
     stop_port "$ASR_PORT"
     stop_port "$CHAT_PORT"
+    rm -f "$BRIDGE_PID" "$CHAT_PID"
     status_json
     ;;
   restart)

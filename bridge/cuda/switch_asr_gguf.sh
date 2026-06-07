@@ -76,6 +76,7 @@ for pid in $current_pid $port_pids; do
     kill -9 "$pid" || true
   fi
 done
+rm -f "$STATE"
 
 LOG="$LOG_DIR/asr-switch-${ENGINE}-$(date +%Y%m%dT%H%M%S).log"
 CUDA_VISIBLE_DEVICES="$GPU" nohup "$BIN" \

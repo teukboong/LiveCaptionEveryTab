@@ -8,6 +8,8 @@ test-first, before any of that code moves. No model is loaded (import only); run
     cd bridge && python test_text_helpers.py
 """
 import server as s
+from pathlib import Path
+import re
 
 fails = []
 
@@ -65,6 +67,23 @@ check("src.korean", s._src_lang("안녕하세요 정말 반갑습니다 오늘�
 check("src.japanese", s._src_lang("これはテストですよろしく"), "Japanese")
 check("src.en_with_kr_name", s._src_lang("I met 김수영 yesterday"), "English")   # documented edge
 check("src.empty", s._src_lang(""), "English")
+
+# --- target language wiring: popup options, protocol list, server allowlist, and prompts stay aligned ---
+popup = Path(__file__).parents[1] / "extension" / "popup.html"
+protocol = Path(__file__).parents[1] / "extension" / "protocol.js"
+proto_targets = re.search(r"const LCC_TARGET_LANGS = Object\.freeze\(\[(.*?)\]\);", protocol.read_text(), re.S)
+ok("target.protocol_list_found", proto_targets is not None)
+proto_langs = re.findall(r'"([^"]+)"', proto_targets.group(1) if proto_targets else "")
+check("target.protocol_has_hindi", "Hindi" in proto_langs, True)
+check("target.server_has_hindi", "Hindi" in s._TARGET_LANGS, True)
+check("target.lowercase_normalizes", s._normalize_target_lang("hindi"), "Hindi")
+check("target.protocol_server_sync", sorted(proto_langs), sorted(s._TARGET_LANGS))
+ok("target.popup_uses_protocol_source", '<select id="targetLang"></select>' in popup.read_text())
+hindi_msgs = s._translate_messages("Hello everyone.", target="Hindi", register="casual")
+ok("target.prompt_hindi", "Hindi" in hindi_msgs[0]["content"])
+ok("target.prompt_not_korean_target", "Korean translation" not in hindi_msgs[0]["content"])
+ok("target.context_signature_changes", s._translation_context_signature("Korean", "casual", "", [])
+   != s._translation_context_signature("Hindi", "casual", "", []))
 
 # --- _clean: strip channel tags + whitespace ---
 check("clean.trim", s._clean("  hi  "), "hi")

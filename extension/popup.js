@@ -9,6 +9,253 @@ const BRIDGE_SETTING_KEYS = new Set(["targetLang", "asrEngine"]);
 const LCC_PRESETS = globalThis.LCC_CONTENT_PRESETS;
 const RANGES = { fontSize: "fontSize", bottomPct: "bottomPct", leftPct: "leftPct", delaySec: "delaySec",
                  sentSilenceMs: "sentSilenceMs", vadLevel: "vadLevel", syncOffsetMs: "syncOffsetMs" };
+const UI_TEXT = Object.freeze({
+  ko: Object.freeze({
+    modeSimple: "Simple",
+    modeAdvanced: "Advanced",
+    captionStart: "자막 시작",
+    captionStop: "자막 중지",
+    bridgeRequired: "로컬 브릿지(server.py)가 실행 중이어야 합니다",
+    bridgeStart: "브릿지 켜기",
+    bridgeStarted: "브릿지 켜짐",
+    bridgeStop: "끄기",
+    bridgeStopTitle: "브릿지 끄기",
+    sectionUi: "UI",
+    labelUiLang: "UI 언어",
+    sectionInstall: "모델 설치 · 티어",
+    installHint: "사양에 맞는 모델을 받아 번역 티어로 배선 (Apple Silicon). 안 눌러도 첫 실행 때 메모리에 맞춰 자동 선택됩니다.",
+    sectionTranscript: "자막 기록 · AI",
+    summary: "요약",
+    askPlaceholder: "이 영상에 질문…",
+    exportMd: ".md 저장",
+    clearTranscript: "기록 지우기",
+    sectionAsr: "전사 엔진",
+    labelAsr: "ASR",
+    asrGranite: "Granite (영어)",
+    asrQwen: "Qwen3-ASR (일어·다국어)",
+    asrHint: "Granite=영어 충실 · Qwen3=일어/한국어 등 다국어 구두점 · 실행 중이면 다음 발화부터",
+    sectionTranslation: "번역",
+    labelTargetLang: "대상 언어",
+    sectionContent: "영상 종류",
+    labelPreset: "프리셋",
+    presetGeneral: "일반 · 잡담",
+    presetConference: "컨퍼런스 · 강연",
+    presetNews: "뉴스 · 인터뷰",
+    presetStreaming: "개인 스트리밍",
+    contentHint: "말투·지연을 콘텐츠에 맞게 한 번에 — 강연=격식·안정, 뉴스=균형, 스트리밍=구어·즉각 · 실행 중 적용",
+    sectionDisplay: "자막 표시",
+    labelFontSize: "글자 크기",
+    labelBottom: "상하 위치",
+    labelLeft: "좌우 위치",
+    showSource: "원문 줄 표시",
+    sectionSync: "싱크",
+    labelDelay: "재생 지연",
+    videoDelay: "영상도 지연 (DRM 불가)",
+    syncHint: "기본은 소리만 지연돼서 자막이 영상보다 먼저 뜰 수 있음. 켜면 영상도 같이 늦춰 영상과 자막 싱크를 맞춥니다.",
+    sectionAdvanced: "고급 · 직접 파라미터",
+    labelLatency: "지연 모드",
+    latencyStable: "안정 (확정만)",
+    latencyBalanced: "균형",
+    latencyAggressive: "공격 (즉각)",
+    labelRegister: "말투",
+    registerCasual: "캐주얼",
+    registerLecture: "강연 · 격식",
+    registerNews: "뉴스",
+    registerChat: "잡담 · 구어",
+    advancedPresetHint: "영상 종류 프리셋이 지연 모드·말투를 묶어 정함. 여기서 개별로 덮어쓸 수 있음(다음 프리셋 변경 시 재설정).",
+    labelSentSilence: "문장 대기",
+    labelVad: "음성 감지",
+    advancedVadHint: "문장 대기↑ = 더 긴 문맥으로 번역(지연↑) · 음성 감지↑ = 잡음/음악 더 무시",
+    accuracyMode: "정확도 모드 (문장 2패스 재전사)",
+    autoPrime: "자동 용어 프라이밍 (제목을 힌트로)",
+    labelSyncOffset: "싱크 보정",
+    debugSync: "싱크 디버그 표시",
+    labelContextHint: "용어 힌트",
+    contextPlaceholder: "자유 텍스트 바이어싱",
+    labelGlossary: "용어집",
+    glossaryPlaceholder: "이름=번역 (줄마다 하나)\n예: Blackwell=블랙웰",
+    advancedApplyHint: "용어집·용어 힌트는 다음 발화부터 / 정확도·음성 감지는 자막 다시 시작 시 적용",
+    connConnected: "브릿지 연결됨",
+    connReconnecting: "브릿지 재연결 중…",
+    stopped: "중지됨",
+    noActiveTab: "활성 탭을 찾지 못함",
+    videoMode: "영상 지연 모드 — 영상이 재생 중이어야 함",
+    captureStarted: "캡처 시작됨 — 영상에서 발화 대기",
+    failurePrefix: "실패: ",
+    askNeedsCaption: "자막을 시작한 상태에서만 요약/질문이 됩니다.",
+    answering: "답하는 중…",
+    summarizing: "요약 중…",
+    noTranscriptYet: "(아직 자막 기록이 없어요)",
+    noRecord: "(기록 없음)",
+    transcriptTitleSuffix: "자막 기록",
+    emptyNativeResponse: "빈 응답",
+    noHost: "호스트 미설치",
+    off: "꺼짐",
+    on: "켜짐",
+    alreadyOn: "이미 켜짐",
+    startRequested: "시작 요청…",
+    startingWithSeconds: "기동 중… ({seconds}s · 모델 로드 ~40s)",
+    noResponseLog: "응답 없음 — ~/.lcc-bridge.log 확인",
+    setupHost: "호스트 미설치 — 터미널에서 ./setup.sh 1회",
+    stopping: "종료 중…",
+    stopFailed: "종료 실패",
+    downloadingDefault: "다운로드 중",
+    installComplete: "{tier} 설치 완료 — 브릿지 (재)시작 시 적용",
+    installFailed: "실패: {error} (~/.lcc-install.log 확인)",
+    downloading: "{name}  ({index}/{total})",
+    installRequest: "{tier} 설치 요청…",
+    installed: "{tier} 설치됨",
+  }),
+  en: Object.freeze({
+    modeSimple: "Simple",
+    modeAdvanced: "Advanced",
+    captionStart: "Start captions",
+    captionStop: "Stop captions",
+    bridgeRequired: "Local bridge (server.py) must be running",
+    bridgeStart: "Start bridge",
+    bridgeStarted: "Bridge on",
+    bridgeStop: "Stop",
+    bridgeStopTitle: "Stop bridge",
+    sectionUi: "UI",
+    labelUiLang: "UI language",
+    sectionInstall: "Model install · tier",
+    installHint: "Download and wire the translation tier for this Mac. If untouched, the first run auto-selects by memory.",
+    sectionTranscript: "Transcript · AI",
+    summary: "Summary",
+    askPlaceholder: "Ask about this video…",
+    exportMd: "Save .md",
+    clearTranscript: "Clear history",
+    sectionAsr: "Speech engine",
+    labelAsr: "ASR",
+    asrGranite: "Granite (English)",
+    asrQwen: "Qwen3-ASR (Japanese/multilingual)",
+    asrHint: "Granite is best for English. Qwen3 handles Japanese/Korean and multilingual punctuation. Changes apply from the next utterance.",
+    sectionTranslation: "Translation",
+    labelTargetLang: "Target language",
+    sectionContent: "Content type",
+    labelPreset: "Preset",
+    presetGeneral: "General · chat",
+    presetConference: "Conference · lecture",
+    presetNews: "News · interview",
+    presetStreaming: "Personal stream",
+    contentHint: "Applies tone and latency together: lecture=polished/stable, news=balanced, streaming=casual/fast.",
+    sectionDisplay: "Caption display",
+    labelFontSize: "Font size",
+    labelBottom: "Vertical position",
+    labelLeft: "Horizontal position",
+    showSource: "Show source line",
+    sectionSync: "Sync",
+    labelDelay: "Playback delay",
+    videoDelay: "Delay video too (no DRM)",
+    syncHint: "By default only audio is delayed, so captions can appear ahead of video. Enable this to delay video and align captions.",
+    sectionAdvanced: "Advanced · raw parameters",
+    labelLatency: "Latency mode",
+    latencyStable: "Stable (final only)",
+    latencyBalanced: "Balanced",
+    latencyAggressive: "Aggressive (instant)",
+    labelRegister: "Tone",
+    registerCasual: "Casual",
+    registerLecture: "Lecture · formal",
+    registerNews: "News",
+    registerChat: "Chat · spoken",
+    advancedPresetHint: "Content presets bundle latency and tone. Override them here; changing the preset resets these fields.",
+    labelSentSilence: "Sentence wait",
+    labelVad: "Voice detect",
+    advancedVadHint: "Higher sentence wait gives more context but more latency. Higher voice detect ignores more noise/music.",
+    accuracyMode: "Accuracy mode (2-pass sentence retranscribe)",
+    autoPrime: "Auto term priming (use title as hint)",
+    labelSyncOffset: "Sync offset",
+    debugSync: "Show sync debug",
+    labelContextHint: "Term hint",
+    contextPlaceholder: "Free-text biasing",
+    labelGlossary: "Glossary",
+    glossaryPlaceholder: "Name=translation (one per line)\nExample: Blackwell=Blackwell",
+    advancedApplyHint: "Glossary and hints apply from the next utterance. Accuracy/VAD applies after restarting captions.",
+    connConnected: "Bridge connected",
+    connReconnecting: "Bridge reconnecting…",
+    stopped: "Stopped",
+    noActiveTab: "No active tab found",
+    videoMode: "Video-delay mode — the video must be playing",
+    captureStarted: "Capture started — waiting for speech",
+    failurePrefix: "Failed: ",
+    askNeedsCaption: "Start captions before summary/questions.",
+    answering: "Answering…",
+    summarizing: "Summarizing…",
+    noTranscriptYet: "(No transcript yet)",
+    noRecord: "(No records)",
+    transcriptTitleSuffix: "caption log",
+    emptyNativeResponse: "Empty response",
+    noHost: "Host not installed",
+    off: "Off",
+    on: "On",
+    alreadyOn: "Already on",
+    startRequested: "Start requested…",
+    startingWithSeconds: "Starting… ({seconds}s · model load ~40s)",
+    noResponseLog: "No response — check ~/.lcc-bridge.log",
+    setupHost: "Host not installed — run ./setup.sh once in Terminal",
+    stopping: "Stopping…",
+    stopFailed: "Stop failed",
+    downloadingDefault: "Downloading",
+    installComplete: "{tier} installed — applies after bridge restart",
+    installFailed: "Failed: {error} (check ~/.lcc-install.log)",
+    downloading: "{name}  ({index}/{total})",
+    installRequest: "{tier} install requested…",
+    installed: "{tier} installed",
+  }),
+});
+
+function tr(key, vars = {}) {
+  const lang = globalThis.lccCanonicalUiLang(settings && settings.uiLang);
+  let text = (UI_TEXT[lang] && UI_TEXT[lang][key]) || UI_TEXT.ko[key] || key;
+  for (const [name, value] of Object.entries(vars)) {
+    text = text.replaceAll("{" + name + "}", String(value));
+  }
+  return text;
+}
+
+function populateUiLangSelect() {
+  const el = document.getElementById("uiLang");
+  if (!el) return;
+  const selected = globalThis.lccCanonicalUiLang(settings.uiLang);
+  if (!el.options.length) {
+    for (const lang of globalThis.LCC_UI_LANGS) {
+      const opt = document.createElement("option");
+      opt.value = lang.value;
+      opt.textContent = lang.label;
+      el.appendChild(opt);
+    }
+  }
+  el.value = selected;
+}
+
+function applyUiLanguage() {
+  settings.uiLang = globalThis.lccCanonicalUiLang(settings.uiLang);
+  document.documentElement.lang = settings.uiLang;
+  for (const el of document.querySelectorAll("[data-i18n]")) {
+    el.textContent = tr(el.dataset.i18n);
+  }
+  for (const el of document.querySelectorAll("[data-i18n-placeholder]")) {
+    el.placeholder = tr(el.dataset.i18nPlaceholder);
+  }
+  for (const el of document.querySelectorAll("[data-i18n-title]")) {
+    el.title = tr(el.dataset.i18nTitle);
+  }
+  populateUiLangSelect();
+  setState(capturing);
+}
+
+function populateTargetLangSelect() {
+  const el = document.getElementById("targetLang");
+  const selected = globalThis.lccCanonicalTargetLang(el.value || settings.targetLang);
+  el.textContent = "";
+  for (const lang of globalThis.LCC_TARGET_LANGS) {
+    const opt = document.createElement("option");
+    opt.value = lang;
+    opt.textContent = lang;
+    el.appendChild(opt);
+  }
+  el.value = selected;
+}
 
 function formatRangeValue(key, value) {
   if (key === "syncOffsetMs") {
@@ -20,15 +267,18 @@ function formatRangeValue(key, value) {
 
 function setState(on) {
   capturing = on;
-  btn.textContent = on ? "자막 중지" : "자막 시작";
+  btn.textContent = on ? tr("captionStop") : tr("captionStart");
   btn.className = on ? "stop" : "start";
 }
 
 // ---- settings ----
 let settings = { ...DEFAULTS };
+populateTargetLangSelect();
 async function loadSettings() {
   const r = await chrome.storage.local.get("lcc-settings");
-  settings = { ...DEFAULTS, ...(r["lcc-settings"] || {}) };
+  settings = globalThis.lccNormalizeSettings({ ...DEFAULTS, ...(r["lcc-settings"] || {}) });
+  populateUiLangSelect();
+  populateTargetLangSelect();
   for (const [key, id] of Object.entries(RANGES)) {
     const el = document.getElementById(id);
     el.value = settings[key];
@@ -47,6 +297,7 @@ async function loadSettings() {
   document.getElementById("contextHint").value = settings.contextHint;
   document.getElementById("glossary").value = settings.glossary;
   setMode(settings.uiMode || "simple");
+  applyUiLanguage();
 }
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -61,14 +312,17 @@ async function getPageContext(tabId) {
     return "";
   }
 }
-async function saveSettings(pushConfig = false) {
+async function saveSettings(pushConfig = false, resetTranslationContext = false) {
   await chrome.storage.local.set({ "lcc-settings": settings });
-  if (pushConfig) chrome.runtime.sendMessage({ type: "popup-config-update" });
+  if (pushConfig) chrome.runtime.sendMessage({ type: "popup-config-update", resetTranslationContext });
 }
 let _pushCfgTimer = null;
-function pushBridgeConfigDebounced(ms = 400) {   // free-text inputs fire per keystroke; coalesce the live bridge push
+function pushBridgeConfigDebounced(ms = 400, resetTranslationContext = false) {   // free-text inputs fire per keystroke; coalesce the live bridge push
   if (_pushCfgTimer) clearTimeout(_pushCfgTimer);
-  _pushCfgTimer = setTimeout(() => { _pushCfgTimer = null; chrome.runtime.sendMessage({ type: "popup-config-update" }); }, ms);
+  _pushCfgTimer = setTimeout(() => {
+    _pushCfgTimer = null;
+    chrome.runtime.sendMessage({ type: "popup-config-update", resetTranslationContext });
+  }, ms);
 }
 for (const [key, id] of Object.entries(RANGES)) {
   document.getElementById(id).addEventListener("input", (e) => {
@@ -86,8 +340,15 @@ document.getElementById("videoDelay").addEventListener("change", (e) => {
   saveSettings();
 });
 document.getElementById("targetLang").addEventListener("change", (e) => {
-  settings.targetLang = e.target.value;
-  saveSettings(true);
+  settings.targetLang = globalThis.lccCanonicalTargetLang(e.target.value);
+  e.target.value = settings.targetLang;
+  saveSettings(true, true);
+});
+document.getElementById("uiLang").addEventListener("change", (e) => {
+  settings.uiLang = globalThis.lccCanonicalUiLang(e.target.value);
+  applyUiLanguage();
+  saveSettings();
+  refreshBridge();
 });
 document.getElementById("asrEngine").addEventListener("change", (e) => {
   settings.asrEngine = e.target.value;
@@ -98,14 +359,14 @@ document.getElementById("contentType").addEventListener("change", (e) => {
   const p = LCC_PRESETS[settings.contentType] || LCC_PRESETS.general;   // bundle tone + latency for the content type
   settings.register = p.register;
   settings.latencyMode = p.latencyMode;
-  saveSettings(true);                                                   // shared bridge config pushes register+latencyMode live
+  saveSettings(true, true);                                             // shared bridge config pushes register+latencyMode live
 });
 
 // ---- capture + connection state ----
 function setConn(capturing, wsOpen) {
   const el = document.getElementById("conn");
   if (!capturing) { el.textContent = ""; return; }
-  el.textContent = wsOpen ? "브릿지 연결됨" : "브릿지 재연결 중…";
+  el.textContent = wsOpen ? tr("connConnected") : tr("connReconnecting");
   el.style.color = wsOpen ? "#16a34a" : "#dc2626";
 }
 chrome.runtime.sendMessage({ type: "popup-status" }, (res) => {
@@ -118,27 +379,27 @@ btn.onclick = async () => {
   if (capturing) {
     chrome.runtime.sendMessage({ type: "popup-stop" });   // background tears down the right mode+tab
     setState(false);
-    status.textContent = "중지됨";
+    status.textContent = tr("stopped");
     return;
   }
   const tab = await getActiveTab();
-  if (!tab || tab.id == null) { status.textContent = "활성 탭을 찾지 못함"; return; }
+  if (!tab || tab.id == null) { status.textContent = tr("noActiveTab"); return; }
   try {
     const pageContext = await getPageContext(tab.id);
     if (settings.videoDelay) {
       // B-2: delay.js captures the page <video> directly; routed via background so state+stop are tracked
       chrome.runtime.sendMessage({ type: "popup-start-video", tabId: tab.id, delaySec: settings.delaySec, pageContext });
       setState(true);
-      status.textContent = "영상 지연 모드 — 영상이 재생 중이어야 함";
+      status.textContent = tr("videoMode");
     } else {
       await chrome.runtime.sendMessage({ type: "popup-cleanup" });   // release stale stream before getMediaStreamId
       const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
       chrome.runtime.sendMessage({ type: "popup-start", streamId, tabId: tab.id, delaySec: settings.delaySec, pageContext });
       setState(true);
-      status.textContent = "캡처 시작됨 — 영상에서 발화 대기";
+      status.textContent = tr("captureStarted");
     }
   } catch (e) {
-    status.textContent = "실패: " + (e && e.message || e);
+    status.textContent = tr("failurePrefix") + (e && e.message || e);
   }
 };
 
@@ -165,11 +426,11 @@ async function renderHist() {
 }
 function sendAsk(mode, question) {
   const res = document.getElementById("aiResult");
-  if (!capturing) { res.textContent = "자막을 시작한 상태에서만 요약/질문이 됩니다."; return; }
-  res.textContent = (mode === "qa" ? "답하는 중…" : "요약 중…");
+  if (!capturing) { res.textContent = tr("askNeedsCaption"); return; }
+  res.textContent = (mode === "qa" ? tr("answering") : tr("summarizing"));
   chrome.storage.local.get("lcc-transcript").then((r) => {
     const transcript = (r["lcc-transcript"] || []).map((e) => e.source || e.ko).join(" ").slice(-8000);   // match server window; keep the control msg small
-    if (!transcript.trim()) { res.textContent = "(아직 자막 기록이 없어요)"; return; }
+    if (!transcript.trim()) { res.textContent = tr("noTranscriptYet"); return; }
     chrome.storage.session.remove("lcc-answer");
     chrome.runtime.sendMessage({ type: "lcc-ask", mode: mode, question: question || "", transcript: transcript });
   });
@@ -188,10 +449,10 @@ document.getElementById("exportMd").onclick = async () => {
   const res = document.getElementById("aiResult");
   const r = await chrome.storage.local.get(["lcc-transcript", "lcc-session"]);
   const tr = r["lcc-transcript"] || [];
-  if (!tr.length) { res.textContent = "(기록 없음)"; return; }
+  if (!tr.length) { res.textContent = tr("noRecord"); return; }
   const sess = r["lcc-session"] || {};
   const start = sess.start || (tr[0] && tr[0].t) || 0;
-  const out = ["# " + (sess.title || "Live Caption") + " — 자막 기록", "", new Date().toLocaleString(), ""];
+  const out = ["# " + (sess.title || "Live Caption") + " — " + tr("transcriptTitleSuffix"), "", new Date().toLocaleString(), ""];
   for (const e of tr) out.push("**[" + lccFmtClock(e.t - start) + "]** " + e.source, "", "> " + e.ko, "");
   const blob = new Blob([out.join("\n")], { type: "text/markdown;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -219,7 +480,7 @@ function nmSend(msg) {
     try {
       chrome.runtime.sendNativeMessage(LCC_NM_HOST, msg, (resp) => {
         if (chrome.runtime.lastError) resolve({ ok: false, noHost: true, error: chrome.runtime.lastError.message });
-        else resolve(resp || { ok: false, error: "빈 응답" });
+        else resolve(resp || { ok: false, error: tr("emptyNativeResponse") });
       });
     } catch (e) { resolve({ ok: false, noHost: true, error: String(e) }); }
   });
@@ -228,43 +489,51 @@ const bridgeBtn = document.getElementById("bridgeBtn");
 const bridgeStopBtn = document.getElementById("bridgeStopBtn");
 const bridgeStatusEl = document.getElementById("bridgeStatus");
 let bridgePoll = null;
+let bridgePollBusy = false;
 function setBridgeUI(state, text) {           // state: on | off | starting | nohost
   bridgeStatusEl.style.color = state === "on" ? "#16a34a" : (state === "nohost" ? "#dc2626" : "#666");
   if (text != null) bridgeStatusEl.textContent = text;
   bridgeBtn.disabled = (state === "starting");
   bridgeStopBtn.style.display = (state === "on" || state === "starting") ? "" : "none";
-  bridgeBtn.textContent = state === "on" ? "브릿지 켜짐" : "브릿지 켜기";
+  bridgeBtn.textContent = state === "on" ? tr("bridgeStarted") : tr("bridgeStart");
 }
 async function refreshBridge() {
   const r = await nmSend({ cmd: "status" });
-  if (r.noHost) { setBridgeUI("nohost", "호스트 미설치"); return; }
-  setBridgeUI(r.running ? "on" : "off", r.running ? ("켜짐" + (r.pid ? " (pid " + r.pid + ")" : "")) : "꺼짐");
+  if (r.noHost) { setBridgeUI("nohost", tr("noHost")); return; }
+  setBridgeUI(r.running ? "on" : "off", r.running ? (tr("on") + (r.pid ? " (pid " + r.pid + ")" : "")) : tr("off"));
 }
 function pollBridgeUntilUp(maxSec) {
   if (bridgePoll) clearInterval(bridgePoll);
+  bridgePollBusy = false;
   let t = 0;
   bridgePoll = setInterval(async () => {
-    t += 2;
-    const r = await nmSend({ cmd: "status" });
-    if (r.running) { clearInterval(bridgePoll); bridgePoll = null; setBridgeUI("on", "켜짐"); }
-    else if (t >= maxSec) { clearInterval(bridgePoll); bridgePoll = null; setBridgeUI("off", "응답 없음 — ~/.lcc-bridge.log 확인"); }
-    else setBridgeUI("starting", "기동 중… (" + t + "s · 모델 로드 ~40s)");
+    if (bridgePollBusy) return;
+    bridgePollBusy = true;
+    try {
+      t += 2;
+      const r = await nmSend({ cmd: "status" });
+      if (r.running) { clearInterval(bridgePoll); bridgePoll = null; setBridgeUI("on", tr("on")); }
+      else if (t >= maxSec) { clearInterval(bridgePoll); bridgePoll = null; setBridgeUI("off", tr("noResponseLog")); }
+      else setBridgeUI("starting", tr("startingWithSeconds", { seconds: t }));
+    } finally {
+      bridgePollBusy = false;
+    }
   }, 2000);
 }
 bridgeBtn.onclick = async () => {
-  setBridgeUI("starting", "시작 요청…");
+  setBridgeUI("starting", tr("startRequested"));
   const r = await nmSend({ cmd: "start", asrEngine: settings.asrEngine || "granite" });
-  if (r.noHost) { setBridgeUI("nohost", "호스트 미설치 — 터미널에서 ./setup.sh 1회"); return; }
-  if (!r.ok) { setBridgeUI("off", "" + (r.error || "실패")); return; }
-  if (r.already || r.running) { setBridgeUI("on", "이미 켜짐"); return; }
+  if (r.noHost) { setBridgeUI("nohost", tr("setupHost")); return; }
+  if (!r.ok) { setBridgeUI("off", "" + (r.error || tr("failurePrefix").trim())); return; }
+  if (r.already || r.running) { setBridgeUI("on", tr("alreadyOn")); return; }
   pollBridgeUntilUp(70);
 };
 bridgeStopBtn.onclick = async () => {
-  if (bridgePoll) { clearInterval(bridgePoll); bridgePoll = null; }
-  setBridgeUI("starting", "종료 중…");
+  if (bridgePoll) { clearInterval(bridgePoll); bridgePoll = null; bridgePollBusy = false; }
+  setBridgeUI("starting", tr("stopping"));
   const r = await nmSend({ cmd: "stop" });
-  if (r.noHost) { setBridgeUI("nohost", "호스트 미설치"); return; }
-  setBridgeUI(r.running ? "on" : "off", r.running ? "종료 실패" : "꺼짐");
+  if (r.noHost) { setBridgeUI("nohost", tr("noHost")); return; }
+  setBridgeUI(r.running ? "on" : "off", r.running ? tr("stopFailed") : tr("off"));
 };
 refreshBridge();
 
@@ -280,16 +549,17 @@ document.getElementById("modeAdv").onclick = () => { settings.uiMode = "advanced
 
 // ---- advanced parameter controls (the raw knobs; ranges handled by the generic RANGES loop) ----
 document.getElementById("latencyMode").addEventListener("change", (e) => { settings.latencyMode = e.target.value; saveSettings(true); });
-document.getElementById("register").addEventListener("change", (e) => { settings.register = e.target.value; saveSettings(true); });
+document.getElementById("register").addEventListener("change", (e) => { settings.register = e.target.value; saveSettings(true, true); });
 document.getElementById("accuracyMode").addEventListener("change", (e) => { settings.accuracyMode = e.target.checked; saveSettings(); });
 document.getElementById("autoPrime").addEventListener("change", (e) => { settings.autoPrime = e.target.checked; saveSettings(); });
 document.getElementById("debugSync").addEventListener("change", (e) => { settings.debugSync = e.target.checked; saveSettings(); });
-document.getElementById("contextHint").addEventListener("input", (e) => { settings.contextHint = e.target.value; saveSettings(); pushBridgeConfigDebounced(); });
-document.getElementById("glossary").addEventListener("input", (e) => { settings.glossary = e.target.value; saveSettings(); pushBridgeConfigDebounced(); });
+document.getElementById("contextHint").addEventListener("input", (e) => { settings.contextHint = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });
+document.getElementById("glossary").addEventListener("input", (e) => { settings.glossary = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });
 
 // ---- model install (full/mid/lite): native host spawns the downloader; poll progress ----
 const TIER_LABEL = { full: "Full", mid: "Mid", lite: "Lite" };
 let instPoll = null;
+let instPollBusy = false;
 function setInstStatus(text, color) {
   const el = document.getElementById("instStatus");
   el.textContent = text;
@@ -300,27 +570,34 @@ function setInstBusy(busy) {
 }
 function pollInstall() {
   if (instPoll) clearInterval(instPoll);
+  instPollBusy = false;
   setInstBusy(true);
   instPoll = setInterval(async () => {
-    const r = await nmSend({ cmd: "install_status" });
-    if (r.noHost) { clearInterval(instPoll); instPoll = null; setInstBusy(false); setInstStatus("호스트 미설치", "#dc2626"); return; }
-    if (r.idle) return;
-    if (r.done) {
-      clearInterval(instPoll); instPoll = null; setInstBusy(false);
-      if (r.ok) setInstStatus("" + (TIER_LABEL[r.tier] || r.tier || "") + " 설치 완료 — 브릿지 (재)시작 시 적용", "#16a34a");
-      else setInstStatus("실패: " + (r.error || "") + " (~/.lcc-install.log 확인)", "#dc2626");
-      return;
+    if (instPollBusy) return;
+    instPollBusy = true;
+    try {
+      const r = await nmSend({ cmd: "install_status" });
+      if (r.noHost) { clearInterval(instPoll); instPoll = null; setInstBusy(false); setInstStatus(tr("noHost"), "#dc2626"); return; }
+      if (r.idle) return;
+      if (r.done) {
+        clearInterval(instPoll); instPoll = null; setInstBusy(false);
+        if (r.ok) setInstStatus(tr("installComplete", { tier: TIER_LABEL[r.tier] || r.tier || "" }), "#16a34a");
+        else setInstStatus(tr("installFailed", { error: r.error || "" }), "#dc2626");
+        return;
+      }
+      const n = (r.index || 0) + 1, t = r.total || "?";
+      setInstStatus(tr("downloading", { name: r.current || tr("downloadingDefault"), index: n, total: t }), "#666");
+    } finally {
+      instPollBusy = false;
     }
-    const n = (r.index || 0) + 1, t = r.total || "?";
-    setInstStatus("" + (r.current || "다운로드 중") + "  (" + n + "/" + t + ")", "#666");
   }, 2000);
 }
 async function startInstall(tier) {
   setInstBusy(true);
-  setInstStatus("" + TIER_LABEL[tier] + " 설치 요청…", "#666");
+  setInstStatus(tr("installRequest", { tier: TIER_LABEL[tier] }), "#666");
   const r = await nmSend({ cmd: "install", tier });
-  if (r.noHost) { setInstBusy(false); setInstStatus("호스트 미설치 — 터미널에서 ./setup.sh 1회", "#dc2626"); return; }
-  if (!r.ok) { setInstBusy(false); setInstStatus("" + (r.error || "실패"), "#dc2626"); return; }
+  if (r.noHost) { setInstBusy(false); setInstStatus(tr("setupHost"), "#dc2626"); return; }
+  if (!r.ok) { setInstBusy(false); setInstStatus("" + (r.error || tr("failurePrefix").trim()), "#dc2626"); return; }
   pollInstall();
 }
 document.getElementById("instFull").onclick = () => startInstall("full");
@@ -330,5 +607,10 @@ document.getElementById("instLite").onclick = () => startInstall("lite");
 nmSend({ cmd: "install_status" }).then((r) => {
   if (!r || r.idle || r.noHost) return;
   if (!r.done) pollInstall();
-  else if (r.ok && r.current === "완료") setInstStatus("" + (TIER_LABEL[r.tier] || r.tier || "") + " 설치됨", "#16a34a");
+  else if (r.ok && r.current === "완료") setInstStatus(tr("installed", { tier: TIER_LABEL[r.tier] || r.tier || "" }), "#16a34a");
 });
+window.addEventListener("pagehide", () => {
+  if (_pushCfgTimer) { clearTimeout(_pushCfgTimer); _pushCfgTimer = null; }
+  if (bridgePoll) { clearInterval(bridgePoll); bridgePoll = null; bridgePollBusy = false; }
+  if (instPoll) { clearInterval(instPoll); instPoll = null; instPollBusy = false; }
+}, { once: true });

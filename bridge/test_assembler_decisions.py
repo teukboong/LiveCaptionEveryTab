@@ -50,6 +50,17 @@ ok("tp.too_long", s._two_pass_eligible(True, True, 2, hi + 2) is False)
 ok("tp.lo_bound", s._two_pass_eligible(True, True, 2, lo) is True)
 ok("tp.hi_bound", s._two_pass_eligible(True, True, 2, hi) is True)
 
+# Unit.add_clause_audio: keep only audio that can still feed a valid 2-pass; otherwise drop
+# the bytearray so a pathological long/no-boundary unit cannot grow for the whole session.
+u = s.Unit()
+u.add_clause_audio(b"a" * lo, False)
+ok("unit_audio.keeps_eligible", u.pure is True and len(u.pcm) == lo and u.clauses == 1)
+u.add_clause_audio(b"b" * (hi - lo + 2), False)
+ok("unit_audio.drops_too_long", u.pure is False and len(u.pcm) == 0 and u.clauses == 2)
+u2 = s.Unit()
+u2.add_clause_audio(b"x" * lo, True)
+ok("unit_audio.soft_impure_drops", u2.pure is False and len(u2.pcm) == 0 and u2.clauses == 1)
+
 # _dedupe_commit_overlap(text, tail_words, overlapped): drop a re-transcribed boundary word, ON OVERLAP ONLY
 eq("dov.overlap", s._dedupe_commit_overlap("protein structure prediction", ["challenge", "of", "protein"], True), "structure prediction")
 eq("dov.two_word", s._dedupe_commit_overlap("David Baker was", ["jumper", "and", "david"], True), "Baker was")

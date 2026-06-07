@@ -121,6 +121,7 @@ const LCC_LAG_CAP_MS = 4000;   // start merging-to-catch-up at 4s lag (was 8s) s
 const LCC_CAPTION_LEAD_MS = 0;
 const LCC_CAPTION_MAX_MS = 12000;   // sticky caption: clear only after this long with no new translation
 const LCC_FINAL_STREAM_SEEN_TTL_MS = 30000; // if final_stream already rendered, don't replay its final later
+const LCC_FINAL_QUEUE_CAP = 600;     // hard bound for very long/backlogged sessions
 let lccLastKoT = 0;                 // perf time of the last translation shown (sticky timeout)
 function lccReadMs(ko, preferred) { return preferred || Math.max(1300, Math.min(7000, (ko || "").length * 75)); }
 function lccNow() { return performance.now(); }
@@ -301,6 +302,7 @@ function lccPaceReset() {
 function lccScheduleFinal(item) {
   lccFinalQ.push(lccDecorateTiming(item));
   lccFinalQ.sort((a, b) => (a.dueAt || a.recvAtPerf || 0) - (b.dueAt || b.recvAtPerf || 0));
+  while (lccFinalQ.length > LCC_FINAL_QUEUE_CAP) lccFinalQ.shift();
 }
 function lccTakeFinal(now) {
   const first = lccFinalQ[0];
@@ -375,6 +377,11 @@ function lccHandleBridgeMessage(msg) {
     if (!msg.open) { lccPaceReset(); setLines("", "⚠ 브릿지 연결 끊김 — bridge/server.py 실행 확인"); }
   } else if (msg.type === "notice") {
     lccPaceReset(); setLines("", msg.text || "");
+  } else if (msg.type === "translation-context-reset") {
+    lccPaceReset();
+    const v = lccVideoSub();
+    if (v && v.reset) v.reset();
+    setLines("", "");
   } else if (msg.type === "source") {
     if (lccFresh(msg)) {
       const v = lccVideoSub();
@@ -486,9 +493,20 @@ lccUpdateContext();
 setTimeout(lccUpdateContext, 2000);          // SPA titles often populate late
 setTimeout(lccUpdateContext, 5000);
 try {
+  let lccTitleObserver = null;
   const tEl = document.querySelector("title");
-  if (tEl) new MutationObserver(lccUpdateContext).observe(tEl, { childList: true });
+  if (tEl) {
+    lccTitleObserver = new MutationObserver(lccUpdateContext);
+    lccTitleObserver.observe(tEl, { childList: true });
+  }
   window.addEventListener("yt-navigate-finish", () => setTimeout(lccUpdateContext, 800));
+  window.addEventListener("pagehide", () => {
+    lccStopPacer();
+    if (lccTitleObserver) lccTitleObserver.disconnect();
+    lccPaceReset();
+    lccTranscript.length = 0;
+    if (box) { box.remove(); box = null; }
+  }, { once: true });
 } catch (_) {}
 
 // ---- transcript accumulation -> storage.local (the popup renders history / export / summary / Q&A) ----

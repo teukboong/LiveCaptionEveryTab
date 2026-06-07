@@ -48,6 +48,12 @@ chrome.runtime.onMessage.addListener((msg) => {
 chrome.runtime.sendMessage({ target: "background", type: "offscreen-ready" });
 
 function connectWS() {
+  if (ws && ws.readyState !== WebSocket.CLOSED) {
+    try {
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+      ws.close();
+    } catch (_) {}
+  }
   wsConfigured = false;
   ws = new WebSocket(globalThis.LCC_BRIDGE_URL);
   ws.binaryType = "arraybuffer";
@@ -192,6 +198,8 @@ async function start(streamId, pageContext, requestedDelaySec, config) {
   if (currentId === streamId) return;   // dedupe (warm message + ready-handshake can both fire)
   currentId = streamId;
   currentConfig = config || {};
+  relayMode = false;
+  relayReconnect = false;
   stop(true);
   resetBufferedPcm();
   resetStreamClock();
@@ -244,9 +252,13 @@ function stop(keepId) {
   try { node && (node.port.onmessage = null, node.disconnect()); } catch (_) {}
   try { stream && stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
   try { audioCtx && audioCtx.close(); } catch (_) {}
-  try { if (ws) { ws.onclose = null; ws.onerror = null;   // detach so this close doesn't trigger reconnect
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "eos" }));
-    ws.close(); } } catch (_) {}
+  try { if (ws) {
+    const sock = ws;
+    ws = null;
+    if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ type: "eos" }));
+    sock.onopen = sock.onmessage = sock.onclose = sock.onerror = null;   // detach so this close doesn't trigger reconnect
+    sock.close();
+  } } catch (_) {}
   ws = audioCtx = node = stream = null;
   wsConfigured = false;
 }

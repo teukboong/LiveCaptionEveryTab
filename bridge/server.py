@@ -88,6 +88,14 @@ def _normalize_target_lang(value, default="Korean"):
             return lang
     return default if default in _TARGET_LANGS else "Korean"
 
+def _translation_context_signature(target, register, hint, glossary_pairs):
+    return (
+        _normalize_target_lang(target),
+        str(register or "casual"),
+        str(hint or ""),
+        tuple(glossary_pairs or ()),
+    )
+
 def _clamp_int(value, default, lo, hi):
     try:
         n = int(value)
@@ -1385,6 +1393,21 @@ class Unit:
     clauses: int = 0             # clauses folded into this unit (2-pass only pays off when >= 2)
     pure: bool = True            # False once a soft/hard cut or split misaligns pcm vs src
 
+    def add_clause_audio(self, audio: bytes, soft: bool):
+        """Keep only 2-pass-eligible audio. Once the unit is impure or too long, drop the buffer so a
+        pathological no-boundary talk cannot grow this bytearray for the rest of the session."""
+        self.clauses += 1
+        if soft or not self.pure:
+            self.pure = False
+            self.pcm.clear()
+            return
+        max_bytes = int(TWO_PASS_MAX_SEC * SR) * 2
+        if len(self.pcm) + len(audio) > max_bytes:
+            self.pure = False
+            self.pcm.clear()
+            return
+        self.pcm.extend(audio)
+
 
 async def handle(ws):
     global _active_ws
@@ -1411,6 +1434,7 @@ async def handle(ws):
     glossary_pairs = []         # [(source_term, target_rendering)] pinned for consistent translation + ASR biasing
     asr_hint = ""               # context_hint + glossary source terms, fed to the ASR prompt (recomputed on config)
     accuracy_mode = False       # 2-pass: re-transcribe the whole sentence's audio at commit (cleaner finals, +~0.7s)
+    translation_epoch = 0        # bumps when target/register/hints change so old-language jobs cannot render later
     preroll = collections.deque(maxlen=PREROLL_WINDOWS)   # pre-onset audio prepended on speech start
     leftover, voiced, in_speech, sil_windows = b"", bytearray(), False, 0
     unit = Unit()               # per-connection translation-unit state (grouped from the nonlocals)
@@ -1638,6 +1662,7 @@ async def handle(ws):
                 "reason": reason,
                 "queued_at": time.perf_counter(),
                 "latency_mode": latency_mode,
+                "epoch": translation_epoch,
             },
         ))
         if final:
@@ -1691,6 +1716,9 @@ async def handle(ws):
                 break
             pending_final_jobs.pop(_seq, None)
             pending_preview_jobs.pop(_seq, None)
+            if job.get("epoch") != translation_epoch:
+                scheduler_stats["drop_translation_epoch"] += 1
+                continue
             if preview_is_stale(job):
                 preview_drop_count += 1
                 scheduler_stats["preview_drop_stale"] += 1
@@ -1752,6 +1780,9 @@ async def handle(ws):
                                             if not _stream_partial_should_emit(p, last):
                                                 scheduler_stats["final_stream_suppressed"] += 1
                                                 continue
+                                            if job.get("epoch") != translation_epoch:
+                                                scheduler_stats["drop_translation_epoch"] += 1
+                                                continue
                                             tt = time.perf_counter(); last = p
                                             await send_json({
                                                 "type": "caption_partial", "kind": "final_stream", "phase": "final_stream",
@@ -1787,6 +1818,9 @@ async def handle(ws):
                                     print(f"[trans err] {e}", flush=True); tx_ok = False
                     finally:
                         active_tx_job = None
+                    if job.get("epoch") != translation_epoch:
+                        scheduler_stats["drop_translation_epoch"] += 1
+                        continue
                     if tx_ok:
                         cache_put(key, ko)   # don't cache the untranslated fallback
             if not job["final"] and not tx_ok:
@@ -1912,9 +1946,7 @@ async def handle(ws):
                         unit.src = _append_text_dedupe(unit.src, src)
                         if unit.src != old:
                             unit.rev += 1
-                        unit.pcm.extend(audio); unit.clauses += 1   # accumulate audio for optional 2-pass at commit
-                        if _soft:                                   # soft/hard cut re-injected overlap -> concat duplicates -> bar 2-pass
-                            unit.pure = False
+                        unit.add_clause_audio(audio, _soft)          # bounded audio for optional 2-pass at commit
                         unit.end_ms = max(unit.end_ms, int(end_ms))
                     else:
                         nospeech_count += 1
@@ -1985,189 +2017,207 @@ async def handle(ws):
     inf_task = asyncio.create_task(inference_loop())
     trans_task = asyncio.create_task(translation_loop())
 
-    async for msg in ws:
-        if isinstance(msg, str):
-            if len(msg.encode("utf-8")) > MAX_WS_MSG_BYTES:     # control msgs (e.g. ask transcript) ~ MAX_WS_MSG_BYTES, not the audio-frame cap
-                await ws.close(code=1009, reason="control message too large")
-                break
-            try:
-                d = json.loads(msg)
-                if d.get("type") == "hello":
-                    if str(d.get("token", "")) != WS_TOKEN:
-                        print(f"[bridge] bad token origin={origin!r}", flush=True)
-                        await ws.close(code=1008, reason="bad token")
-                        break
-                    authed = True
-                    await send_json({"type": "hello", "ok": True})
-                    print(f"[bridge] client authed origin={origin!r} peer={peer!r}", flush=True)
-                    if _active_ws is not None and _active_ws is not ws:   # single-client is the intended model
-                        print("[bridge] WARN: a 2nd client connected while one is active — they share ONE MLX "
-                              "device + translator KV cache; expect degraded latency.", flush=True)
-                    _active_ws = ws
-                elif not authed:
-                    await ws.close(code=1008, reason="hello required")
+    try:
+        async for msg in ws:
+            if isinstance(msg, str):
+                if len(msg.encode("utf-8")) > MAX_WS_MSG_BYTES:     # control msgs (e.g. ask transcript) ~ MAX_WS_MSG_BYTES, not the audio-frame cap
+                    await ws.close(code=1009, reason="control message too large")
                     break
-                elif d.get("type") == "config":
-                    if d.get("latencyMode") is not None:
-                        latency_mode = _normalize_latency_mode(d.get("latencyMode"), latency_mode)
-                        sent_sil_windows = sent_windows_for(sent_silence_cfg_ms)
-                    if d.get("asrEngine") is not None:
-                        requested_engine = _normalize_asr_engine(d.get("asrEngine"), asr_engine)
-                        try:
-                            await _on_asr_pool(requested_engine, _ensure_asr_loaded, requested_engine)
-                            asr_engine = requested_engine
-                        except Exception as e:
-                            await send_json({"type": "err", "text": f"ASR 엔진 전환 실패({requested_engine}): {e}"})
-                            print(f"[bridge] asr switch failed engine={requested_engine}: {e}", flush=True)
-                    if d.get("vadLevel") is not None:
-                        vad_level = _clamp_int(d.get("vadLevel"), 2, 0, 3)
-                        if vad_level != cur_vad_level:    # rebuild only on real change — a live config push (glossary/slider/lang)
-                            cur_vad_level = vad_level      # must not discard the in-progress utterance just by arriving
-                            thr = VAD_THRESH.get(vad_level, 0.5)
-                            vad = VADIterator(silero, threshold=thr, sampling_rate=SR,
-                                              min_silence_duration_ms=SEG_SILENCE_MS, speech_pad_ms=SPEECH_PAD_MS)
-                            # Rebuilding resets VAD state, so flush any in-flight utterance as a soft clause
-                            # first — otherwise changing the level mid-speech silently drops it.
-                            if in_speech and voiced:
-                                await enqueue_work(("clause", bytes(voiced), speech_start_ms, audio_ms, True))
-                            in_speech, voiced = False, bytearray(); preroll.clear()
-                    if d.get("sentSilenceMs") is not None:           # 0 is valid, don't truthiness-skip
-                        sent_silence_cfg_ms = _clamp_int(d.get("sentSilenceMs"), SENT_SILENCE_MS, 500, 5000)
-                        sent_sil_windows = sent_windows_for(sent_silence_cfg_ms)
-                    if d.get("targetLang"):
-                        target_lang = _normalize_target_lang(d.get("targetLang"), target_lang)
-                    if d.get("contextHint") is not None:
-                        context_hint = str(d["contextHint"])[:200]
-                    if d.get("register"):
-                        register = str(d["register"]) if str(d["register"]) in _REGISTERS else "casual"
-                    if d.get("glossary") is not None:
-                        glossary_pairs = _parse_glossary(str(d["glossary"]))
-                    if d.get("accuracyMode") is not None:
-                        accuracy_mode = _config_bool(d.get("accuracyMode"), accuracy_mode)
-                    # ASR biasing hint = free-text context + glossary source terms (helps the model spell names)
-                    _gloss_terms = ", ".join(s for s, _ in glossary_pairs)
-                    asr_hint = "; ".join(x for x in (context_hint, _gloss_terms) if x)[:240]
-                    print(f"[cfg] vad={d.get('vadLevel')} sentSil={sent_silence_cfg_ms}/{effective_sent_silence_ms(sent_silence_cfg_ms)} target={target_lang} "
-                          f"reg={register} asr={asr_engine} latency={latency_mode} acc={accuracy_mode} gloss={len(glossary_pairs)} "
-                          f"hint={asr_hint[:30]!r}", flush=True)
-                elif d.get("type") == "eos":
-                    if in_speech and voiced:
-                        await enqueue_work(("clause", bytes(voiced), speech_start_ms, audio_ms, False))
-                    voiced, in_speech = bytearray(), False
-                    await enqueue_work(("eos", None, None, audio_ms, False))   # finalize current sentence
-                    try: vad.reset_states()
-                    except Exception: pass
-                elif d.get("type") == "ask":           # on-demand summary / Q&A over the transcript
-                    tr = str(d.get("transcript", ""))[-8000:]    # recent window (v1: long talks summarize the tail)
-                    q = str(d.get("question", ""))[:500]
-                    mode = "qa" if (d.get("mode") == "qa" and q.strip()) else "summary"
-                    if not tr.strip():
-                        await send_json({"type": "answer", "text": "(아직 자막 기록이 없어요)"})
-                    elif not await wait_aux_mlx_slot(2200):
-                        await send_json({"type": "answer", "text": "지금은 자막 번역을 우선 처리 중이라 요약/질문은 잠시 뒤 다시 눌러줘."})
-                        print("[ask defer] live caption backlog has priority", flush=True)
-                    else:
-                        a_slot = {"t": ""}; a_ev = asyncio.Event(); a_done = False
-                        def a_partial(p):
-                            a_slot["t"] = p; loop.call_soon_threadsafe(a_ev.set)
-                        async def a_pump():
-                            while not a_done:
-                                await a_ev.wait(); a_ev.clear()
-                                if a_slot["t"]:
-                                    try: await send_json({"type": "answer_partial", "text": a_slot["t"]})
-                                    except Exception: pass
+                try:
+                    d = json.loads(msg)
+                    if d.get("type") == "hello":
+                        if str(d.get("token", "")) != WS_TOKEN:
+                            print(f"[bridge] bad token origin={origin!r}", flush=True)
+                            await ws.close(code=1008, reason="bad token")
+                            break
+                        authed = True
+                        await send_json({"type": "hello", "ok": True})
+                        print(f"[bridge] client authed origin={origin!r} peer={peer!r}", flush=True)
+                        if _active_ws is not None and _active_ws is not ws:   # single-client is the intended model
+                            print("[bridge] WARN: a 2nd client connected while one is active — they share ONE MLX "
+                                  "device + translator KV cache; expect degraded latency.", flush=True)
+                        _active_ws = ws
+                    elif not authed:
+                        await ws.close(code=1008, reason="hello required")
+                        break
+                    elif d.get("type") == "config":
+                        prev_tx_sig = _translation_context_signature(target_lang, register, context_hint, glossary_pairs)
+                        if d.get("latencyMode") is not None:
+                            latency_mode = _normalize_latency_mode(d.get("latencyMode"), latency_mode)
+                            sent_sil_windows = sent_windows_for(sent_silence_cfg_ms)
+                        if d.get("asrEngine") is not None:
+                            requested_engine = _normalize_asr_engine(d.get("asrEngine"), asr_engine)
+                            try:
+                                await _on_asr_pool(requested_engine, _ensure_asr_loaded, requested_engine)
+                                asr_engine = requested_engine
+                            except Exception as e:
+                                await send_json({"type": "err", "text": f"ASR 엔진 전환 실패({requested_engine}): {e}"})
+                                print(f"[bridge] asr switch failed engine={requested_engine}: {e}", flush=True)
+                        if d.get("vadLevel") is not None:
+                            vad_level = _clamp_int(d.get("vadLevel"), 2, 0, 3)
+                            if vad_level != cur_vad_level:    # rebuild only on real change — a live config push (glossary/slider/lang)
+                                cur_vad_level = vad_level      # must not discard the in-progress utterance just by arriving
+                                thr = VAD_THRESH.get(vad_level, 0.5)
+                                vad = VADIterator(silero, threshold=thr, sampling_rate=SR,
+                                                  min_silence_duration_ms=SEG_SILENCE_MS, speech_pad_ms=SPEECH_PAD_MS)
+                                # Rebuilding resets VAD state, so flush any in-flight utterance as a soft clause
+                                # first — otherwise changing the level mid-speech silently drops it.
+                                if in_speech and voiced:
+                                    await enqueue_work(("clause", bytes(voiced), speech_start_ms, audio_ms, True))
+                                in_speech, voiced = False, bytearray(); preroll.clear()
+                        if d.get("sentSilenceMs") is not None:           # 0 is valid, don't truthiness-skip
+                            sent_silence_cfg_ms = _clamp_int(d.get("sentSilenceMs"), SENT_SILENCE_MS, 500, 5000)
+                            sent_sil_windows = sent_windows_for(sent_silence_cfg_ms)
+                        if d.get("targetLang"):
+                            target_lang = _normalize_target_lang(d.get("targetLang"), target_lang)
+                        if d.get("contextHint") is not None:
+                            context_hint = str(d["contextHint"])[:200]
+                        if d.get("register"):
+                            register = str(d["register"]) if str(d["register"]) in _REGISTERS else "casual"
+                        if d.get("glossary") is not None:
+                            glossary_pairs = _parse_glossary(str(d["glossary"]))
+                        if d.get("accuracyMode") is not None:
+                            accuracy_mode = _config_bool(d.get("accuracyMode"), accuracy_mode)
+                        # ASR biasing hint = free-text context + glossary source terms (helps the model spell names)
+                        _gloss_terms = ", ".join(s for s, _ in glossary_pairs)
+                        asr_hint = "; ".join(x for x in (context_hint, _gloss_terms) if x)[:240]
+                        new_tx_sig = _translation_context_signature(target_lang, register, context_hint, glossary_pairs)
+                        if new_tx_sig != prev_tx_sig:
+                            translation_epoch += 1
+                            recent_pairs.clear()
+                            translation_cache.clear()
+                            preview_results.clear()
+                            pending_preview_jobs.clear()
+                            pending_final_jobs.clear()
+                            print(f"[cfg] translation context reset epoch={translation_epoch} target={target_lang}", flush=True)
+                        print(f"[cfg] vad={d.get('vadLevel')} sentSil={sent_silence_cfg_ms}/{effective_sent_silence_ms(sent_silence_cfg_ms)} target={target_lang} "
+                              f"reg={register} asr={asr_engine} latency={latency_mode} acc={accuracy_mode} gloss={len(glossary_pairs)} "
+                              f"hint={asr_hint[:30]!r}", flush=True)
+                    elif d.get("type") == "eos":
+                        if in_speech and voiced:
+                            await enqueue_work(("clause", bytes(voiced), speech_start_ms, audio_ms, False))
+                        voiced, in_speech = bytearray(), False
+                        await enqueue_work(("eos", None, None, audio_ms, False))   # finalize current sentence
+                        try: vad.reset_states()
+                        except Exception: pass
+                    elif d.get("type") == "ask":           # on-demand summary / Q&A over the transcript
+                        tr = str(d.get("transcript", ""))[-8000:]    # recent window (v1: long talks summarize the tail)
+                        q = str(d.get("question", ""))[:500]
+                        mode = "qa" if (d.get("mode") == "qa" and q.strip()) else "summary"
+                        if not tr.strip():
+                            await send_json({"type": "answer", "text": "(아직 자막 기록이 없어요)"})
+                        elif not await wait_aux_mlx_slot(2200):
+                            await send_json({"type": "answer", "text": "지금은 자막 번역을 우선 처리 중이라 요약/질문은 잠시 뒤 다시 눌러줘."})
+                            print("[ask defer] live caption backlog has priority", flush=True)
+                        else:
+                            a_slot = {"t": ""}; a_ev = asyncio.Event(); a_done = False
+                            def a_partial(p):
+                                a_slot["t"] = p; loop.call_soon_threadsafe(a_ev.set)
+                            async def a_pump():
+                                while not a_done:
+                                    await a_ev.wait(); a_ev.clear()
+                                    if a_slot["t"]:
+                                        try: await send_json({"type": "answer_partial", "text": a_slot["t"]})
+                                        except Exception: pass
+                            t0 = time.perf_counter()
+                            print(f"[ask] mode={mode} q={q[:40]!r} tr={len(tr)}c", flush=True)
+                            async with mlx_lock:
+                                apt = asyncio.create_task(a_pump())
+                                try:
+                                    ans = await loop.run_in_executor(_mlx_pool, run_ask, mode, tr, q, target_lang, a_partial)
+                                finally:
+                                    a_done = True; a_ev.set()
+                                    await asyncio.gather(apt, return_exceptions=True)
+                            await send_json({"type": "answer", "text": ans})
+                            print(f"[ask {time.perf_counter()-t0:.1f}s] -> {ans[:60]}", flush=True)
+                    elif d.get("type") == "warm":          # on-demand model warm-up (popup button)
                         t0 = time.perf_counter()
-                        print(f"[ask] mode={mode} q={q[:40]!r} tr={len(tr)}c", flush=True)
+                        if not await wait_aux_mlx_slot(1200):
+                            await send_json({"type": "warmed", "sec": 0, "deferred": True})
+                            print("[warm defer] live caption backlog has priority", flush=True)
+                            continue
+                        await _on_asr_pool(asr_engine, warm_mlx_selected, True, False, asr_engine)
                         async with mlx_lock:
-                            apt = asyncio.create_task(a_pump())
-                            ans = await loop.run_in_executor(_mlx_pool, run_ask, mode, tr, q, target_lang, a_partial)
-                            a_done = True; a_ev.set(); await apt
-                        await send_json({"type": "answer", "text": ans})
-                        print(f"[ask {time.perf_counter()-t0:.1f}s] -> {ans[:60]}", flush=True)
-                elif d.get("type") == "warm":          # on-demand model warm-up (popup button)
-                    t0 = time.perf_counter()
-                    if not await wait_aux_mlx_slot(1200):
-                        await send_json({"type": "warmed", "sec": 0, "deferred": True})
-                        print("[warm defer] live caption backlog has priority", flush=True)
-                        continue
-                    await _on_asr_pool(asr_engine, warm_mlx_selected, True, False, asr_engine)
-                    async with mlx_lock:
-                        await loop.run_in_executor(_mlx_pool, warm_mlx_selected, False, True, asr_engine)
-                    sec = round(time.perf_counter() - t0, 1)
-                    await send_json({"type": "warmed", "sec": sec})
-                    print(f"[warm] {sec}s", flush=True)
-            except Exception as e:
-                print(f"[bridge] bad control msg: {e}", flush=True)
-            continue
-        if not authed:
-            await ws.close(code=1008, reason="hello required")
-            break
-        if len(msg) > MAX_AUDIO_FRAME_BYTES:
-            await ws.close(code=1009, reason="audio frame too large")
-            break
-        data = leftover + msg
-        nwin = len(data) // WINDOW_BYTES
-        for i in range(nwin):
-            win_start_ms = audio_ms
-            win_end_ms = audio_ms + WINDOW_MS
-            wb = data[i * WINDOW_BYTES:(i + 1) * WINDOW_BYTES]
-            wf = np.frombuffer(wb, dtype=np.int16).astype(np.float32) / 32768.0
-            ev = vad(wf)
-            if in_speech:
-                voiced.extend(wb)
-                if LA_ON:                                       # LocalAgreement: periodic partial transcribe of the growing clause
-                    la_count += 1
-                    if la_count >= LA_STEP_WINDOWS and len(voiced) >= int(MIN_SEC * SR) * 2:
-                        la_count = 0
-                        await enqueue_work(("partial", bytes(voiced), speech_start_ms, win_end_ms, False, speech_epoch))
-                if len(voiced) >= soft_max_sec() * SR * 2:        # soft-cut a pauseless monologue
-                    await enqueue_work(("clause", bytes(voiced), speech_start_ms, win_end_ms, True))
-                    keep = min(len(voiced), int(SOFT_OVERLAP_MS * SR / 1000) * 2)
-                    overlap = bytes(voiced[-keep:]) if keep else b""
-                    voiced = bytearray(overlap)
-                    speech_start_ms = max(0, win_end_ms - int(1000 * len(overlap) / (SR * 2)))
-                if len(voiced) >= HARD_MAX_SEC * SR * 2:
-                    # keep a small tail overlap so a word straddling the hard cut isn't lost; soft=True
-                    # so the accuracy-mode 2-pass skips this unit (the overlap would double-transcribe).
-                    await enqueue_work(("clause", bytes(voiced), speech_start_ms, win_end_ms, True))
-                    keep = min(len(voiced), int(SOFT_OVERLAP_MS * SR / 1000) * 2)
-                    overlap = bytes(voiced[-keep:]) if keep else b""
-                    voiced = bytearray(overlap)
-                    speech_start_ms = max(0, win_end_ms - int(1000 * len(overlap) / (SR * 2)))
-            else:
-                preroll.append(wb)
-                sil_windows += 1
-                if sil_windows == sent_sil_windows:        # long pause -> sentence boundary (fires once)
-                    await enqueue_work(("flush", None, None, win_end_ms, False))
-            if ev:
-                if "start" in ev:
-                    in_speech, sil_windows = True, 0
-                    speech_epoch += 1                          # new utterance epoch (guards stale partials)
-                    la_prev, la_stable, la_count = [], [], 0   # new utterance -> reset LocalAgreement
-                    speech_start_ms = max(0, win_start_ms - len(preroll) * WINDOW_MS)
-                    voiced = bytearray(b"".join(preroll)); preroll.clear()
-                elif "end" in ev:
-                    in_speech, sil_windows = False, 0
-                    await enqueue_work(("clause", bytes(voiced), speech_start_ms, win_end_ms, False)); voiced = bytearray()
-            audio_ms = win_end_ms
-        leftover = data[nwin * WINDOW_BYTES:]
+                            await loop.run_in_executor(_mlx_pool, warm_mlx_selected, False, True, asr_engine)
+                        sec = round(time.perf_counter() - t0, 1)
+                        await send_json({"type": "warmed", "sec": sec})
+                        print(f"[warm] {sec}s", flush=True)
+                except Exception as e:
+                    print(f"[bridge] bad control msg: {e}", flush=True)
+                continue
+            if not authed:
+                await ws.close(code=1008, reason="hello required")
+                break
+            if len(msg) > MAX_AUDIO_FRAME_BYTES:
+                await ws.close(code=1009, reason="audio frame too large")
+                break
+            data = leftover + msg
+            nwin = len(data) // WINDOW_BYTES
+            for i in range(nwin):
+                win_start_ms = audio_ms
+                win_end_ms = audio_ms + WINDOW_MS
+                wb = data[i * WINDOW_BYTES:(i + 1) * WINDOW_BYTES]
+                wf = np.frombuffer(wb, dtype=np.int16).astype(np.float32) / 32768.0
+                ev = vad(wf)
+                if in_speech:
+                    voiced.extend(wb)
+                    if LA_ON:                                       # LocalAgreement: periodic partial transcribe of the growing clause
+                        la_count += 1
+                        if la_count >= LA_STEP_WINDOWS and len(voiced) >= int(MIN_SEC * SR) * 2:
+                            la_count = 0
+                            await enqueue_work(("partial", bytes(voiced), speech_start_ms, win_end_ms, False, speech_epoch))
+                    if len(voiced) >= soft_max_sec() * SR * 2:        # soft-cut a pauseless monologue
+                        await enqueue_work(("clause", bytes(voiced), speech_start_ms, win_end_ms, True))
+                        keep = min(len(voiced), int(SOFT_OVERLAP_MS * SR / 1000) * 2)
+                        overlap = bytes(voiced[-keep:]) if keep else b""
+                        voiced = bytearray(overlap)
+                        speech_start_ms = max(0, win_end_ms - int(1000 * len(overlap) / (SR * 2)))
+                    if len(voiced) >= HARD_MAX_SEC * SR * 2:
+                        # keep a small tail overlap so a word straddling the hard cut isn't lost; soft=True
+                        # so the accuracy-mode 2-pass skips this unit (the overlap would double-transcribe).
+                        await enqueue_work(("clause", bytes(voiced), speech_start_ms, win_end_ms, True))
+                        keep = min(len(voiced), int(SOFT_OVERLAP_MS * SR / 1000) * 2)
+                        overlap = bytes(voiced[-keep:]) if keep else b""
+                        voiced = bytearray(overlap)
+                        speech_start_ms = max(0, win_end_ms - int(1000 * len(overlap) / (SR * 2)))
+                else:
+                    preroll.append(wb)
+                    sil_windows += 1
+                    if sil_windows == sent_sil_windows:        # long pause -> sentence boundary (fires once)
+                        await enqueue_work(("flush", None, None, win_end_ms, False))
+                if ev:
+                    if "start" in ev:
+                        in_speech, sil_windows = True, 0
+                        speech_epoch += 1                          # new utterance epoch (guards stale partials)
+                        la_prev, la_stable, la_count = [], [], 0   # new utterance -> reset LocalAgreement
+                        speech_start_ms = max(0, win_start_ms - len(preroll) * WINDOW_MS)
+                        voiced = bytearray(b"".join(preroll)); preroll.clear()
+                    elif "end" in ev:
+                        in_speech, sil_windows = False, 0
+                        await enqueue_work(("clause", bytes(voiced), speech_start_ms, win_end_ms, False)); voiced = bytearray()
+                audio_ms = win_end_ms
+            leftover = data[nwin * WINDOW_BYTES:]
 
-    if in_speech and voiced:
-        await enqueue_work(("clause", bytes(voiced), speech_start_ms, audio_ms, False))
-    await enqueue_work(("eos", None, None, audio_ms, False))       # finalize trailing sentence
-    await work_q.put(None)                # stop the inference loop
-    await inf_task
-    if preview_task and not preview_task.done():
-        preview_task.cancel()
-    trans_seq += 1
-    await trans_q.put((99, trans_seq, None))
-    await trans_task
-    el = time.perf_counter() - t_conn
-    rate = (100 * nospeech_count / seg_count) if seg_count else 0
-    print(f"[bridge] client disconnected — {seg_count} segs, {nospeech_count} no-speech "
-          f"({rate:.0f}%), preview_drops={preview_drop_count}, cache_hits={cache_hit_count}, {el:.0f}s", flush=True)
-    if _active_ws is ws:        # release single-active registration (best-effort; only drives the WARN above)
-        _active_ws = None
+    finally:
+        try:
+            if in_speech and voiced:
+                await enqueue_work(("clause", bytes(voiced), speech_start_ms, audio_ms, False))
+            await enqueue_work(("eos", None, None, audio_ms, False))       # finalize trailing sentence
+            await work_q.put(None)                # stop the inference loop
+            await inf_task
+        finally:
+            if preview_task and not preview_task.done():
+                preview_task.cancel()
+                await asyncio.gather(preview_task, return_exceptions=True)
+            trans_seq += 1
+            await trans_q.put((99, trans_seq, None))
+            await asyncio.gather(trans_task, return_exceptions=True)
+            el = time.perf_counter() - t_conn
+            rate = (100 * nospeech_count / seg_count) if seg_count else 0
+            print(f"[bridge] client disconnected — {seg_count} segs, {nospeech_count} no-speech "
+                  f"({rate:.0f}%), preview_drops={preview_drop_count}, cache_hits={cache_hit_count}, {el:.0f}s", flush=True)
+            if _active_ws is ws:        # release single-active registration (best-effort; only drives the WARN above)
+                _active_ws = None
 
 
 async def main():

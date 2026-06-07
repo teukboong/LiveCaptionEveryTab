@@ -29,7 +29,7 @@ async function cleanup() {
     if (mode === "video") sendTab(capturedTabId, { type: "vdelay-stop" });   // delay.js: tear down A/V tap+render
     sendTab(capturedTabId, { type: "status", on: false });                   // content.js: hide the caption overlay (both modes)
   }
-  await chrome.storage.session.set({ capturing: false, mode: null, capturedTabId: null, pendingStreamId: null, pageContext: null, delaySec: null });
+  await chrome.storage.session.set({ capturing: false, mode: null, capturedTabId: null, pendingStreamId: null, pageContext: null, delaySec: null, wsOpen: false });
   chrome.action.setBadgeText({ text: "" });
 }
 
@@ -92,6 +92,11 @@ async function clearTranscript(tabId) {
   }
 }
 
+async function resetTranslationContext() {
+  const { capturedTabId } = await chrome.storage.session.get("capturedTabId");
+  if (capturedTabId != null) sendTab(capturedTabId, { type: "translation-context-reset" });
+}
+
 async function forward(msg) {
   if (msg.type === "wsstate") {                     // connection state isn't tab-specific -> set before the gate
     chrome.storage.session.set({ wsOpen: !!msg.open });   // (don't let the capturedTabId early-return drop it)
@@ -131,7 +136,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "popup-config-update") {
     chrome.storage.session.get("capturing").then(({ capturing }) => {
       if (!capturing) return;
-      bridgeConfig().then((config) => chrome.runtime.sendMessage({ target: "offscreen", cmd: "config", config }));
+      bridgeConfig().then((config) => {
+        chrome.runtime.sendMessage({ target: "offscreen", cmd: "config", config });
+        if (msg.resetTranslationContext) resetTranslationContext();
+      });
     });
     return;
   }

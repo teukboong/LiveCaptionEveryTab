@@ -10,7 +10,11 @@
 
   function getSource(video) {
     let e = srcCache.get(video);
-    if (!e) { const ctx = new AudioContext(); e = { ctx, src: ctx.createMediaElementSource(video) }; srcCache.set(video, e); }
+    if (!e) {
+      const ctx = new AudioContext();
+      e = { ctx, src: ctx.createMediaElementSource(video), video };
+      srcCache.set(video, e);
+    }
     return e;
   }
   function findVideo() {
@@ -41,6 +45,7 @@
     src.disconnect();   // clear any prior routing before we re-wire
 
     const s = { delaySec, video, ctx, src, raf: 0, buf: [], canvas: null, node: null,
+                delayNode: null, zeroNode: null, capturingFrame: false,
                 nodeKind: "", captureFps: MAX_CAPTURE_FPS, anchored: false, anchorPerf: 0,
                 cues: [], live: null, shownT: 0, lastSub: "", koState: { unit: null, prev: "", last: null, stableW: 0 },
                 capInterval: 0, lastCap: 0, maxFrames: Math.ceil((delaySec + 1.2) * MAX_CAPTURE_FPS) };
@@ -83,6 +88,16 @@
           receivedAt: performance.now(),
         };
       },
+      reset: () => {
+        if (session !== s) return;
+        s.cues.length = 0;
+        s.live = null;
+        s.koState.unit = null;
+        s.koState.prev = "";
+        s.koState.last = null;
+        s.koState.stableW = 0;
+        s.lastSub = "";
+      },
       reanchor: (perf) => { if (session !== s) return; s.anchorPerf = Number(perf) || s.anchorPerf; s.cues.length = 0; s.live = null; s.koState.unit = null; s.koState.prev = ""; s.koState.last = null; s.koState.stableW = 0; },   // reconnect: bridge audio_ms reset -> old cues invalid
     };
 
@@ -94,6 +109,7 @@
 
       // audio: delayed audible
       const delay = ctx.createDelay(delaySec + 1); delay.delayTime.value = delaySec;
+      s.delayNode = delay;
       src.connect(delay).connect(ctx.destination);
 
       // audio: PCM tap (undelayed) -> offscreen relay. delay.js can't open ws://127.0.0.1 itself —
@@ -123,23 +139,41 @@
         return Number.isFinite(cbNow) && cbNow > 0 ? cbNow : performance.now();
       }
 
+      const scheduleNextFrameCapture = () => {
+        if (session === s && s.video && s.video.requestVideoFrameCallback) {
+          s.video.requestVideoFrameCallback(capture);
+        }
+      };
       const capture = async (callbackNow, metadata) => {
         if (session !== s) return;
         const v = s.video, w = v.videoWidth, h = v.videoHeight;
         const frameT = frameStampMs(callbackNow, metadata);
         if (frameT - s.lastCap < 1000 / s.captureFps) {
-          if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(capture);
+          scheduleNextFrameCapture();
+          return;
+        }
+        if (s.capturingFrame) {
+          scheduleNextFrameCapture();
           return;
         }
         s.lastCap = frameT;
-        if (w > 0) {
-          try {
-            const bmp = await createImageBitmap(v);   // native video frame resolution
-            s.buf.push({ t: frameT / 1000, bmp });
-            while (s.buf.length > s.maxFrames) { const o = s.buf.shift(); o.bmp.close && o.bmp.close(); }
-          } catch (_) {}
+        s.capturingFrame = true;
+        try {
+          if (w > 0) {
+            let bmp = null;
+            try {
+              bmp = await createImageBitmap(v);   // native video frame resolution
+              if (session !== s) { bmp.close && bmp.close(); return; }
+              s.buf.push({ t: frameT / 1000, bmp });
+              while (s.buf.length > s.maxFrames) { const o = s.buf.shift(); o.bmp.close && o.bmp.close(); }
+            } catch (_) {
+              if (bmp) try { bmp.close && bmp.close(); } catch (_) {}
+            }
+          }
+        } finally {
+          s.capturingFrame = false;
+          scheduleNextFrameCapture();
         }
-        if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(capture);
       };
       if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(capture);
       else s.capInterval = setInterval(capture, Math.round(1000 / MAX_CAPTURE_FPS));
@@ -232,6 +266,7 @@
   async function attachPcmTap(s, resample) {
     const zero = s.ctx.createGain();
     zero.gain.value = 0;
+    s.zeroNode = zero;
     try {
       if (!s.ctx.__lccPcmWorkletPromise) {
         s.ctx.__lccPcmWorkletPromise = s.ctx.audioWorklet.addModule(chrome.runtime.getURL("pcm-worklet.js"))
@@ -270,11 +305,16 @@
         s.node.disconnect();
       }
     } catch (_) {}
+    try { s.delayNode && s.delayNode.disconnect(); } catch (_) {}
+    try { s.zeroNode && s.zeroNode.disconnect(); } catch (_) {}
     // The bridge WS lives in offscreen now; background.cleanup() closes that doc, which finalizes
     // the trailing sentence bridge-side. Here we only tear down the page-side A/V tap + render.
     try { s.canvas && s.canvas.remove(); } catch (_) {}
     // restore the element's audio to live (undelayed) WITHOUT closing the ctx (so the cached
     // MediaElementSource stays valid for reuse and the video is never left silent).
     try { s.src.disconnect(); s.src.connect(s.ctx.destination); } catch (_) {}
+    s.buf.length = 0; s.cues.length = 0; s.live = null; s.video = null;
   }
+
+  window.addEventListener("pagehide", () => { stopVD(); }, { once: true });
 })();
