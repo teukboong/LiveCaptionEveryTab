@@ -47,3 +47,4 @@ for js_file in extension/*.js; do
   node --check "$js_file"
 done
 node extension/test_protocol.js
+node extension/test_extension_actions.js

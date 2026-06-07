@@ -242,7 +242,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
     return true;
   }
-  if (msg.type === "popup-clear-transcript") { clearTranscript(msg.tabId).then(() => sendResponse({ ok: true })); return true; }
+  if (msg.type === "popup-clear-transcript") {
+    clearTranscript(msg.tabId)
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+    return true;
+  }
   if (msg.type === "popup-start") {
     startAudio(msg.streamId, msg.tabId, msg.delaySec, msg.pageContext)
       .then(() => sendResponse({ ok: true }))

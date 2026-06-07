@@ -568,11 +568,17 @@ document.getElementById("aiSum").onclick = () => sendAsk("summary", "");
 const aiQ = document.getElementById("aiQ");
 aiQ.addEventListener("keydown", (e) => { if (e.key === "Enter" && aiQ.value.trim()) { sendAsk("qa", aiQ.value.trim()); aiQ.value = ""; } });
 document.getElementById("clearTr").onclick = async () => {
-  const tab = await getActiveTab();
-  await chrome.runtime.sendMessage({ type: "popup-clear-transcript", tabId: tab && tab.id });
-  await chrome.storage.session.remove("lcc-answer");
-  document.getElementById("hist").innerHTML = "";
-  document.getElementById("aiResult").textContent = "";
+  const res = document.getElementById("aiResult");
+  try {
+    const tab = await getActiveTab();
+    const cleared = await chrome.runtime.sendMessage({ type: "popup-clear-transcript", tabId: tab && tab.id });
+    if (cleared && cleared.ok === false) throw new Error(cleared.error || tr("failurePrefix").trim());
+    await chrome.storage.session.remove("lcc-answer");
+    document.getElementById("hist").innerHTML = "";
+    res.textContent = "";
+  } catch (e) {
+    res.textContent = tr("failurePrefix") + (e && e.message || e);
+  }
 };
 document.getElementById("exportMd").onclick = async () => {
   const res = document.getElementById("aiResult");
