@@ -27,10 +27,19 @@ const LCC_DEFAULT_SETTINGS = Object.freeze({
   autoPrime: true,
   contextHint: "",
   glossary: "",
+  runMode: "video",
+  pageTranslateSelector: "body",
+  pageTranslateMinChars: 2,
+  pageTranslateMaxChars: 900,
   syncOffsetMs: 0,
   debugSync: false,
   uiMode: "simple",
   uiLang: "ko",
+});
+const LCC_RUN_MODES = Object.freeze({
+  video: Object.freeze({ page: false, caption: true }),
+  page: Object.freeze({ page: true, caption: false }),
+  both: Object.freeze({ page: true, caption: true }),
 });
 const LCC_CONTENT_PRESETS = Object.freeze({
   general: Object.freeze({ register: "casual", latencyMode: "aggressive" }),
@@ -51,6 +60,7 @@ function lccCanonicalTargetLang(value, fallback = "Korean") {
 globalThis.LCC_TARGET_LANGS = LCC_TARGET_LANGS;
 globalThis.LCC_UI_LANGS = LCC_UI_LANGS;
 globalThis.LCC_DEFAULT_SETTINGS = LCC_DEFAULT_SETTINGS;
+globalThis.LCC_RUN_MODES = LCC_RUN_MODES;
 globalThis.LCC_CONTENT_PRESETS = LCC_CONTENT_PRESETS;
 globalThis.lccCanonicalTargetLang = lccCanonicalTargetLang;
 globalThis.lccCanonicalUiLang = function lccCanonicalUiLang(value, fallback = "ko") {
@@ -68,7 +78,17 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   if (raw.latencyMode == null) out.latencyMode = preset.latencyMode;
   out.targetLang = lccCanonicalTargetLang(out.targetLang);
   out.uiLang = globalThis.lccCanonicalUiLang(out.uiLang);
+  out.runMode = LCC_RUN_MODES[out.runMode] ? out.runMode : LCC_DEFAULT_SETTINGS.runMode;
+  out.pageTranslateSelector = String(out.pageTranslateSelector || LCC_DEFAULT_SETTINGS.pageTranslateSelector).trim() || "body";
+  out.pageTranslateMinChars = Math.max(1, Math.min(80, Number(out.pageTranslateMinChars) || LCC_DEFAULT_SETTINGS.pageTranslateMinChars));
+  out.pageTranslateMaxChars = Math.max(80, Math.min(2000, Number(out.pageTranslateMaxChars) || LCC_DEFAULT_SETTINGS.pageTranslateMaxChars));
   return out;
+};
+globalThis.lccRunModeIncludesPage = function lccRunModeIncludesPage(mode) {
+  return !!(LCC_RUN_MODES[mode] && LCC_RUN_MODES[mode].page);
+};
+globalThis.lccRunModeIncludesCaption = function lccRunModeIncludesCaption(mode) {
+  return !!(LCC_RUN_MODES[mode] && LCC_RUN_MODES[mode].caption);
 };
 globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageContext) {
   const s = globalThis.lccNormalizeSettings(settings);

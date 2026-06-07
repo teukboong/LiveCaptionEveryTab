@@ -7,6 +7,9 @@ PARITY (translate/ask post exactly what server.py builds). Run: python test_back
 import io
 import wave
 
+import test_import_stubs
+test_import_stubs.install()
+
 import backend_cuda as bc
 
 fails = []

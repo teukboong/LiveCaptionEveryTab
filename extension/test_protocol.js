@@ -14,6 +14,12 @@ assert.equal(context.lccCanonicalTargetLang("hindi"), "Hindi");
 assert.equal(context.lccCanonicalUiLang("EN"), "en");
 assert.equal(context.lccNormalizeSettings({ targetLang: "hindi" }).targetLang, "Hindi");
 assert.equal(context.lccNormalizeSettings({ uiLang: "EN" }).uiLang, "en");
+assert.equal(context.lccNormalizeSettings({ runMode: "page" }).runMode, "page");
+assert.equal(context.lccNormalizeSettings({ runMode: "bogus" }).runMode, "video");
+assert.equal(context.lccRunModeIncludesPage("page"), true);
+assert.equal(context.lccRunModeIncludesCaption("page"), false);
+assert.equal(context.lccRunModeIncludesPage("both"), true);
+assert.equal(context.lccRunModeIncludesCaption("both"), true);
 assert.equal(context.lccBuildBridgeConfig({ targetLang: "Hindi" }, "").targetLang, "Hindi");
 assert.equal(context.lccBuildBridgeConfig({ targetLang: "hindi" }, "").targetLang, "Hindi");
 assert.equal(Object.hasOwn(context.lccBuildBridgeConfig({ uiLang: "en" }, ""), "uiLang"), false);
@@ -21,5 +27,7 @@ assert.equal(Object.hasOwn(context.lccBuildBridgeConfig({ uiLang: "en" }, ""), "
 const popupHtml = fs.readFileSync(path.join(root, "extension", "popup.html"), "utf8");
 assert.match(popupHtml, /<select id="targetLang"><\/select>/, "popup target select is populated from protocol.js");
 assert.match(popupHtml, /<select id="uiLang"><\/select>/, "popup UI-language select is populated from protocol.js");
+assert.match(popupHtml, /id="pageTranslate"/, "popup exposes the page translation toggle");
+assert.match(popupHtml, /id="captionTranslate"/, "popup exposes the video translation toggle");
 
 console.log("test_protocol: OK (target/UI language settings stay canonical through protocol.js)");

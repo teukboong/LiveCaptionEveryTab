@@ -48,6 +48,12 @@
     .val{ flex:0 0 50px; text-align:right; font-family:var(--mono); font-size:11px; color:var(--ink); font-variant-numeric:tabular-nums; }
     .chk{ display:flex; align-items:center; gap:7px; font-size:12px; margin:8px 0; color:var(--ink); }
     .chk input{ accent-color:var(--ink); }
+    .mode-toggles{ display:grid; grid-template-columns:1fr 1fr; gap:7px; margin:8px 0; }
+    .mode-toggle{ display:flex; align-items:center; justify-content:center; gap:7px; min-height:36px; padding:8px 6px;
+      background:var(--card); border:1px solid var(--line2); border-radius:6px; color:var(--muted);
+      font-size:12px; font-weight:700; cursor:pointer; transition:border-color .15s,background .15s,color .15s; }
+    .mode-toggle input{ margin:0; accent-color:var(--ink); }
+    .mode-toggle:has(input:checked){ background:#efe8da; border-color:var(--accent); color:var(--ink); }
     .hint{ font-size:10.5px; color:var(--faint); margin-top:7px; line-height:1.5; }
 
     /* secondary buttons (ghost) */
@@ -88,6 +94,13 @@
     <button id="bridgeStopBtn" class="minibtn" style="flex:0 0 auto; padding:8px 12px;" title="브릿지 끄기" data-i18n="bridgeStop" data-i18n-title="bridgeStopTitle">끄기</button>
     <span id="bridgeStatus" style="font-size:10.5px; font-family:var(--mono); color:var(--muted); flex:1 1 0; text-align:right;"></span>
   </div>
+
+  <h4 class="tight" data-i18n="sectionMode">동작 모드</h4>
+  <div class="mode-toggles">
+    <label class="mode-toggle"><input type="checkbox" id="pageTranslate" /><span data-i18n="pageTranslate">페이지 번역</span></label>
+    <label class="mode-toggle"><input type="checkbox" id="captionTranslate" /><span data-i18n="captionTranslate">동영상 번역</span></label>
+  </div>
+  <div class="hint" data-i18n="pageTranslateHint">페이지 번역은 오버레이 없이 실제 DOM 텍스트를 순차적으로 교체합니다.</div>
 
   <h4 class="tight" data-i18n="sectionUi">UI</h4>
   <div class="row"><label for="uiLang" data-i18n="labelUiLang">UI 언어</label><select id="uiLang"></select></div>

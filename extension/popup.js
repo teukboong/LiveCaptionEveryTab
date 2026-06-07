@@ -20,6 +20,10 @@ const UI_TEXT = Object.freeze({
     bridgeStarted: "브릿지 켜짐",
     bridgeStop: "끄기",
     bridgeStopTitle: "브릿지 끄기",
+    sectionMode: "동작 모드",
+    pageTranslate: "페이지 번역",
+    captionTranslate: "동영상 번역",
+    pageTranslateHint: "페이지 번역은 오버레이 없이 실제 DOM 텍스트를 순차적으로 교체합니다.",
     sectionUi: "UI",
     labelUiLang: "UI 언어",
     sectionInstall: "모델 설치 · 티어",
@@ -79,6 +83,10 @@ const UI_TEXT = Object.freeze({
     connReconnecting: "브릿지 재연결 중…",
     stopped: "중지됨",
     noActiveTab: "활성 탭을 찾지 못함",
+    chooseRunMode: "페이지 번역이나 동영상 번역 중 하나는 켜야 합니다",
+    pageCaptionRunning: "페이지 + 동영상 번역 중",
+    pageRunning: "페이지 DOM 번역 중",
+    captionRunning: "동영상 번역 중",
     videoMode: "영상 지연 모드 — 영상이 재생 중이어야 함",
     captureStarted: "캡처 시작됨 — 영상에서 발화 대기",
     failurePrefix: "실패: ",
@@ -116,6 +124,10 @@ const UI_TEXT = Object.freeze({
     bridgeStarted: "Bridge on",
     bridgeStop: "Stop",
     bridgeStopTitle: "Stop bridge",
+    sectionMode: "Mode",
+    pageTranslate: "Page translation",
+    captionTranslate: "Video translation",
+    pageTranslateHint: "Page translation replaces real DOM text incrementally, without an overlay.",
     sectionUi: "UI",
     labelUiLang: "UI language",
     sectionInstall: "Model install · tier",
@@ -175,6 +187,10 @@ const UI_TEXT = Object.freeze({
     connReconnecting: "Bridge reconnecting…",
     stopped: "Stopped",
     noActiveTab: "No active tab found",
+    chooseRunMode: "Turn on page translation or video translation first",
+    pageCaptionRunning: "Page + video translation running",
+    pageRunning: "Page DOM translation running",
+    captionRunning: "Video translation running",
     videoMode: "Video-delay mode — the video must be playing",
     captureStarted: "Capture started — waiting for speech",
     failurePrefix: "Failed: ",
@@ -273,6 +289,28 @@ function setState(on) {
 
 // ---- settings ----
 let settings = { ...DEFAULTS };
+function applyRunModeToggles() {
+  const pageToggle = document.getElementById("pageTranslate");
+  const captionToggle = document.getElementById("captionTranslate");
+  pageToggle.checked = globalThis.lccRunModeIncludesPage(settings.runMode);
+  captionToggle.checked = globalThis.lccRunModeIncludesCaption(settings.runMode);
+  if (!pageToggle.checked && !captionToggle.checked) captionToggle.checked = true;
+}
+function runModeFromToggles(changedId) {
+  const pageToggle = document.getElementById("pageTranslate");
+  const captionToggle = document.getElementById("captionTranslate");
+  if (!pageToggle.checked && !captionToggle.checked) {
+    if (changedId === "captionTranslate") pageToggle.checked = true;
+    else captionToggle.checked = true;
+  }
+  if (pageToggle.checked && captionToggle.checked) return "both";
+  if (pageToggle.checked) return "page";
+  return "video";
+}
+function saveRunModeFromToggles(changedId) {
+  settings.runMode = runModeFromToggles(changedId);
+  saveSettings();
+}
 populateTargetLangSelect();
 async function loadSettings() {
   const r = await chrome.storage.local.get("lcc-settings");
@@ -286,6 +324,7 @@ async function loadSettings() {
   }
   document.getElementById("showSource").checked = settings.showSource;
   document.getElementById("videoDelay").checked = settings.videoDelay;
+  applyRunModeToggles();
   document.getElementById("targetLang").value = settings.targetLang;
   document.getElementById("asrEngine").value = settings.asrEngine;
   document.getElementById("contentType").value = settings.contentType;
@@ -339,6 +378,8 @@ document.getElementById("videoDelay").addEventListener("change", (e) => {
   settings.videoDelay = e.target.checked;
   saveSettings();
 });
+document.getElementById("pageTranslate").addEventListener("change", () => saveRunModeFromToggles("pageTranslate"));
+document.getElementById("captionTranslate").addEventListener("change", () => saveRunModeFromToggles("captionTranslate"));
 document.getElementById("targetLang").addEventListener("change", (e) => {
   settings.targetLang = globalThis.lccCanonicalTargetLang(e.target.value);
   e.target.value = settings.targetLang;
@@ -371,7 +412,13 @@ function setConn(capturing, wsOpen) {
 }
 chrome.runtime.sendMessage({ type: "popup-status" }, (res) => {
   if (chrome.runtime.lastError) return;
-  if (res) { setState(res.capturing); setConn(res.capturing, res.wsOpen); }
+  if (res) {
+    setState(res.capturing);
+    setConn(res.capturing, res.wsOpen);
+    if (res.pageTranslating && res.captioning) status.textContent = tr("pageCaptionRunning");
+    else if (res.pageTranslating) status.textContent = tr("pageRunning");
+    else if (res.captioning) status.textContent = tr("captionRunning");
+  }
 });
 loadSettings();
 
@@ -386,18 +433,29 @@ btn.onclick = async () => {
   if (!tab || tab.id == null) { status.textContent = tr("noActiveTab"); return; }
   try {
     const pageContext = await getPageContext(tab.id);
-    if (settings.videoDelay) {
-      // B-2: delay.js captures the page <video> directly; routed via background so state+stop are tracked
-      chrome.runtime.sendMessage({ type: "popup-start-video", tabId: tab.id, delaySec: settings.delaySec, pageContext });
-      setState(true);
-      status.textContent = tr("videoMode");
-    } else {
-      await chrome.runtime.sendMessage({ type: "popup-cleanup" });   // release stale stream before getMediaStreamId
-      const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
-      chrome.runtime.sendMessage({ type: "popup-start", streamId, tabId: tab.id, delaySec: settings.delaySec, pageContext });
-      setState(true);
-      status.textContent = tr("captureStarted");
+    const wantsCaption = globalThis.lccRunModeIncludesCaption(settings.runMode);
+    const wantsPage = globalThis.lccRunModeIncludesPage(settings.runMode);
+    if (!wantsCaption && !wantsPage) { status.textContent = tr("chooseRunMode"); return; }
+    await chrome.runtime.sendMessage({ type: "popup-cleanup" });   // release stale stream/DOM state before a fresh run
+    if (wantsCaption) {
+      let started;
+      if (settings.videoDelay) {
+        // B-2: delay.js captures the page <video> directly; routed via background so state+stop are tracked
+        started = await chrome.runtime.sendMessage({ type: "popup-start-video", tabId: tab.id, delaySec: settings.delaySec, pageContext });
+      } else {
+        const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
+        started = await chrome.runtime.sendMessage({ type: "popup-start", streamId, tabId: tab.id, delaySec: settings.delaySec, pageContext });
+      }
+      if (started && started.ok === false) throw new Error(started.error || tr("captionRunning"));
     }
+    if (wantsPage) {
+      const startedPage = await chrome.runtime.sendMessage({ type: "popup-start-page", tabId: tab.id, pageContext });
+      if (startedPage && startedPage.ok === false) throw new Error(startedPage.error || tr("pageRunning"));
+    }
+    setState(true);
+    if (wantsPage && wantsCaption) status.textContent = tr("pageCaptionRunning");
+    else if (wantsPage) status.textContent = tr("pageRunning");
+    else status.textContent = settings.videoDelay ? tr("videoMode") : tr("captureStarted");
   } catch (e) {
     status.textContent = tr("failurePrefix") + (e && e.message || e);
   }

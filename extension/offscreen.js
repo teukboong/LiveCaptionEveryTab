@@ -4,13 +4,16 @@ let active = false, reconnectTimer = null, backoff = 0;   // auto-reconnect stat
 let wsConfigured = false;
 let relayMode = false;                                    // video mode: page taps PCM, we just relay it
 let relayReconnect = false;                               // video mode: a drop happened -> offscreen re-anchors the clock (delay.js owns the initial anchor)
+let pageActive = false;                                    // page mode: DOM text batches -> bridge -> direct page replacements
 let currentConfig = {};                                   // bridge settings, pushed from background (offscreen has no chrome.storage)
 let currentPageContext = "";
 let bufferedPcm = [], bufferedBytes = 0, droppedPcmMs = 0;
+let domBatchQueue = [], domBatchBytes = 0;
 let currentDelaySec = 0, streamClockWall = 0, streamClockSent = false;
 const PCM_RATE = 16000;
 const PCM_BUFFER_BYTES = PCM_RATE * 2 * 6;                // keep up to 6s while the bridge restarts
 const WS_BACKPRESSURE_BYTES = PCM_BUFFER_BYTES * 2;         // browser WebSocket send buffer cap
+const DOM_BATCH_QUEUE_BYTES = 128 * 1024;                  // bound page translation backlog if the bridge restarts
 
 function report(text) {
   console.log("[lcc-offscreen]", text);
@@ -25,11 +28,13 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.target !== "offscreen") return;
   if (msg.cmd === "start") start(msg.streamId, msg.pageContext || "", msg.delaySec, msg.config).catch((e) => report("start 실패: " + (e && e.message || e)));
   else if (msg.cmd === "start-relay") startRelay(msg.pageContext || "", msg.delaySec, msg.config).catch((e) => report("relay 시작 실패: " + (e && e.message || e)));
+  else if (msg.cmd === "start-page") startPage(msg.pageContext || "", msg.config).catch((e) => report("페이지 번역 시작 실패: " + (e && e.message || e)));
   else if (msg.cmd === "config") {
     currentConfig = msg.config || {};
     sendBridgeConfig();
   }
   else if (msg.cmd === "pcm") { if (relayMode && msg.pcm && msg.pcm.length) queueOrSendPcm(Int16Array.from(msg.pcm)); }   // video-mode PCM from delay.js
+  else if (msg.cmd === "dom-translate-batch") queueOrSendDomBatch(msg);
   else if (msg.cmd === "stop") stop();
   else if (msg.cmd === "ask") {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -77,6 +82,8 @@ function connectWS() {
     try {
       const d = JSON.parse(e.data);
       if (d.type === "caption" || d.type === "caption_partial" || d.type === "source" ||
+          d.type === "dom_translate_result" || d.type === "dom_translate_done" ||
+          d.type === "dom_translate_busy" || d.type === "dom_translate_err" ||
           d.type === "answer_partial" || d.type === "answer" ||
           d.type === "err" || d.type === "notice") {   // surface bridge diagnostics (e.g. ASR switch failure) — content.js renders them
         chrome.runtime.sendMessage({ target: "background", ...d });
@@ -90,6 +97,7 @@ function sendBridgeConfig() {
     ws.send(JSON.stringify(globalThis.lccBuildBridgeConfig(currentConfig, currentPageContext)));
     wsConfigured = true;
     flushBufferedPcm();
+    flushDomBatches();
   } catch (e) { report("config 전송 실패: " + (e && e.message || e)); }
 }
 function scheduleReconnect() {
@@ -102,6 +110,10 @@ function resetBufferedPcm() {
   bufferedPcm = [];
   bufferedBytes = 0;
   droppedPcmMs = 0;
+}
+function resetDomBatches() {
+  domBatchQueue = [];
+  domBatchBytes = 0;
 }
 function resetStreamClock() {
   streamClockWall = 0;
@@ -123,6 +135,9 @@ function announceStreamClock() {
   });
 }
 function lccWsCanSendPcm() {
+  return ws && ws.readyState === WebSocket.OPEN && wsConfigured && ws.bufferedAmount < WS_BACKPRESSURE_BYTES;
+}
+function lccWsCanSendControl() {
   return ws && ws.readyState === WebSocket.OPEN && wsConfigured && ws.bufferedAmount < WS_BACKPRESSURE_BYTES;
 }
 function bufferPcmBytes(bytes) {
@@ -172,6 +187,54 @@ function flushBufferedPcm() {
     notice("브릿지 재연결됨 — 최근 오디오 이어서 전송");
   }
   droppedPcmMs = 0;
+}
+
+async function startPage(pageContext, config) {
+  pageActive = true;
+  active = true;
+  currentPageContext = pageContext || currentPageContext || "";
+  currentConfig = config || currentConfig || {};
+  if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+    connectWS();
+  } else {
+    sendBridgeConfig();
+  }
+  flushDomBatches();
+}
+
+function queueOrSendDomBatch(msg) {
+  if (!pageActive || !msg.requestId || !Array.isArray(msg.items) || !msg.items.length) return;
+  const payload = {
+    type: "dom_translate_batch",
+    request_id: String(msg.requestId),
+    items: msg.items.slice(0, 12).map((it) => ({
+      id: String(it.id || ""),
+      text: String(it.text || ""),
+    })).filter((it) => it.id && it.text.trim()),
+  };
+  if (!payload.items.length) return;
+  const raw = JSON.stringify(payload);
+  const bytes = raw.length * 2;
+  if (lccWsCanSendControl() && domBatchQueue.length === 0) {
+    ws.send(raw);
+    return;
+  }
+  domBatchQueue.push(raw);
+  domBatchBytes += bytes;
+  while (domBatchBytes > DOM_BATCH_QUEUE_BYTES && domBatchQueue.length) {
+    const old = domBatchQueue.shift();
+    domBatchBytes -= old.length * 2;
+  }
+  flushDomBatches();
+}
+
+function flushDomBatches() {
+  if (!lccWsCanSendControl() || !domBatchQueue.length) return;
+  while (domBatchQueue.length && lccWsCanSendControl()) {
+    const raw = domBatchQueue.shift();
+    domBatchBytes -= raw.length * 2;
+    ws.send(raw);
+  }
 }
 
 // Video mode: delay.js (page) owns tabCapture-free A/V re-render + the undelayed PCM tap and
@@ -245,8 +308,9 @@ async function start(streamId, pageContext, requestedDelaySec, config) {
 }
 
 function stop(keepId) {
-  if (!keepId) { active = false; currentId = null; relayMode = false; relayReconnect = false; }   // real stop -> don't auto-reconnect
+  if (!keepId) { active = false; currentId = null; relayMode = false; relayReconnect = false; pageActive = false; }   // real stop -> don't auto-reconnect
   resetBufferedPcm();
+  resetDomBatches();
   resetStreamClock();
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   try { node && (node.port.onmessage = null, node.disconnect()); } catch (_) {}

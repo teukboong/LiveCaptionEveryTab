@@ -125,6 +125,33 @@ def _config_bool(value, default=False):
     return default
 
 
+DOM_TX_MAX_ITEMS = int(os.environ.get("LCC_DOM_TX_MAX_ITEMS", "8"))
+DOM_TX_MAX_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_CHARS", "900"))
+DOM_TX_MAX_TOTAL_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_TOTAL_CHARS", "4000"))
+
+
+def _dom_translate_items(payload, *, max_items=DOM_TX_MAX_ITEMS, max_chars=DOM_TX_MAX_CHARS,
+                         max_total_chars=DOM_TX_MAX_TOTAL_CHARS):
+    """Normalize untrusted page-translation items from the extension before they reach the model."""
+    raw_items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(raw_items, list):
+        return []
+    out, total = [], 0
+    for raw in raw_items[:max(1, max_items)]:
+        if not isinstance(raw, dict):
+            continue
+        item_id = str(raw.get("id", ""))[:80]
+        text = str(raw.get("text", "")).strip()
+        if not item_id or not text:
+            continue
+        text = text[:max_chars]
+        if total + len(text) > max_total_chars and out:
+            break
+        total += len(text)
+        out.append({"id": item_id, "text": text})
+    return out
+
+
 MLX_IMPORT_ERROR = None
 try:
     import mlx.core as mx
@@ -1426,6 +1453,7 @@ async def handle(ws):
     sent_silence_eff_ms = _lat_effective_sent_silence_ms(LATENCY_MODE_DEFAULT, SENT_SILENCE_MS)
     sent_sil_windows = max(1, (sent_silence_eff_ms - SEG_SILENCE_MS) // WINDOW_MS)   # tunable via config
     recent_pairs = collections.deque(maxlen=5)   # last few (source, target) finals -> consistency context
+    dom_recent_pairs = collections.deque(maxlen=3)   # page translation consistency, kept out of caption history
     target_lang, context_hint = _normalize_target_lang("Korean"), ""   # set via {"type":"config"} from the client
     asr_engine = ASR_ENGINE
     latency_mode = LATENCY_MODE_DEFAULT
@@ -1612,14 +1640,19 @@ async def handle(ws):
             return True
         return (not in_speech) and work_q.empty()
 
-    def aux_mlx_busy():
+    def aux_translation_busy():
         return bool(active_tx_job or pending_final_jobs or pending_preview_jobs or in_speech or not work_q.empty())
 
-    async def wait_aux_mlx_slot(max_ms=1800):
+    async def wait_aux_translation_slot(max_ms=1800):
+        """Let auxiliary work run only while real-time caption translation is idle.
+
+        Page DOM translation, summary/QA, and warm-up all share the effective translation device
+        or CUDA endpoint, so they yield to committed/preview caption work first.
+        """
         deadline = time.perf_counter() + max(0, max_ms) / 1000
-        while aux_mlx_busy() and time.perf_counter() < deadline:
+        while aux_translation_busy() and time.perf_counter() < deadline:
             await asyncio.sleep(0.05)
-        return not aux_mlx_busy()
+        return not aux_translation_busy()
 
     def preview_is_stale(job):   # thin adapter over the pure _preview_is_stale (test_scheduler_staleness.py)
         return _preview_is_stale(job, finalized_units, unit.id, unit.rev, latest_preview_rev)
@@ -2106,7 +2139,7 @@ async def handle(ws):
                         mode = "qa" if (d.get("mode") == "qa" and q.strip()) else "summary"
                         if not tr.strip():
                             await send_json({"type": "answer", "text": "(아직 자막 기록이 없어요)"})
-                        elif not await wait_aux_mlx_slot(2200):
+                        elif not await wait_aux_translation_slot(2200):
                             await send_json({"type": "answer", "text": "지금은 자막 번역을 우선 처리 중이라 요약/질문은 잠시 뒤 다시 눌러줘."})
                             print("[ask defer] live caption backlog has priority", flush=True)
                         else:
@@ -2130,9 +2163,53 @@ async def handle(ws):
                                     await asyncio.gather(apt, return_exceptions=True)
                             await send_json({"type": "answer", "text": ans})
                             print(f"[ask {time.perf_counter()-t0:.1f}s] -> {ans[:60]}", flush=True)
+                    elif d.get("type") == "dom_translate_batch":
+                        request_id = str(d.get("request_id", ""))[:100]
+                        items = _dom_translate_items(d)
+                        if not request_id:
+                            await send_json({"type": "dom_translate_err", "request_id": "", "text": "missing request_id"})
+                            continue
+                        if not items:
+                            await send_json({"type": "dom_translate_done", "request_id": request_id, "count": 0})
+                            continue
+                        sent = 0
+                        print(f"[dom-tx] request={request_id} items={len(items)}", flush=True)
+                        for item in items:
+                            if not await wait_aux_translation_slot(1200):
+                                await send_json({"type": "dom_translate_busy", "request_id": request_id, "retry_ms": 1800})
+                                print("[dom-tx defer] live caption backlog has priority", flush=True)
+                                break
+                            source = item["text"]
+                            try:
+                                async with mlx_lock:
+                                    out = await loop.run_in_executor(
+                                        _mlx_pool, translate_once, source, list(dom_recent_pairs),
+                                        target_lang, context_hint, register, glossary_pairs
+                                    )
+                                out = _clean(out)
+                                sent += 1
+                                if out and out != source:
+                                    dom_recent_pairs.append((source[:160], out[:160]))
+                                await send_json({
+                                    "type": "dom_translate_result",
+                                    "request_id": request_id,
+                                    "item_id": item["id"],
+                                    "source": source,
+                                    "target": out,
+                                })
+                            except Exception as e:
+                                print(f"[dom-tx err] {e}", flush=True)
+                                await send_json({
+                                    "type": "dom_translate_err",
+                                    "request_id": request_id,
+                                    "item_id": item["id"],
+                                    "source": source,
+                                    "text": str(e)[:240],
+                                })
+                        await send_json({"type": "dom_translate_done", "request_id": request_id, "count": sent})
                     elif d.get("type") == "warm":          # on-demand model warm-up (popup button)
                         t0 = time.perf_counter()
-                        if not await wait_aux_mlx_slot(1200):
+                        if not await wait_aux_translation_slot(1200):
                             await send_json({"type": "warmed", "sec": 0, "deferred": True})
                             print("[warm defer] live caption backlog has priority", flush=True)
                             continue

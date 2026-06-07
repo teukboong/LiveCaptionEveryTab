@@ -9,6 +9,9 @@ fast and safe to run anytime:
 server.py's top-level imports (silero_vad, mlx, …) live in the bridge venv, so use that interpreter
 (or set LCC_PYTHON). Exit 0 + "OK" on success; exit 1 listing failures otherwise.
 """
+import test_import_stubs
+test_import_stubs.install()
+
 import server as s
 
 MODES = ["aggressive", "balanced", "stable"]

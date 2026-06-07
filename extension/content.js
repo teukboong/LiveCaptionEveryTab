@@ -442,6 +442,20 @@ function lccHandleBridgeMessage(msg) {
     lccPaceReset(); setLines("", "⚠ " + (msg.text || "오류"));
   } else if (msg.type === "transcript-clear") {
     resetTranscript();
+  } else if (msg.type === "page-translate-start") {
+    lccPageTranslateStart(msg.settings || {});
+  } else if (msg.type === "page-translate-stop") {
+    lccPageTranslateStop(true);
+  } else if (msg.type === "page-translate-config") {
+    lccPageTranslateConfig(msg.settings || {});
+  } else if (msg.type === "dom_translate_result") {
+    lccPageTranslateApply(msg);
+  } else if (msg.type === "dom_translate_done") {
+    lccPageTranslateDone(msg);
+  } else if (msg.type === "dom_translate_busy") {
+    lccPageTranslateRetry(msg);
+  } else if (msg.type === "dom_translate_err") {
+    lccPageTranslateDone(msg);
   }
 }
 
@@ -505,9 +519,262 @@ try {
     if (lccTitleObserver) lccTitleObserver.disconnect();
     lccPaceReset();
     lccTranscript.length = 0;
+    lccPageTranslateStop(false);
     if (box) { box.remove(); box = null; }
   }, { once: true });
 } catch (_) {}
+
+// ---- page translation: direct DOM text replacement, driven by MutationObserver deltas ----
+const LCC_PAGE_EXCLUDE_SELECTOR = [
+  "script", "style", "noscript", "template", "svg", "canvas", "video", "audio",
+  "input", "textarea", "select", "option", "pre", "code", "kbd", "samp",
+  "[contenteditable='true']", "[contenteditable='']", "[aria-hidden='true']",
+  "#lcc-overlay",
+].join(",");
+const LCC_PAGE_BATCH_SIZE = 5;
+const LCC_PAGE_BATCH_CHARS = 1800;
+const LCC_PAGE_SCAN_LIMIT = 90;
+let lccPageTranslateOn = false;
+let lccPageTranslateSettings = { ...globalThis.LCC_DEFAULT_SETTINGS };
+let lccPageTranslateObserver = null;
+let lccPageTranslateScrollHandler = null;
+let lccPageTranslateFlushTimer = null;
+let lccPageTranslateScanTimer = null;
+let lccPageTranslateNodeSeq = 0;
+let lccPageTranslateReqSeq = 0;
+const lccPageTranslateQueue = [];
+const lccPageTranslateQueuedIds = new Set();
+const lccPageTranslateNodes = new Set();
+const lccPageTranslateById = new Map();
+const lccPageTranslateState = new WeakMap();
+const lccPageTranslateRequests = new Map();
+
+function lccPageTextParts(raw) {
+  const text = String(raw || "");
+  const pre = (text.match(/^\s*/) || [""])[0];
+  const post = (text.match(/\s*$/) || [""])[0];
+  const core = text.slice(pre.length, text.length - post.length);
+  return { pre, core, post };
+}
+function lccPageHasLetters(text) {
+  try { return /[\p{L}]/u.test(text); }
+  catch (_) { return /[A-Za-z\u00c0-\uffff]/.test(text); }
+}
+function lccPageNodeVisible(parent) {
+  if (!parent || !parent.isConnected) return false;
+  const style = window.getComputedStyle(parent);
+  if (!style || style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+  const rect = parent.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0 && rect.bottom >= -200 && rect.top <= window.innerHeight + 600;
+}
+function lccPageNodeAllowed(node) {
+  if (!lccPageTranslateOn || !LCC_IS_TOP || !node || node.nodeType !== Node.TEXT_NODE) return false;
+  const parent = node.parentElement;
+  if (!parent || parent.closest(LCC_PAGE_EXCLUDE_SELECTOR)) return false;
+  const state = lccPageTranslateState.get(node);
+  if (state && state.translatedFull && node.nodeValue === state.translatedFull) return false;
+  if (!lccPageNodeVisible(parent)) return false;
+  const { core } = lccPageTextParts(node.nodeValue);
+  const minChars = Number(lccPageTranslateSettings.pageTranslateMinChars) || 2;
+  const maxChars = Number(lccPageTranslateSettings.pageTranslateMaxChars) || 900;
+  if (core.length < minChars || core.length > maxChars) return false;
+  if (!lccPageHasLetters(core)) return false;
+  if (/^[\d\s.,:%()+\-–—/\\]+$/.test(core)) return false;
+  return true;
+}
+function lccPageStateFor(node) {
+  let state = lccPageTranslateState.get(node);
+  if (!state) {
+    state = { id: "pt" + (++lccPageTranslateNodeSeq), pending: false, source: "", originalFull: "" };
+    lccPageTranslateState.set(node, state);
+    lccPageTranslateById.set(state.id, node);
+    lccPageTranslateNodes.add(node);
+  }
+  return state;
+}
+function lccPageQueueNode(node) {
+  if (!lccPageNodeAllowed(node)) return false;
+  const state = lccPageStateFor(node);
+  const expectedFull = node.nodeValue;
+  let sourceFull = expectedFull;
+  if (state.translatedFull && expectedFull.startsWith(state.translatedFull)) {
+    sourceFull = (state.originalFull || "") + expectedFull.slice(state.translatedFull.length);
+  }
+  const parts = lccPageTextParts(sourceFull);
+  if (state.pending && state.source === parts.core) return false;
+  if (lccPageTranslateQueuedIds.has(state.id) && state.source === parts.core) return false;
+  state.source = parts.core;
+  state.pre = parts.pre;
+  state.post = parts.post;
+  state.expectedFull = expectedFull;
+  state.originalFull = sourceFull;
+  state.pending = false;
+  lccPageTranslateQueuedIds.add(state.id);
+  lccPageTranslateQueue.push({ id: state.id, text: parts.core });
+  lccPageScheduleFlush();
+  return true;
+}
+function lccPageScanNode(root, limit = LCC_PAGE_SCAN_LIMIT) {
+  if (!root || !lccPageTranslateOn || !LCC_IS_TOP) return 0;
+  let count = 0;
+  if (root.nodeType === Node.TEXT_NODE) {
+    return lccPageQueueNode(root) ? 1 : 0;
+  }
+  if (root.nodeType !== Node.ELEMENT_NODE && root.nodeType !== Node.DOCUMENT_NODE) return 0;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node && count < limit) {
+    if (lccPageQueueNode(node)) count += 1;
+    node = walker.nextNode();
+  }
+  return count;
+}
+function lccPageRoot() {
+  const selector = String(lccPageTranslateSettings.pageTranslateSelector || "body").trim() || "body";
+  try { return document.querySelector(selector) || document.body || document.documentElement; }
+  catch (_) { return document.body || document.documentElement; }
+}
+function lccPageScheduleScan(ms = 180) {
+  if (lccPageTranslateScanTimer) clearTimeout(lccPageTranslateScanTimer);
+  lccPageTranslateScanTimer = setTimeout(() => {
+    lccPageTranslateScanTimer = null;
+    lccPageScanNode(lccPageRoot());
+  }, ms);
+}
+function lccPageScheduleFlush(ms = 120) {
+  if (lccPageTranslateFlushTimer) return;
+  lccPageTranslateFlushTimer = setTimeout(lccPageFlush, ms);
+}
+function lccPageFlush() {
+  lccPageTranslateFlushTimer = null;
+  if (!lccPageTranslateOn || !lccPageTranslateQueue.length) return;
+  const items = [];
+  let chars = 0;
+  while (lccPageTranslateQueue.length && items.length < LCC_PAGE_BATCH_SIZE) {
+    const item = lccPageTranslateQueue.shift();
+    lccPageTranslateQueuedIds.delete(item.id);
+    const node = lccPageTranslateById.get(item.id);
+    const state = node && lccPageTranslateState.get(node);
+    if (!node || !state || !node.isConnected) continue;
+    if (node.nodeValue !== state.expectedFull || (state.translatedFull && node.nodeValue === state.translatedFull)) continue;
+    if (chars + item.text.length > LCC_PAGE_BATCH_CHARS && items.length) {
+      lccPageTranslateQueue.unshift(item);
+      lccPageTranslateQueuedIds.add(item.id);
+      break;
+    }
+    state.pending = true;
+    state.source = item.text;
+    items.push(item);
+    chars += item.text.length;
+  }
+  if (items.length) {
+    const requestId = "ptr" + (++lccPageTranslateReqSeq);
+    const timer = setTimeout(() => lccPageTranslateRetry({ request_id: requestId, retry_ms: 500 }), 30000);
+    lccPageTranslateRequests.set(requestId, { items, timer });
+    try { chrome.runtime.sendMessage({ type: "page-translate-batch", requestId, items }); } catch (_) {}
+  }
+  if (lccPageTranslateQueue.length) lccPageScheduleFlush(220);
+}
+function lccPageTranslateStart(rawSettings) {
+  if (!LCC_IS_TOP) return;
+  lccPageTranslateSettings = globalThis.lccNormalizeSettings({ ...lccPageTranslateSettings, ...(rawSettings || {}) });
+  lccPageTranslateOn = true;
+  document.documentElement.dataset.lccPageTranslate = "on";
+  if (!lccPageTranslateObserver) {
+    lccPageTranslateObserver = new MutationObserver((records) => {
+      if (!lccPageTranslateOn) return;
+      for (const r of records) {
+        if (r.type === "characterData") lccPageQueueNode(r.target);
+        else if (r.type === "childList") {
+          for (const n of r.addedNodes) lccPageScanNode(n, 30);
+        }
+      }
+    });
+    lccPageTranslateObserver.observe(document.documentElement, { subtree: true, childList: true, characterData: true });
+  }
+  if (!lccPageTranslateScrollHandler) {
+    lccPageTranslateScrollHandler = () => lccPageScheduleScan(220);
+    window.addEventListener("scroll", lccPageTranslateScrollHandler, { passive: true });
+    window.addEventListener("resize", lccPageTranslateScrollHandler, { passive: true });
+  }
+  lccPageScheduleScan(0);
+}
+function lccPageTranslateConfig(rawSettings) {
+  if (!lccPageTranslateOn) return;
+  lccPageTranslateSettings = globalThis.lccNormalizeSettings({ ...lccPageTranslateSettings, ...(rawSettings || {}) });
+  lccPageScheduleScan(0);
+}
+function lccPageTranslateStop(restore) {
+  lccPageTranslateOn = false;
+  delete document.documentElement.dataset.lccPageTranslate;
+  if (lccPageTranslateObserver) { lccPageTranslateObserver.disconnect(); lccPageTranslateObserver = null; }
+  if (lccPageTranslateScrollHandler) {
+    window.removeEventListener("scroll", lccPageTranslateScrollHandler);
+    window.removeEventListener("resize", lccPageTranslateScrollHandler);
+    lccPageTranslateScrollHandler = null;
+  }
+  if (lccPageTranslateFlushTimer) { clearTimeout(lccPageTranslateFlushTimer); lccPageTranslateFlushTimer = null; }
+  if (lccPageTranslateScanTimer) { clearTimeout(lccPageTranslateScanTimer); lccPageTranslateScanTimer = null; }
+  lccPageTranslateQueue.length = 0;
+  lccPageTranslateQueuedIds.clear();
+  for (const req of lccPageTranslateRequests.values()) {
+    if (req && req.timer) clearTimeout(req.timer);
+  }
+  lccPageTranslateRequests.clear();
+  if (restore) {
+    for (const node of lccPageTranslateNodes) {
+      const state = lccPageTranslateState.get(node);
+      if (state && node.isConnected && state.translatedFull && node.nodeValue === state.translatedFull) {
+        node.nodeValue = state.originalFull;
+      }
+      lccPageTranslateState.delete(node);
+    }
+  } else {
+    for (const node of lccPageTranslateNodes) lccPageTranslateState.delete(node);
+  }
+  lccPageTranslateNodes.clear();
+  lccPageTranslateById.clear();
+}
+function lccPageTranslateApply(msg) {
+  if (!lccPageTranslateOn) return;
+  const node = lccPageTranslateById.get(String(msg.item_id || ""));
+  const state = node && lccPageTranslateState.get(node);
+  if (!node || !state || !node.isConnected) return;
+  const source = String(msg.source || "");
+  const target = String(msg.target || "").trim();
+  state.pending = false;
+  if (!target || source !== state.source || node.nodeValue !== state.expectedFull) return;
+  state.translated = target;
+  state.translatedFull = (state.pre || "") + target + (state.post || "");
+  node.nodeValue = state.translatedFull;       // direct browser DOM replacement, not an overlay
+}
+function lccPageTranslateDone(msg) {
+  const requestId = String(msg.request_id || "");
+  const req = lccPageTranslateRequests.get(requestId);
+  const items = req && req.items || [];
+  if (req && req.timer) clearTimeout(req.timer);
+  for (const item of items) {
+    const node = lccPageTranslateById.get(item.id);
+    const state = node && lccPageTranslateState.get(node);
+    if (state && state.source === item.text) state.pending = false;
+  }
+  lccPageTranslateRequests.delete(requestId);
+}
+function lccPageTranslateRetry(msg) {
+  const requestId = String(msg.request_id || "");
+  const req = lccPageTranslateRequests.get(requestId);
+  const items = req && req.items || [];
+  if (req && req.timer) clearTimeout(req.timer);
+  lccPageTranslateRequests.delete(requestId);
+  for (const item of items) {
+    const node = lccPageTranslateById.get(item.id);
+    const state = node && lccPageTranslateState.get(node);
+    if (!node || !state) continue;
+    state.pending = false;
+    if (node.nodeValue === state.expectedFull) lccPageQueueNode(node);
+  }
+  lccPageScheduleFlush(Math.max(500, Math.min(5000, Number(msg.retry_ms) || 1600)));
+}
 
 // ---- transcript accumulation -> storage.local (the popup renders history / export / summary / Q&A) ----
 const lccTranscript = [];

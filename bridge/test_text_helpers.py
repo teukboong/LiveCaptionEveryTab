@@ -7,6 +7,9 @@ test-first, before any of that code moves. No model is loaded (import only); run
 
     cd bridge && python test_text_helpers.py
 """
+import test_import_stubs
+test_import_stubs.install()
+
 import server as s
 from pathlib import Path
 import re
@@ -84,6 +87,21 @@ ok("target.prompt_hindi", "Hindi" in hindi_msgs[0]["content"])
 ok("target.prompt_not_korean_target", "Korean translation" not in hindi_msgs[0]["content"])
 ok("target.context_signature_changes", s._translation_context_signature("Korean", "casual", "", [])
    != s._translation_context_signature("Hindi", "casual", "", []))
+
+# --- DOM translation batch normalization: untrusted page items stay bounded before model use ---
+dom_items = s._dom_translate_items({
+    "items": [
+        {"id": "a", "text": "  Hello page  "},
+        {"id": "", "text": "skip"},
+        {"id": "b" * 120, "text": "x" * 20},
+        {"id": "c", "text": "y" * 20},
+    ]
+}, max_items=4, max_chars=8, max_total_chars=18)
+check("dom.items_normalized", dom_items, [
+    {"id": "a", "text": "Hello pa"},
+    {"id": "b" * 80, "text": "xxxxxxxx"},
+])
+check("dom.non_list", s._dom_translate_items({"items": "nope"}), [])
 
 # --- _clean: strip channel tags + whitespace ---
 check("clean.trim", s._clean("  hi  "), "hi")
