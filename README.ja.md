@@ -81,15 +81,17 @@ bash bridge/run_bridge.sh
 
 ## 機能
 - **自動用語プライミング**：ページ／動画タイトルを ASR・翻訳のヒントとして自動注入（ポップアップでオフ可）。
+- **ページ翻訳モード**：ポップアップで `ページ翻訳` だけをオンにすると、オーバーレイなしで現在のタブの実際の DOM テキストノードを訳文に直接置き換えます。`ページ翻訳` と `動画翻訳` を同時にオンにすると同じブリッジ接続を共有し、ページ翻訳は auxiliary lane（補助レーン）なので final/preview の字幕翻訳が忙しいときは譲ってから再試行します。ページ専用の語調・用語集・ヒントを別々に設定でき、出力は `ライブ partial`／`確定のみ` から選択、訳文にマウスを乗せると原文表示（二言語表示）、`キャッシュ翻訳のアイドル再確認` はアイドル時にキャッシュ済みの翻訳を再検証し、モデルが今は異なる答えを返すならその箇所をパッチします。
 - **コンテンツ種別プリセット**：ポップアップでコンテンツ種別（一般・雑談／カンファレンス・講演／ニュース・インタビュー／個人配信）を一度選ぶと、語調（register）と遅延モードをまとめて合わせます — 講演=格式・安定、ニュース=バランス、配信=口語・即時。語調・終助詞・few-shot アンカーが内容に合わせて変わり、ソース言語（EN/JA）も自動判定して合う例を選びます。
-- **用語集**：ポップアップに `名前=訳`（1行に1つ）を入れると、その語を文字起こしバイアス＋翻訳で常に同じに描画（1行ごとに訳がぶれるのを除去）。`用語ヒント` は自由テキストのバイアス。
+- **用語集**：ポップアップに `名前=訳`（1行に1つ）を入れると、その語を文字起こしバイアス＋翻訳で常に同じに描画（1行ごとに訳がぶれるのを除去）。`用語ヒント` は自由テキストのバイアス。ページ上で **Alt+G** を押すと、直前の原文行があらかじめ入力された入力バーが開き、その場で用語を追加できます。
 - **精度モード（2パス再文字起こし）**：オンにすると、自然な終わり（pause/eos）や終止符号で確定する複数節の文の累積音声を、確定直前にもう一度まるごと文字起こし → VAD 断片の継ぎ目エラーを除去。確定が ~0.7s 遅くなるためトグル（既定 OFF）。オーバーラップ／分割で整列が崩れたユニットは自動除外（`unit_pure` ガード）。
 - **ストリーミング字幕**：原文は ASR atom 単位で先に表示、翻訳プレビューは debounce/coalesce。確定字幕は final キューで優先処理。
-- **遅延モード3段階**：`aggressive` は Parakeet の CPU 文字起こしと MLX 翻訳をできるだけ重ね、現在の unit プレビューを latest-only で先に翻訳。`balanced` は MLX がアイドルのときだけプレビュー。`stable` は確定翻訳のみ表示。final 翻訳は常にプレビューより優先。
+- **遅延モード3段階**：`aggressive` は ASR と翻訳を同じ GPU で重ねて回し（別々のデバイスロック）、現在の unit プレビューを latest-only で先に翻訳。`balanced` は GPU がアイドルのときだけプレビュー。`stable` は確定翻訳のみ表示。final 翻訳は常にプレビューより優先。
 - **Lookahead 映像遅延**：映像遅延モードでは実音声を即座に文字起こし・翻訳し、字幕は実 PCM ストリーム開始 clock と発話区間（`start_ms`/`end_ms`）に合わせて予約出力。ポップアップの同期補正で ±2秒の微調整が可能。
 - **同期デバッグ**：ポップアップでオンにすると、字幕の下とコンソールに `kind/unit/start/end/due/now/lag/delay/offset/q` を表示し、出力が due time より早くないか確認できます。
 - **翻訳キャッシュ／優先度**：プレビューと final のソースが同じなら再翻訳を回避し、final 翻訳をプレビューより先に処理。
 - **字幕ログ**：ポップアップの字幕スクロールバック ＋ 二言語 `.md` エクスポート（`.md` ボタン）。
+- **「今なんて言った？」(Alt+R)**：流れていった字幕をパネルで見返す — 音声再生なしのテキスト DVR（最近の確定字幕、最新が下、Esc で閉じる）。
 - **要約・質問**：パネルの 要約・質問欄 — ローカル Gemma が過去の字幕を要約／質疑応答（ストリーミング）。
 
 ## トラブルシューティング
@@ -100,7 +102,7 @@ bash bridge/run_bridge.sh
 
 ## チューニングレバー
 - 遅延を下げる：翻訳は既定で quality プロンプト（KV-cache でコスト償却）。さらに下げるには `LCC_TX_PROFILE=fast` で compact プロンプトを使い、`SEG_SILENCE_MS`/`SOFT_MAX_SEC` を下げます。長い精度モードで切れが見えたら `LCC_ASR_MAX_TOKENS=96` だけ上げます。
-- 並列の体感：英語放送はポップアップで `Parakeet + aggressive` を既定に。aggressive は effective sentence silence ≤900ms、pending commit 120文字/1.8s、preview debounce 180ms、final recent context 2件、preview context 0件で MLX 翻訳レーンを短く使います。Parakeet soft-cut は誤認識の重複を避けるため 4.0s を維持。字幕の差し替えが頻繁で気になれば `balanced`、翻訳の安定が最優先なら `stable`。サーバ既定は `LCC_LATENCY_MODE=aggressive`、`stable|balanced|aggressive` を受け付けます。
+- 並列の体感：既定の `aggressive` モードは ASR と翻訳を単一 GPU で重ねて（`_ASR_DEVICE_LOCK`／`_MLX_DEVICE_LOCK` を分離）帯域の隙間を埋めます。effective sentence silence ≤900ms、pending commit 120文字/1.8s、preview debounce 180ms、final recent context 2件、preview context 0件で翻訳レーンを短く使います。字幕の差し替えが頻繁で気になれば `balanced`、翻訳の安定が最優先なら `stable` に下げます。サーバ既定は `LCC_LATENCY_MODE=aggressive`、`stable|balanced|aggressive` を受け付けます。英語専用でさらに低い遅延が必要なら `LCC_ASR_ENGINE=parakeet` の逃げ道（CPU 文字起こしなので GPU 翻訳と並列、soft-cut 4.0s）。
 - 出力同期：ブリッジは 4.5秒 soft-cut ＋ 220ms overlap で長い発話を文字起こしし、画面は `performance.now()` ベースの stream clock で予約。final backlog が実際に遅れたときだけ短い字幕を併合します。
 - 映像遅延：`delaySec` は最大12秒。`videoDelay` モードは元の動画フレーム解像度でキャプチャし、フレームは最大60fpsに制限。フレームのタイムスタンプは `requestVideoFrameCallback` metadata を優先、PCM tap は AudioWorklet を優先。
 - 翻訳品質を上げる：ポップアップの**語調**プリセットを内容に合わせ、**用語集**に固有名詞をピン留め。よりクリーンな文字起こしが必要なら**精度モード**（2パス）をオン。最後の手段として翻訳モデルを 31B dense に（5倍遅くなる）。ベンチ：`bench_translate_quality.py`（語調/用語集 A/B）、`bench_2pass.py`（2パス vs 1パス）— どちらもブリッジ停止後に実行。

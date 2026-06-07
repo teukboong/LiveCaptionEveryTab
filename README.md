@@ -81,16 +81,17 @@ bash bridge/run_bridge.sh
 
 ## 기능
 - **자동 용어 프라이밍**: 페이지/영상 제목을 ASR·번역 힌트로 자동 주입 (팝업에서 끄기)
-- **페이지 번역 모드**: 팝업에서 `페이지 번역`만 켜면 오버레이 없이 현재 탭의 실제 DOM text node를 번역문으로 직접 교체한다. `페이지 번역` + `동영상 번역`을 같이 켜면 같은 브릿지 연결을 공유하고, 페이지 번역은 auxiliary lane이라 final/preview 자막 번역이 바쁘면 양보 후 재시도한다.
+- **페이지 번역 모드**: 팝업에서 `페이지 번역`만 켜면 오버레이 없이 현재 탭의 실제 DOM text node를 번역문으로 직접 교체한다. `페이지 번역` + `동영상 번역`을 같이 켜면 같은 브릿지 연결을 공유하고, 페이지 번역은 auxiliary lane이라 final/preview 자막 번역이 바쁘면 양보 후 재시도한다. 페이지 전용 말투·용어집·힌트를 따로 줄 수 있고, 출력은 `라이브 partial`/`확정만` 중 선택, 번역문 위에 마우스를 올리면 원문 보기(이중언어), `캐시 번역 idle 재확인`은 한가할 때 캐시된 번역을 다시 검증해 모델이 다르게 답하면 그 자리를 패치한다.
 - **영상 종류 프리셋**: 팝업에서 콘텐츠 유형(일반·잡담 / 컨퍼런스·강연 / 뉴스·인터뷰 / 개인 스트리밍)을 한 번 고르면 말투(register)와 지연 모드를 묶어서 맞춘다 — 강연=격식·안정, 뉴스=균형, 스트리밍=구어·즉각. 어조·종결어미·few-shot 앵커가 콘텐츠에 맞게 바뀌고, 소스 언어(EN/JA)도 자동감지해 맞는 예시를 고름
-- **용어집**: 팝업에 `이름=번역`(줄마다 하나)을 넣으면 그 용어를 전사 바이어싱 + 번역에서 항상 같게 렌더링(이름이 줄마다 다르게 번역되는 흔들림 제거). `용어 힌트`는 자유 텍스트 바이어싱
+- **용어집**: 팝업에 `이름=번역`(줄마다 하나)을 넣으면 그 용어를 전사 바이어싱 + 번역에서 항상 같게 렌더링(이름이 줄마다 다르게 번역되는 흔들림 제거). `용어 힌트`는 자유 텍스트 바이어싱. 페이지 위에서 **Alt+G**로 마지막 원문이 채워진 입력 바를 열어 바로 추가할 수도 있다
 - **정확도 모드(2패스 재전사)**: 켜면 자연 종료(pause/eos)나 종결부호로 확정되는 다절(多節) 문장의 누적 오디오를 확정 직전 한 번 더 통째로 전사 → VAD 조각 이어붙임 경계 오류 제거. 확정이 ~0.7s 느려져 토글(기본 OFF). 오버랩/스플릿으로 정렬이 깨진 유닛은 자동 제외(`unit_pure` 가드)
 - **스트리밍 자막**: 원문은 ASR atom 단위로 먼저 뜨고, 번역 preview는 debounce/coalesce됨. 확정 자막은 final queue에서 우선 처리
-- **지연 모드 3단계**: `공격`은 Parakeet CPU 전사와 MLX 번역을 최대한 겹치고 현재 unit preview를 latest-only로 미리 번역, `균형`은 MLX idle일 때만 preview, `안정`은 확정 번역만 표시. final 번역은 항상 preview보다 우선
+- **지연 모드 3단계**: `공격`은 ASR과 번역을 같은 GPU에서 겹쳐 돌리고(서로 다른 디바이스 락) 현재 unit preview를 latest-only로 미리 번역, `균형`은 GPU가 idle일 때만 preview, `안정`은 확정 번역만 표시. final 번역은 항상 preview보다 우선
 - **Lookahead 영상 지연**: 영상 지연 모드에서는 실제 오디오는 즉시 전사·번역하고, 자막은 실제 PCM 스트림 시작 clock과 발화 구간(`start_ms`/`end_ms`)에 맞춰 예약 출력. popup의 싱크 보정으로 ±2초 미세 조정 가능
 - **싱크 디버그**: popup에서 켜면 자막 아래와 console에 `kind/unit/start/end/due/now/lag/delay/offset/q`를 표시해 실제 출력이 due time보다 빠른지 확인 가능
 - **번역 캐시/우선순위**: preview와 final이 같은 source면 재번역을 피하고, final 번역은 preview보다 먼저 처리
 - **자막 기록**: 팝업의 자막 스크롤백 + 이중언어 `.md` 내보내기(`.md 저장`)
+- **방금 뭐랬지 (Alt+R)**: 지나간 자막을 패널로 다시 보기 — 오디오 재생 없는 텍스트 DVR(최근 확정 자막, 최신이 아래, Esc로 닫기)
 - **요약·질문**: 팝업의 `요약` 버튼·질문창 — 로컬 Gemma가 지나간 자막을 요약/질의응답 (스트리밍)
 
 ## 트러블슈팅
@@ -101,7 +102,7 @@ bash bridge/run_bridge.sh
 
 ## 튜닝 레버
 - 지연 줄이기: 번역은 기본 quality 프롬프트(KV-cache로 비용 amortize). 더 줄이려면 `LCC_TX_PROFILE=fast`로 compact 프롬프트를 쓰고 `SEG_SILENCE_MS`/`SOFT_MAX_SEC`를 낮춘다. 긴 정확도 모드에서 잘림이 보이면 `LCC_ASR_MAX_TOKENS=96`만 올린다.
-- 병렬 체감: 영어 방송은 팝업에서 `Parakeet + 공격`을 기본으로 둔다. 공격 모드는 effective sentence silence <=900ms, pending commit 120자/1.8s, preview debounce 180ms, final recent context 2개, preview context 0개로 MLX 번역 레인을 짧게 쓴다. Parakeet soft-cut은 오인식 중복을 피하려고 4.0s를 유지한다. 자막이 자주 갈아끼워져 거슬리면 `균형`, 번역 안정성이 최우선이면 `안정`으로 낮춘다. 서버 기본값은 `LCC_LATENCY_MODE=aggressive`이며 `stable|balanced|aggressive`를 받는다.
+- 병렬 체감: 기본 `공격` 모드는 ASR과 번역을 단일 GPU에서 겹쳐(`_ASR_DEVICE_LOCK`/`_MLX_DEVICE_LOCK` 분리) 대역폭 틈을 메운다. effective sentence silence <=900ms, pending commit 120자/1.8s, preview debounce 180ms, final recent context 2개, preview context 0개로 번역 레인을 짧게 쓴다. 자막이 자주 갈아끼워져 거슬리면 `균형`, 번역 안정성이 최우선이면 `안정`으로 낮춘다. 서버 기본값은 `LCC_LATENCY_MODE=aggressive`이며 `stable|balanced|aggressive`를 받는다. 영어 전용 더 낮은 지연이 필요하면 `LCC_ASR_ENGINE=parakeet` 탈출구(CPU 전사라 GPU 번역과 병렬, soft-cut 4.0s).
 - 출력 싱크: bridge는 4.5초 soft-cut + 220ms overlap으로 긴 발화를 전사하고, 화면은 `performance.now()` 기반 stream clock으로 예약한다. final backlog가 실제로 밀릴 때만 짧은 자막을 병합
 - 영상 지연: `delaySec`는 최대 12초. `videoDelay` 모드는 원본 video frame 해상도로 캡처하고, 프레임은 최대 60fps로만 제한한다. frame timestamp는 `requestVideoFrameCallback` metadata를 우선 사용하고, PCM tap은 AudioWorklet 우선으로 처리
 - 번역 품질↑: 팝업의 **말투** 프리셋을 콘텐츠에 맞추고, **용어집**에 고유명사를 핀. 더 깨끗한 전사가 필요하면 **정확도 모드**(2패스)를 켠다. 최후 수단으로 번역 모델을 31B dense로(5배 느려짐). 벤치: `bench_translate_quality.py`(말투/용어집 A/B), `bench_2pass.py`(2패스 vs 1패스) — 둘 다 브릿지 정지 후 실행

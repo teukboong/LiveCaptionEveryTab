@@ -81,15 +81,17 @@ bash bridge/run_bridge.sh
 
 ## 功能
 - **自动术语预热**：把页面/视频标题作为 ASR·翻译提示自动注入（可在弹窗关闭）。
+- **页面翻译模式**：在弹窗里只开 `页面翻译`，就会不显示覆盖层，直接把当前标签页实际的 DOM 文本节点替换为译文。`页面翻译` + `视频翻译` 同时开启时，二者共享同一条 bridge 连接，页面翻译作为辅助车道（auxiliary lane）运行，当 final/preview 字幕翻译繁忙时让路并稍后重试。可单独给页面翻译设置专属的语体·术语表·提示；输出可在 `实时 partial`（live partial）/ `仅确定`（final only）之间选择；把鼠标移到译文上可查看原文（双语视图）；`缓存翻译空闲再校验` 会在空闲时重新检查缓存的翻译，若模型此时给出不同结果就修补那一处。
 - **内容类型预设**：在弹窗里选一次内容类型（一般·闲聊 / 会议·讲座 / 新闻·访谈 / 个人直播），即把语体（register）与延迟模式打包匹配——讲座=正式·稳定，新闻=均衡，直播=口语·即时。语气·句末·few-shot 锚点随内容变化，并自动检测源语言（EN/JA）选取匹配示例。
-- **术语表**：在弹窗里填 `名称=译法`（每行一个），即可对该术语进行转写偏置 + 在翻译中始终渲染一致（消除同一名称每行译法不同的抖动）。`术语提示` 为自由文本偏置。
+- **术语表**：在弹窗里填 `名称=译法`（每行一个），即可对该术语进行转写偏置 + 在翻译中始终渲染一致（消除同一名称每行译法不同的抖动）。`术语提示` 为自由文本偏置。还可以在页面上按 **Alt+G** 打开一个已预填最后一行原文的输入栏，直接添加术语。
 - **精度模式（两遍重转写）**：开启后，由自然结束（pause/eos）或终止标点确定的多小句句子，会在确定前把累积音频整体再转写一遍 → 消除拼接 VAD 片段造成的边界错误。确定会慢约 0.7s，故为开关（默认 OFF）。因重叠/拆分导致对齐损坏的单元会被自动排除（`unit_pure` 守卫）。
 - **流式字幕**：原文按 ASR atom 先显示，翻译预览经 debounce/coalesce。已确定字幕在 final 队列中优先处理。
-- **三档延迟模式**：`aggressive` 尽量让 Parakeet 的 CPU 转写与 MLX 翻译重叠，并以 latest-only 预翻当前 unit 预览；`balanced` 仅在 MLX 空闲时预览；`stable` 只显示已确定的翻译。final 翻译始终优先于预览。
+- **三档延迟模式**：`aggressive` 让 ASR 与翻译在同一块 GPU 上重叠运行（各自的设备锁），并以 latest-only 预翻当前 unit 预览；`balanced` 仅在 GPU 空闲时预览；`stable` 只显示已确定的翻译。final 翻译始终优先于预览。
 - **Lookahead 视频延迟**：在视频延迟模式下，实际音频立即转写·翻译，字幕则按真实 PCM 流起始 clock 与语音区间（`start_ms`/`end_ms`）排程输出。弹窗的同步校正可做 ±2 秒微调。
 - **同步调试**：在弹窗开启后，会在字幕下方与控制台显示 `kind/unit/start/end/due/now/lag/delay/offset/q`，用于确认输出是否早于 due time。
 - **翻译缓存/优先级**：若预览与 final 的源相同则避免重复翻译，且 final 翻译先于预览处理。
 - **字幕记录**：弹窗的字幕回滚 + 双语 `.md` 导出（`.md` 按钮）。
+- **“刚才说了啥”(Alt+R)**：在面板里回看刚过去的字幕——无音频回放的文本 DVR（最近的确定字幕，最新在底部，按 Esc 关闭）。
 - **摘要·提问**：面板的 摘要 · 提问框——本地 Gemma 对过往字幕进行摘要/问答（流式）。
 
 ## 排错
@@ -100,7 +102,7 @@ bash bridge/run_bridge.sh
 
 ## 调优杠杆
 - 降低延迟：翻译默认用 quality 提示词（靠 KV-cache 摊销开销）。想再降，用 `LCC_TX_PROFILE=fast` 切换到 compact 提示词，并调低 `SEG_SILENCE_MS`/`SOFT_MAX_SEC`。若在长精度模式下出现截断，只调高 `LCC_ASR_MAX_TOKENS=96`。
-- 并行体感：英语广播在弹窗里默认用 `Parakeet + aggressive`。aggressive 模式用有效句末静音 ≤900ms、pending commit 120 字/1.8s、preview debounce 180ms、final 最近上下文 2 个、preview 上下文 0 个，从而缩短 MLX 翻译车道。Parakeet soft-cut 保持 4.0s 以避免误识别重复。若字幕频繁替换扰人就降到 `balanced`，若翻译稳定最重要就用 `stable`。服务器默认 `LCC_LATENCY_MODE=aggressive`，接受 `stable|balanced|aggressive`。
+- 并行体感：默认的 `aggressive` 模式让 ASR 与翻译在单块 GPU 上重叠运行（分离的 `_ASR_DEVICE_LOCK`/`_MLX_DEVICE_LOCK`）以填补带宽空隙。它用有效句末静音 ≤900ms、pending commit 120 字/1.8s、preview debounce 180ms、final 最近上下文 2 个、preview 上下文 0 个，从而缩短翻译车道。若字幕频繁替换扰人就降到 `balanced`，若翻译稳定最重要就用 `stable`。服务器默认 `LCC_LATENCY_MODE=aggressive`，接受 `stable|balanced|aggressive`。若只针对英语需要更低延迟，可用 `LCC_ASR_ENGINE=parakeet` 出口（CPU 转写，因而与 GPU 翻译并行，soft-cut 4.0s）。
 - 输出同步：bridge 用 4.5 秒 soft-cut + 220ms overlap 转写长语音，画面用基于 `performance.now()` 的 stream clock 排程。仅当 final backlog 真的落后时才合并短字幕。
 - 视频延迟：`delaySec` 最大 12 秒。`videoDelay` 模式按原始视频帧分辨率捕获，帧率限制为最高 60fps。帧时间戳优先用 `requestVideoFrameCallback` 的 metadata，PCM tap 优先用 AudioWorklet。
 - 提升翻译质量：把弹窗的**语气**预设匹配内容，并在**术语表**里固定专有名词。若需要更干净的转写，开启**精度模式**（两遍）。最后手段是把翻译模型换成 31B dense（慢 5 倍）。基准：`bench_translate_quality.py`（语气/术语表 A/B）、`bench_2pass.py`（两遍 vs 一遍）——都需在 bridge 停止后运行。
