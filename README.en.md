@@ -46,10 +46,18 @@ The transcription-engine choice (English=granite / multilingual=qwen3) is identi
 ```
 - ASR picks between **two mlx-audio engines** in the popup (▸ Transcription engine). **Granite Speech 4.1 2B** (`ibm-granite/granite-speech-4.1-2b` · faithful English, ~0% WER) and **Qwen3-ASR 1.7B** (`Qwen/Qwen3-ASR-1.7B` · 52 languages incl. Japanese/Korean, auto language ID). Both emit punctuation·truecasing natively so sentence chunking just works. Shares the Apple GPU with the translator (serialized). ⚠ granite needs the **conv fix on mlx-audio main** (see SETUP).
 - A low-latency English-only Parakeet is a power-user escape hatch via `LCC_ASR_ENGINE=parakeet` only (CPU, parallel to translation; model `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`, `sherpa-onnx==1.13.2`). The popup selector only exposes granite/qwen3.
-- Translation: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — default **quality prompt** (expert interpreter·by-meaning·no-translationese + 3 few-shots, cost amortized by KV-cache → natural spoken output rather than stiff written style). Low latency via `LCC_TX_PROFILE=fast`. **Target language is selectable** (KO/EN/JA/ZH/ES/FR/DE), source auto-detected, skipped when target=source.
-- RAM ~26GB (weights) + a little KV per chunk. Latency ~2.9–3.4s per utterance chunk (ASR ~0.7s + translation ~1.4s + audio prefill + clause-boundary wait).
+- Translation: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — default **quality prompt** (expert interpreter·by-meaning·no-translationese + 3 few-shots, cost amortized by KV-cache → natural spoken output rather than stiff written style). Low latency via `LCC_TX_PROFILE=fast`. **Target language is selectable** (45 languages — Gemma is broadly multilingual), source auto-detected, skipped when target=source.
+- RAM ~26GB (full-tier weights; mid ~8 / lite ~6GB are smaller) + a little KV per chunk. Latency ~2.9–3.4s per utterance chunk (ASR ~0.7s + translation ~1.4s + audio prefill + clause-boundary wait).
 - MTP is pointless on this hardware, so unused (verified across MoE·dense·E4B).
 - ⚠️ Needs genuine Chrome/Edge/Brave — some Chromium forks (e.g. ChatGPT Atlas) don't implement `chrome.tabCapture`.
+
+## Install (easiest path)
+
+If the terminal isn't your thing, **double-click to install**:
+- **macOS** — double-click `install-mac.command` (if blocked, right-click → Open). Sets up the venv, deps, and the popup host in one go.
+- **Windows** — double-click `install-windows-oneclick.bat` (WSL2 + CUDA + model, automatic).
+
+After that the **extension popup does everything** — start the bridge, and fetch **only the tier you pick** (Full/Mid/Lite) to save disk. (Terminal folks: `./setup.sh [--models --tier lite]`.)
 
 ## Run
 ### 1) Bridge server
@@ -58,15 +66,15 @@ The transcription-engine choice (English=granite / multilingual=qwen3) is identi
 bash bridge/run_bridge.sh
 # ready when "[bridge] ready  ws://127.0.0.1:8765" appears (first load ~40s)
 ```
-- To keep it always on (opt-in, auto-restart on crash): `bash bridge/autostart.sh install` — ⚠ ~26GB RAM resident. Off: `… uninstall`
-- To start/stop from the **popup button** without a terminal (`🚀 Start bridge`): run `bash extension/native-host/install-host.sh` once, then reload the extension (native messaging host — SETUP 6.5). It runs detached, so it survives closing the browser.
+- To keep it always on (opt-in, auto-restart on crash): `bash bridge/autostart.sh install` — ⚠ ~26GB RAM resident (full tier). Off: `… uninstall`
+- Without a terminal, the popup buttons (**Start bridge** · model **Full/Mid/Lite**) do it all — they need the native-messaging host, which **`./setup.sh` already installs** (the one bootstrap Chrome's sandbox can't do). Then reload the extension. Runs detached, survives closing the browser (SETUP 6.5).
 - If the bridge restarts/drops, the extension **auto-reconnects** (backoff) and buffers up to 6s of recent audio. Speech during longer outages may be lost.
 ### 2) Load the extension (Chrome)
 1. `chrome://extensions` → turn on **Developer mode** (top right)
 2. **Load unpacked** → select this repo's `extension/` folder
-3. On a YouTube/Twitch video tab, **click the extension icon** → click **`▶ Start captions`** in the popup → badge `ON`, overlay appears
+3. On a YouTube/Twitch video tab, **click the extension icon** → click **`Start captions`** in the popup → badge `ON`, overlay appears
 4. Popup settings: caption **size·vertical/horizontal position·source line·sync offset** (live), **sentence wait·voice detection** (applied on restart)
-5. Stop again with **`■ Stop captions`**. (tabCapture requires a user click gesture → no auto-start)
+5. Stop again with **`Stop captions`**. (tabCapture requires a user click gesture → no auto-start)
 
 ## Features
 - **Auto term priming**: auto-injects the page/video title as ASR·translation hints (toggle off in the popup).
@@ -78,14 +86,14 @@ bash bridge/run_bridge.sh
 - **Lookahead video delay**: in video-delay mode the actual audio is transcribed·translated immediately, and captions are scheduled to the real PCM stream-start clock and the utterance window (`start_ms`/`end_ms`). The popup's sync offset allows ±2s fine-tuning.
 - **Sync debug**: when enabled in the popup, it shows `kind/unit/start/end/due/now/lag/delay/offset/q` below the caption and in the console to verify output isn't earlier than due time.
 - **Translation cache/priority**: if preview and final share the same source, re-translation is avoided, and final is processed before preview.
-- **Caption log**: 📜 (bottom-right) → scrollback panel / bilingual `.md` export.
-- **Summary·Q&A**: the panel's ✨Summary · question box — the local Gemma summarizes/answers over past captions (streaming).
+- **Caption log**: the popup's caption scrollback + bilingual `.md` export (`.md` button).
+- **Summary·Q&A**: the panel's Summary · question box — the local Gemma summarizes/answers over past captions (streaming).
 
 ## Troubleshooting
 - "Bridge disconnected" on the overlay → check `run_bridge.sh` is running and port 8765.
 - No captions → check the video has actual speech (non-speech is skipped as `[no speech]`) and the tab is making sound.
 - No sound → tab capture intercepting playback; offscreen keeps the `source→destination` playback connection, so it's usually fine.
-- Port-in-use error → `lsof -ti:8765 | xargs kill -9`.
+- Port-in-use error → use the popup's `Bridge Stop` first; if a listener remains, run `lsof -ti tcp:8765 -sTCP:LISTEN | xargs kill`.
 
 ## Tuning levers
 - Reduce latency: translation uses the quality prompt by default (cost amortized by KV-cache). To reduce further, use `LCC_TX_PROFILE=fast` for a compact prompt and lower `SEG_SILENCE_MS`/`SOFT_MAX_SEC`. If you see truncation in long accuracy mode, raise only `LCC_ASR_MAX_TOKENS=96`.

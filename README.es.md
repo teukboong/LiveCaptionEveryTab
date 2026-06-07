@@ -46,10 +46,18 @@ La elección del motor de transcripción (inglés=granite / multilingüe=qwen3) 
 ```
 - El ASR elige entre **dos motores mlx-audio** en el popup (▸ Motor de transcripción). **Granite Speech 4.1 2B** (`ibm-granite/granite-speech-4.1-2b` · fiel en inglés, WER ~0%) y **Qwen3-ASR 1.7B** (`Qwen/Qwen3-ASR-1.7B` · 52 idiomas incl. japonés/coreano, ID de idioma automático). Ambos generan puntuación·truecasing de forma nativa, así que el troceado por frases funciona tal cual. Comparte la GPU de Apple con el traductor (serializado). ⚠ granite necesita el **arreglo de conv en mlx-audio main** (ver SETUP).
 - Un Parakeet de baja latencia solo para inglés es una vía para usuarios avanzados, solo con `LCC_ASR_ENGINE=parakeet` (CPU, en paralelo a la traducción; modelo `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`, `sherpa-onnx==1.13.2`). El selector del popup solo muestra granite/qwen3.
-- Traducción: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — **prompt de calidad** por defecto (expert interpreter·by-meaning·no-translationese + 3 few-shots, coste amortizado por KV-cache → salida hablada natural en vez de un estilo escrito rígido). Baja latencia con `LCC_TX_PROFILE=fast`. **Idioma destino seleccionable** (KO/EN/JA/ZH/ES/FR/DE), origen autodetectado, se omite cuando destino=origen.
-- RAM ~26GB (pesos) + un poco de KV por chunk. Latencia ~2.9–3.4s por chunk de habla (ASR ~0.7s + traducción ~1.4s + prefill de audio + espera de límite de cláusula).
+- Traducción: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — **prompt de calidad** por defecto (expert interpreter·by-meaning·no-translationese + 3 few-shots, coste amortizado por KV-cache → salida hablada natural en vez de un estilo escrito rígido). Baja latencia con `LCC_TX_PROFILE=fast`. **Idioma destino seleccionable** (45 idiomas — Gemma es ampliamente multilingüe), origen autodetectado, se omite cuando destino=origen.
+- RAM ~26GB (pesos del tier full; mid ~8 / lite ~6GB son menores) + un poco de KV por chunk. Latencia ~2.9–3.4s por chunk de habla (ASR ~0.7s + traducción ~1.4s + prefill de audio + espera de límite de cláusula).
 - MTP no aporta nada en este hardware, así que no se usa (verificado en MoE·dense·E4B).
 - ⚠️ Requiere Chrome/Edge/Brave genuinos — algunos forks de Chromium (p. ej. ChatGPT Atlas) no implementan `chrome.tabCapture`.
+
+## Instalación (lo más fácil)
+
+Si la terminal no es lo tuyo, **instala con doble clic**:
+- **macOS** — doble clic en `install-mac.command` (si se bloquea, clic derecho → Abrir). Configura venv, dependencias y el host del popup de una vez.
+- **Windows** — doble clic en `install-windows-oneclick.bat` (WSL2 + CUDA + modelo, automático).
+
+Después el **popup de la extensión hace todo** — iniciar el bridge y descargar **solo el tier que elijas** (Full/Mid/Lite) para ahorrar disco. (Para quien use terminal: `./setup.sh [--models --tier lite]`.)
 
 ## Ejecución
 ### 1) Servidor bridge
@@ -58,15 +66,15 @@ La elección del motor de transcripción (inglés=granite / multilingüe=qwen3) 
 bash bridge/run_bridge.sh
 # listo cuando aparece "[bridge] ready  ws://127.0.0.1:8765" (primera carga ~40s)
 ```
-- Para tenerlo siempre activo (opt-in, reinicio automático al fallar): `bash bridge/autostart.sh install` — ⚠ ~26GB de RAM residentes. Apagar: `… uninstall`
-- Para arrancar/parar desde el **botón del popup** sin terminal (`🚀 Iniciar bridge`): ejecuta `bash extension/native-host/install-host.sh` una vez, luego recarga la extensión (host de mensajería nativa — SETUP 6.5). Corre desacoplado, así que sobrevive a cerrar el navegador.
+- Para tenerlo siempre activo (opt-in, reinicio automático al fallar): `bash bridge/autostart.sh install` — ⚠ ~26GB de RAM residentes (tier full). Apagar: `… uninstall`
+- Sin terminal, los botones del popup (**Iniciar bridge** · modelos **Full/Mid/Lite**) hacen todo — necesitan el host de mensajería nativa, que **`./setup.sh` ya instala** (el único bootstrap que el sandbox de Chrome no puede hacer). Luego recarga la extensión. Corre desacoplado, sobrevive a cerrar el navegador (SETUP 6.5).
 - Si el bridge se reinicia/cae, la extensión **se reconecta automáticamente** (backoff) y almacena hasta 6s de audio reciente. El habla durante cortes más largos puede perderse.
 ### 2) Cargar la extensión (Chrome)
 1. `chrome://extensions` → activa el **Modo de desarrollador** (arriba a la derecha)
 2. **Cargar descomprimida** → selecciona la carpeta `extension/` de este repo
-3. En una pestaña de vídeo de YouTube/Twitch, **haz clic en el icono de la extensión** → pulsa **`▶ Iniciar subtítulos`** en el popup → insignia `ON`, aparece el overlay
+3. En una pestaña de vídeo de YouTube/Twitch, **haz clic en el icono de la extensión** → pulsa **`Iniciar subtítulos`** en el popup → insignia `ON`, aparece el overlay
 4. Ajustes del popup: **tamaño·posición vertical/horizontal·línea original·corrección de sincronía** de los subtítulos (en vivo), **espera de frase·detección de voz** (se aplican al reiniciar)
-5. Detén con **`■ Detener subtítulos`**. (tabCapture requiere un gesto de clic del usuario → sin auto-inicio)
+5. Detén con **`Detener subtítulos`**. (tabCapture requiere un gesto de clic del usuario → sin auto-inicio)
 
 ## Funciones
 - **Priming automático de términos**: inyecta el título de la página/vídeo como pistas de ASR·traducción (desactivable en el popup).
@@ -78,14 +86,14 @@ bash bridge/run_bridge.sh
 - **Retardo de vídeo Lookahead**: en modo de retardo de vídeo el audio real se transcribe·traduce de inmediato, y los subtítulos se programan al reloj real de inicio del stream PCM y a la ventana de habla (`start_ms`/`end_ms`). La corrección de sincronía del popup permite ajuste fino de ±2s.
 - **Depuración de sincronía**: al activarla en el popup, muestra `kind/unit/start/end/due/now/lag/delay/offset/q` bajo el subtítulo y en la consola para verificar que la salida no llega antes del due time.
 - **Caché/prioridad de traducción**: si la vista previa y la final comparten origen, se evita re-traducir, y la final se procesa antes que la vista previa.
-- **Registro de subtítulos**: 📜 (abajo a la derecha) → panel de scrollback / exportación bilingüe `.md`.
-- **Resumen·Preguntas**: el ✨Resumen · cuadro de preguntas del panel — el Gemma local resume/responde sobre los subtítulos pasados (en streaming).
+- **Registro de subtítulos**: el scrollback de subtítulos del popup + exportación bilingüe `.md` (botón `.md`).
+- **Resumen·Preguntas**: el Resumen · cuadro de preguntas del panel — el Gemma local resume/responde sobre los subtítulos pasados (en streaming).
 
 ## Solución de problemas
 - "Bridge desconectado" en el overlay → comprueba que `run_bridge.sh` está corriendo y el puerto 8765.
 - No aparecen subtítulos → comprueba que el vídeo tiene habla real (lo no hablado se omite como `[no speech]`) y que la pestaña emite sonido.
 - No hay sonido → la captura de pestaña intercepta la reproducción; offscreen mantiene la conexión de reproducción `source→destination`, así que suele estar bien.
-- Error de puerto ocupado → `lsof -ti:8765 | xargs kill -9`.
+- Error de puerto ocupado → primero usa `Bridge Stop` en el popup; si queda un listener, ejecuta `lsof -ti tcp:8765 -sTCP:LISTEN | xargs kill`.
 
 ## Palancas de ajuste
 - Reducir latencia: la traducción usa el prompt de calidad por defecto (coste amortizado por KV-cache). Para reducir más, usa `LCC_TX_PROFILE=fast` para un prompt compacto y baja `SEG_SILENCE_MS`/`SOFT_MAX_SEC`. Si ves truncamiento en el modo precisión largo, sube solo `LCC_ASR_MAX_TOKENS=96`.

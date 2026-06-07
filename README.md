@@ -46,8 +46,8 @@
 ```
 - ASR은 **두 개의 mlx-audio 엔진** 중 팝업에서 선택(▸ 전사 엔진). **Granite Speech 4.1 2B**(`ibm-granite/granite-speech-4.1-2b` · 영어 충실, WER 0%대)와 **Qwen3-ASR 1.7B**(`Qwen/Qwen3-ASR-1.7B` · 일어·한국어 포함 52언어, 언어 자동감지). 둘 다 구두점·truecasing을 네이티브로 찍어 문장 청킹이 그대로 된다. 번역 모델과 같은 Apple GPU 공유(직렬). ⚠ granite는 mlx-audio **main의 conv 수정** 필요(SETUP 참고).
 - 영어 전용 저지연 Parakeet은 파워유저 탈출구 `LCC_ASR_ENGINE=parakeet`로만(CPU·번역과 병렬, 모델 `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`, `sherpa-onnx==1.13.2`). 팝업 셀렉터에는 granite/qwen3만 노출.
-- 번역: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — 기본 **quality 프롬프트**(expert interpreter·by-meaning·no-translationese + few-shot 3, KV-cache로 비용 amortize → 문어체보다 자연 구어체). 저지연은 `LCC_TX_PROFILE=fast`. **대상 언어 선택 가능**(한/영/일/중/스/프/독), 소스 자동감지, 대상=소스면 스킵.
-- RAM ~26GB(가중치) + 청크당 소량 KV. 지연 ~2.9–3.4s/발화 청크(ASR ~0.7s + 번역 ~1.4s + 오디오 prefill + 절 경계 대기)
+- 번역: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — 기본 **quality 프롬프트**(expert interpreter·by-meaning·no-translationese + few-shot 3, KV-cache로 비용 amortize → 문어체보다 자연 구어체). 저지연은 `LCC_TX_PROFILE=fast`. **대상 언어 선택 가능**(45개 언어 — Gemma는 폭넓은 다국어), 소스 자동감지, 대상=소스면 스킵.
+- RAM ~26GB(full 티어 기준 가중치; mid~8·lite~6GB는 더 적음) + 청크당 소량 KV. 지연 ~2.9–3.4s/발화 청크(ASR ~0.7s + 번역 ~1.4s + 오디오 prefill + 절 경계 대기)
 - MTP는 이 하드웨어에서 무의미해 미사용(MoE·dense·E4B 전부 검증)
 - ⚠️ 정품 Chrome/Edge/Brave 필요 — ChatGPT Atlas 등 일부 Chromium 포크는 `chrome.tabCapture` 미구현
 
@@ -72,9 +72,9 @@ bash bridge/run_bridge.sh
 ### 2) 확장 로드 (Chrome)
 1. `chrome://extensions` → 우측 상단 **개발자 모드** 켜기
 2. **압축해제된 확장 프로그램을 로드** → 이 저장소의 `extension/` 폴더 선택
-3. 유튜브/트위치 영상 탭에서 **확장 아이콘 클릭** → 팝업의 **`▶ 자막 시작`** 클릭 → 배지 `ON`, 오버레이 등장
+3. 유튜브/트위치 영상 탭에서 **확장 아이콘 클릭** → 팝업의 **`자막 시작`** 클릭 → 배지 `ON`, 오버레이 등장
 4. 팝업 설정: 자막 **크기·상하/좌우 위치·원문 줄·싱크 보정** (실시간), **문장 대기·음성감지**(재시작 시 적용)
-5. 다시 `■ 자막 중지`. (tabCapture는 사용자 클릭 제스처 필수 → 자동시작 불가)
+5. 다시 `자막 중지`. (tabCapture는 사용자 클릭 제스처 필수 → 자동시작 불가)
 
 ## 기능
 - **자동 용어 프라이밍**: 페이지/영상 제목을 ASR·번역 힌트로 자동 주입 (팝업에서 끄기)
@@ -86,14 +86,14 @@ bash bridge/run_bridge.sh
 - **Lookahead 영상 지연**: 영상 지연 모드에서는 실제 오디오는 즉시 전사·번역하고, 자막은 실제 PCM 스트림 시작 clock과 발화 구간(`start_ms`/`end_ms`)에 맞춰 예약 출력. popup의 싱크 보정으로 ±2초 미세 조정 가능
 - **싱크 디버그**: popup에서 켜면 자막 아래와 console에 `kind/unit/start/end/due/now/lag/delay/offset/q`를 표시해 실제 출력이 due time보다 빠른지 확인 가능
 - **번역 캐시/우선순위**: preview와 final이 같은 source면 재번역을 피하고, final 번역은 preview보다 먼저 처리
-- **자막 기록**: 우하단 📜 → 스크롤백 패널 / 이중언어 `.md` 내보내기
-- **요약·질문**: 패널의 ✨요약 · 질문창 — 로컬 Gemma가 지나간 자막을 요약/질의응답 (스트리밍)
+- **자막 기록**: 팝업의 자막 스크롤백 + 이중언어 `.md` 내보내기(`.md 저장`)
+- **요약·질문**: 팝업의 `요약` 버튼·질문창 — 로컬 Gemma가 지나간 자막을 요약/질의응답 (스트리밍)
 
 ## 트러블슈팅
 - 오버레이에 "브릿지 연결 끊김" → `run_bridge.sh` 실행 중인지, 포트 8765 확인
 - 자막이 안 뜸 → 영상에 실제 발화가 있는지(비음성은 `[no speech]`로 스킵됨), 탭에서 소리가 나는지
 - 소리가 안 들림 → 탭 캡처가 재생을 가로채는 경우. offscreen이 `source→destination` 재생 연결을 유지하므로 보통 정상
-- 포트 점유 에러 → `lsof -ti:8765 | xargs kill -9`
+- 포트 점유 에러 → 먼저 팝업의 `브릿지 중지`, 그래도 남으면 `lsof -ti tcp:8765 -sTCP:LISTEN | xargs kill`
 
 ## 튜닝 레버
 - 지연 줄이기: 번역은 기본 quality 프롬프트(KV-cache로 비용 amortize). 더 줄이려면 `LCC_TX_PROFILE=fast`로 compact 프롬프트를 쓰고 `SEG_SILENCE_MS`/`SOFT_MAX_SEC`를 낮춘다. 긴 정확도 모드에서 잘림이 보이면 `LCC_ASR_MAX_TOKENS=96`만 올린다.

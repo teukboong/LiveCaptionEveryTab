@@ -46,10 +46,18 @@
 ```
 - ASR 在弹窗中从**两个 mlx-audio 引擎**里选（▸ 转写引擎）。**Granite Speech 4.1 2B**（`ibm-granite/granite-speech-4.1-2b`·英语忠实，WER 接近 0%）与 **Qwen3-ASR 1.7B**（`Qwen/Qwen3-ASR-1.7B`·含日语/韩语共 52 种语言，自动语种识别）。两者都原生输出标点·truecasing，所以句子切分可直接进行。与翻译模型共享同一块 Apple GPU（串行）。⚠ granite 需要 mlx-audio **main 上的 conv 修复**（见 SETUP）。
 - 仅英语的低延迟 Parakeet 是给高级用户的出口，仅通过 `LCC_ASR_ENGINE=parakeet` 启用（CPU，与翻译并行；模型 `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`，`sherpa-onnx==1.13.2`）。弹窗选择器只暴露 granite/qwen3。
-- 翻译：`Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)`（mlx-lm）——默认 **quality 提示词**（expert interpreter·by-meaning·no-translationese + 3 个 few-shot，靠 KV-cache 摊销开销 → 比书面语更自然的口语）。低延迟用 `LCC_TX_PROFILE=fast`。**目标语言可选**（韩/英/日/中/西/法/德），源语言自动检测，目标=源时跳过。
-- RAM ~26GB（权重）+ 每个 chunk 少量 KV。延迟 ~2.9–3.4s/语音 chunk（ASR ~0.7s + 翻译 ~1.4s + 音频 prefill + 等待小句边界）。
+- 翻译：`Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)`（mlx-lm）——默认 **quality 提示词**（expert interpreter·by-meaning·no-translationese + 3 个 few-shot，靠 KV-cache 摊销开销 → 比书面语更自然的口语）。低延迟用 `LCC_TX_PROFILE=fast`。**目标语言可选**（45 种语言 — Gemma 多语种），源语言自动检测，目标=源时跳过。
+- RAM ~26GB（full 层级权重；mid ~8 / lite ~6GB 更小）+ 每个 chunk 少量 KV。延迟 ~2.9–3.4s/语音 chunk（ASR ~0.7s + 翻译 ~1.4s + 音频 prefill + 等待小句边界）。
 - MTP 在此硬件上无意义，故未使用（MoE·dense·E4B 均已验证）。
 - ⚠️ 需正版 Chrome/Edge/Brave——部分 Chromium 分支（如 ChatGPT Atlas）未实现 `chrome.tabCapture`。
+
+## 安装（最简单）
+
+不想用终端的话，**双击安装**：
+- **macOS** — 双击 `install-mac.command`（被拦截就右键 → 打开）。一次搞定 venv·依赖·弹窗宿主。
+- **Windows** — 双击 `install-windows-oneclick.bat`（WSL2 + CUDA + 模型，全自动）。
+
+之后**扩展弹窗就能全包**——启动 bridge，并且**只下载你选的层级**（Full/Mid/Lite）来省磁盘。（用终端的人：`./setup.sh [--models --tier lite]`）
 
 ## 运行
 ### 1) Bridge 服务器
@@ -58,15 +66,15 @@
 bash bridge/run_bridge.sh
 # 出现 "[bridge] ready  ws://127.0.0.1:8765" 即就绪（首次加载 ~40s）
 ```
-- 想常驻（opt-in，崩溃自动重启）：`bash bridge/autostart.sh install` — ⚠ 常驻约 26GB 内存。关闭：`… uninstall`
-- 想不用终端、用**弹窗按钮**启停（`🚀 启动 bridge`）：先执行一次 `bash extension/native-host/install-host.sh`，再重新加载扩展（原生消息宿主 — SETUP 6.5）。以 detached 方式启动，关浏览器也不退出。
+- 想常驻（opt-in，崩溃自动重启）：`bash bridge/autostart.sh install` — ⚠ 常驻约 26GB 内存（full 层级）。关闭：`… uninstall`
+- 不用终端，弹窗按钮（**启动 bridge**·模型 **Full/Mid/Lite**）就能全包——需要原生消息宿主，而 **`./setup.sh` 已安装**它（浏览器沙箱唯一做不了的引导步骤）。之后重新加载扩展。以 detached 运行，关浏览器也不退出（SETUP 6.5）。
 - bridge 重启/断开时，扩展会**自动重连**（退避），并缓冲最近最多 6 秒的音频。更长故障期间的语音可能丢失。
 ### 2) 加载扩展（Chrome）
 1. `chrome://extensions` → 打开右上角的**开发者模式**
 2. **加载已解压的扩展程序** → 选择本仓库的 `extension/` 文件夹
-3. 在 YouTube/Twitch 视频标签页中**点击扩展图标** → 点击弹窗里的 **`▶ 开始字幕`** → 徽标 `ON`，出现覆盖层
+3. 在 YouTube/Twitch 视频标签页中**点击扩展图标** → 点击弹窗里的 **`开始字幕`** → 徽标 `ON`，出现覆盖层
 4. 弹窗设置：字幕**大小·上下/左右位置·原文行·同步校正**（实时），**句子等待·语音检测**（重启后生效）
-5. 再次用 **`■ 停止字幕`** 停止。（tabCapture 需要用户点击手势 → 无法自动开始）
+5. 再次用 **`停止字幕`** 停止。（tabCapture 需要用户点击手势 → 无法自动开始）
 
 ## 功能
 - **自动术语预热**：把页面/视频标题作为 ASR·翻译提示自动注入（可在弹窗关闭）。
@@ -78,14 +86,14 @@ bash bridge/run_bridge.sh
 - **Lookahead 视频延迟**：在视频延迟模式下，实际音频立即转写·翻译，字幕则按真实 PCM 流起始 clock 与语音区间（`start_ms`/`end_ms`）排程输出。弹窗的同步校正可做 ±2 秒微调。
 - **同步调试**：在弹窗开启后，会在字幕下方与控制台显示 `kind/unit/start/end/due/now/lag/delay/offset/q`，用于确认输出是否早于 due time。
 - **翻译缓存/优先级**：若预览与 final 的源相同则避免重复翻译，且 final 翻译先于预览处理。
-- **字幕记录**：右下角 📜 → 回滚面板 / 双语 `.md` 导出。
-- **摘要·提问**：面板的 ✨摘要 · 提问框——本地 Gemma 对过往字幕进行摘要/问答（流式）。
+- **字幕记录**：弹窗的字幕回滚 + 双语 `.md` 导出（`.md` 按钮）。
+- **摘要·提问**：面板的 摘要 · 提问框——本地 Gemma 对过往字幕进行摘要/问答（流式）。
 
 ## 排错
 - 覆盖层显示“bridge 连接断开” → 检查 `run_bridge.sh` 是否在运行、端口 8765。
 - 没有字幕 → 检查视频是否有真实人声（非人声会作为 `[no speech]` 跳过）、标签页是否有声音。
 - 没有声音 → 标签页捕获拦截了播放；offscreen 会保持 `source→destination` 的播放连接，通常正常。
-- 端口被占用错误 → `lsof -ti:8765 | xargs kill -9`。
+- 端口被占用错误 → 先用弹窗里的 `Bridge Stop`；如果仍有 listener，再运行 `lsof -ti tcp:8765 -sTCP:LISTEN | xargs kill`。
 
 ## 调优杠杆
 - 降低延迟：翻译默认用 quality 提示词（靠 KV-cache 摊销开销）。想再降，用 `LCC_TX_PROFILE=fast` 切换到 compact 提示词，并调低 `SEG_SILENCE_MS`/`SOFT_MAX_SEC`。若在长精度模式下出现截断，只调高 `LCC_ASR_MAX_TOKENS=96`。

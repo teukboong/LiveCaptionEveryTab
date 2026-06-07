@@ -9,7 +9,7 @@ Mac(Apple MLX)와 **같은 확장프로그램**을, 이번엔 **NVIDIA GPU**로 
 [Windows Chrome 확장] ──WS(PCM16 16k)──▶ [WSL2: bridge/server.py  (LCC_BACKEND=cuda)]
                                             VAD + 문장 조립 + 스케줄러 (Mac과 동일 코드)
                                             ├─HTTP─▶ granite/qwen3 ASR :8000  (전사, Mac과 동일 모델)
-                                            └─HTTP─▶ llama.cpp 26B     :8080  (모국어 번역)
+                                            └─HTTP─▶ llama.cpp Gemma-4 GGUF :8080  (모국어 번역, 티어별)
    [content.js 오버레이 2줄] ◀──WS(JSON)────┘
 ```
 
@@ -23,11 +23,23 @@ Mac(Apple MLX)와 **같은 확장프로그램**을, 이번엔 **NVIDIA GPU**로 
 | 항목 | 필요 | 비고 |
 |---|---|---|
 | **Windows** | **11** (또는 WSL2 지원 10) | WSL2 GPU 패스스루 |
-| **GPU** | **NVIDIA, VRAM 16GB+** (24GB 권장: 3090/4090) | 26B Q4 ~17GB + granite/qwen3 ~2GB씩 |
+| **GPU** | **NVIDIA** (티어 자동) | full(26B Q4 ~17GB)→24GB+(3090/4090) · mid(E4B)/lite(E2B)→16GB대 + granite/qwen3 ~2GB씩 |
 | **WSL2** | Ubuntu 22.04+ | `wsl --install` |
 | **NVIDIA 드라이버** | 최신 (Windows용 Game/Studio) | WSL2가 이걸 그대로 씀. WSL2 안엔 드라이버 설치 X |
 | **브라우저** | 정품 Chrome/Edge/Brave (Windows) | Atlas/Arc 등 포크는 탭 캡처 미지원 |
 | **디스크** | ~30GB | 모델 |
+
+---
+
+## 0.5. 빠른 설치 — 원클릭 (권장, 비전문가용)
+
+WSL2 + CUDA 툴킷 + llama.cpp 빌드 + 모델(고른 티어) + 팝업 호스트까지 **자동**으로 깔아준다:
+
+1. 이 저장소의 **`install-windows-oneclick.bat` 더블클릭** (관리자 권한 자동 요청). 처음엔 WSL2/CUDA/빌드 때문에 오래 걸린다.
+2. Windows Chrome → `chrome://extensions` → **개발자 모드** → **압축해제된 확장 프로그램을 로드** → 이 저장소의 `extension/`.
+3. 확장 팝업의 **`브릿지 켜기`** → **`자막 시작`**. 모델 티어는 팝업 **Full/Mid/Lite** 또는 자동.
+
+> 아래 1~7은 **수동/고급** 설치다(원클릭이 내부에서 하는 일). 원클릭으로 됐으면 건너뛰어도 된다.
 
 ---
 
@@ -132,10 +144,10 @@ cd ~/LiveCaptionEveryTab/bridge/cuda && bash run_bridge_cuda.sh
 
 ## 7. Windows Chrome에 확장 로드
 
-Mac과 **동일**. WSL2의 코드 폴더는 Windows 탐색기에서 `\\wsl$\Ubuntu\home\<유저>\live-caption\...` 로 보인다.
+Mac과 **동일**. WSL2의 코드 폴더는 Windows 탐색기에서 `\\wsl$\Ubuntu\home\<유저>\LiveCaptionEveryTab\` 로 보인다.
 1. Windows Chrome → `chrome://extensions` → **개발자 모드** 켜기
-2. **압축해제된 확장 프로그램을 로드** → `…\live-caption\projects\live-caption\extension` 선택
-3. 소리 나는 탭에서 **확장 아이콘 → `▶ 자막 시작`**. 오버레이에 원문+한국어 2줄 등장.
+2. **압축해제된 확장 프로그램을 로드** → `…\LiveCaptionEveryTab\extension` 선택
+3. 소리 나는 탭에서 **확장 아이콘 → `자막 시작`**. 오버레이에 원문+모국어 2줄 등장.
 
 > 확장은 `ws://127.0.0.1:8765` 로 붙는다. WSL2 localhost 포워딩이 Windows localhost를 WSL2로 넘겨줘서 **수정 불필요**.
 
@@ -182,4 +194,4 @@ LCC_CUDA_ASR_QWEN3_URL=http://127.0.0.1:8001/v1/audio/transcriptions   # 별도 
 - 번역: 더 작은 GGUF 양자화(Q4_K_S / Q3_K_M). 품질 약간↓.
 - 26B(~17GB) + granite/qwen3(각 ~2GB) 라 24GB면 여유. 16GB면 ASR 한 엔진 + Q4_K_S 조합부터.
 
-개인 학습/시청용. 모델은 각 라이선스(Gemma·Granite·Qwen) 따름.
+라이선스: **Apache-2.0** (Gemma 4 · Granite · Qwen3 전부 Apache-2.0).

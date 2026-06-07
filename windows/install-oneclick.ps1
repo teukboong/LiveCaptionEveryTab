@@ -1,5 +1,5 @@
 param(
-    [string]$InstallRoot = "$env:LOCALAPPDATA\Hesperides\LiveCaption",
+    [string]$InstallRoot = "$env:LOCALAPPDATA\LiveCaptionEveryTab",
     [string]$Distro = "Ubuntu-22.04",
     [switch]$SkipChromeInstall
 )

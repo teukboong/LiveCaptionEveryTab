@@ -12,7 +12,7 @@
 | 항목 | 필요 | 비고 |
 |---|---|---|
 | **Mac** | **Apple Silicon (M1~M4)** | Intel Mac 불가 (mlx가 Apple GPU 전용) |
-| **메모리(RAM)** | **32GB 권장** (최소 24GB) | 모델이 ~26GB 상주. 16GB는 사실상 불가 |
+| **메모리(RAM)** | **16GB+** (티어 자동) | lite/mid는 16GB대, full(최고품질)은 32GB+ 권장. 여유 메모리에 맞춰 티어 자동 선택 |
 | **브라우저** | **정품 Google Chrome** (또는 Edge/Brave) | ⚠️ **ChatGPT Atlas·Arc 등 일부 포크는 탭 캡처 미지원 → 안 됨** |
 | **디스크** | ~30GB 여유 | 모델 캐시 |
 
@@ -92,7 +92,7 @@ bash bridge/run_bridge.sh
 - 모델 로딩에 **~40초**. **`[bridge] ready  ws://127.0.0.1:8765`** 가 뜨면 준비 완료.
 - 이 터미널 창은 **켜둔 채로** 둔다(자막 쓰는 동안 계속 실행).
 - 끄려면 그 창에서 `Ctrl+C`.
-- 터미널 없이 **팝업 버튼으로 켜고 끄고 싶으면** → 7번 아래 "팝업에서 브릿지 켜기" 참고(1회 설치 후엔 터미널 불필요).
+- 터미널 없이 **팝업 버튼으로 켜고 끄고 싶으면** → 아래 **6.5 "팝업에서 브릿지 켜기"** 참고(`setup.sh`가 이미 호스트를 깔아둠).
 
 ---
 
@@ -124,9 +124,9 @@ bash bridge/run_bridge.sh
 
 1. **브릿지가 실행 중인지 확인** (5번 터미널에 `ready`).
 2. 유튜브·트위치·X 등 **소리 나는 탭**으로 가서 재생.
-3. **확장 아이콘 클릭** → 팝업의 **`▶ 자막 시작`** 클릭.
-4. 영상 위에 **원문(위) + 한국어(아래)** 2줄 자막 등장. 발화 후 ~3–4초 지연.
-5. 멈추려면 팝업의 **`■ 자막 중지`**.
+3. **확장 아이콘 클릭** → 팝업의 **`자막 시작`** 클릭.
+4. 영상 위에 **원문(위) + 모국어(아래)** 2줄 자막 등장. 발화 후 ~3–4초 지연.
+5. 멈추려면 팝업의 **`자막 중지`**.
 
 ### 팝업 설정
 - **자막 크기 / 상하·좌우 위치 / 원문 줄 표시 / 자막 보정** → 즉시 적용
@@ -183,7 +183,7 @@ LCC_LM_TIER=mid          # full | mid | lite
    VAD + soft-cut으로 짧은 ASR atom 생성
    → Granite/Qwen3 (mlx-audio) 전사  ("말 없으면 [no speech]" → 환각 자막 방지)
    → atom을 번역 가능한 unit으로 조립
-   → 문장/절 완성 시 Gemma-4-26B-A4B(MoE) 모국어 번역
+   → 문장/절 완성 시 Gemma-4(티어: full=26B-A4B / mid=E4B / lite=E2B) 모국어 번역
       - final 번역 우선
       - preview 번역은 debounce/coalesce/drop
       - 같은 source는 cache hit로 재번역 회피
@@ -191,8 +191,8 @@ LCC_LM_TIER=mid          # full | mid | lite
 ```
 
 - 일반 자막 도구가 쓰는 Whisper는 음악·무음에서 "시청해주셔서 감사합니다" 같은 **환각 자막**을 뱉는데, 이 도구는 Gemma 오디오 모델에 "말 없으면 출력 금지"를 지시해 원천 차단.
-- 영어는 한국어와 어순이 반대라, 원문 줄은 먼저 보여주고 한국어는 preview와 final을 분리한다. final은 문장/절 단위로 기록에 남는다.
+- 영어처럼 어순이 다른 언어는 원문 줄을 먼저 보여주고, 번역(모국어)은 preview와 final로 분리한다. final은 문장/절 단위로 기록에 남는다.
 - 번역은 최근 final 문맥을 유지해서 대명사·용어가 일관됨.
 - 영상 지연 모드는 실제 오디오를 먼저 bridge로 보내고, bridge에 들어가기 시작한 PCM clock을 content script의 `performance.now()` 기준으로 보정해 지연된 영상/소리가 그 발화 구간에 도착할 때 자막을 출력한다. 자막은 기본적으로 `end_ms + delaySec + 싱크보정` 쪽으로 잡아, 번역 latency는 지연 buffer 안에 숨기되 청크 전체 번역이 발화보다 먼저 드러나지 않게 한다. canvas capture는 원본 video frame 해상도를 유지하고 최대 60fps로 제한하며, frame buffer timestamp는 `requestVideoFrameCallback` metadata를 우선 사용한다.
 
-개인 학습/시청용. 모델은 각 라이선스(Gemma) 따름.
+라이선스: **Apache-2.0**. 기본 모델도 전부 Apache-2.0(Gemma 4 · Granite Speech 4.1 · Qwen3-ASR).
