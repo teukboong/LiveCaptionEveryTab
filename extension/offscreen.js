@@ -349,6 +349,19 @@ async function start(streamId, pageContext, requestedDelaySec, config) {
       audio: { mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: streamId } }
     });
 
+    // The tab-capture track normally outlives same-tab navigation, but some navigations (and tab close)
+    // end it. track.stop() does NOT fire "ended", so this only fires on a genuine external end → tell the
+    // SW to clean up instead of leaving a dead, captionless capture running with the badge still ON.
+    const captureTrack = stream.getAudioTracks()[0];
+    if (captureTrack) {
+      captureTrack.addEventListener("ended", () => {
+        if (currentId !== streamId) return;   // a newer start already superseded this capture
+        report("탭 오디오 트랙 종료됨 (탭 닫힘/이동) — 캡처 정리");
+        stop(false);
+        sendBackgroundBestEffort({ route: "background", type: "capture-failed" }, "capture-failed");
+      }, { once: true });
+    }
+
     audioCtx = new AudioContext();
     if (audioCtx.state === "suspended") await audioCtx.resume();
     const source = audioCtx.createMediaStreamSource(stream);

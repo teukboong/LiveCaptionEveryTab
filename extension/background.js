@@ -93,6 +93,7 @@ async function cleanup() {
     pageUrl: null,
     delaySec: null,
     wsOpen: false,
+    lccStreamClock: null,
   });
   chrome.action.setBadgeText({ text: "" });
 }
@@ -254,13 +255,14 @@ async function forward(msg) {
   else if (msg.type === "caption_partial" && capturedTabId != null) sendTab(capturedTabId, payload);
   else if (msg.type === "source" && capturedTabId != null) sendTab(capturedTabId, payload);
   else if (msg.type === "stream-clock-start") {
-    if (capturedTabId != null) sendTab(capturedTabId, {
-      type: "stream-clock-start",
+    const clock = {
       mode: msg.mode || mode || "audio",
       playbackDelayMs: msg.playbackDelayMs ?? Math.round((Number(delaySec) || 0) * 1000),
       streamStartWall: msg.streamStartWall,
       streamStartPerf: msg.streamStartPerf,
-    });
+    };
+    await chrome.storage.session.set({ lccStreamClock: clock });   // cache so a navigated audio tab can re-anchor to the still-running stream
+    if (capturedTabId != null) sendTab(capturedTabId, { type: "stream-clock-start", ...clock });
   }
   else if (msg.type === "wsstate") {
     if (capturedTabId != null) sendTab(capturedTabId, { type: "wsstate", open: msg.open });
@@ -407,3 +409,55 @@ function handleTabGone(tabId) {
 }
 chrome.tabs.onRemoved.addListener((tabId) => { handleTabGone(tabId); });
 chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => { handleTabGone(removedTabId); });
+
+// When the captured tab loads a NEW document (navigation or reload), the page-side state set up at start
+// is gone and nothing re-arms it — captions silently stop. Re-arm on the new page. (A bridge restart does
+// NOT need this: the offscreen WS auto-reconnects and, in video mode, delay.js runs page-side — so this
+// only handles real navigation, which onUpdated reports and the initial start, on an already-loaded page,
+// does not.)
+async function reArmCapturedTab(tabId) {
+  if (tabId == null) return;
+  const { captioning, mode, capturedTabId, pageContext, delaySec, lccStreamClock } =
+    await chrome.storage.session.get(["captioning", "mode", "capturedTabId", "pageContext", "delaySec", "lccStreamClock"]);
+  if (!captioning || capturedTabId !== tabId) return;
+  const ready = await ensureContentScript(tabId);          // the new page may need the bundle injected first
+  if (!ready || ready.ok === false) return;                // not an injectable page (e.g. chrome://) -> nothing to re-arm
+  const dsec = Math.min(12, Math.max(0, Number(delaySec) || 0));
+  if (mode === "video") {
+    // Video delay lives in the page's delay.js (audio DelayNode + canvas), gone with the old document.
+    // Reset the relay so a fresh start-relay isn't deduped and the bridge's audio_ms restarts at 0, which
+    // is what the re-armed delay.js anchors its subtitle clock to (first PCM tap == audio_ms 0).
+    const config = await bridgeConfig();
+    await ensureOffscreen();
+    sendOffscreenBestEffort({ target: "offscreen", cmd: "stop" }, "stop");
+    sendOffscreenBestEffort({ target: "offscreen", cmd: "start-relay", delaySec: dsec, pageContext: pageContext || "", config }, "start-relay");
+    sendTab(tabId, { type: "status", on: true, mode: "video", playbackDelayMs: Math.round(dsec * 1000) });
+    sendTab(tabId, { type: "vdelay-start", delaySec: dsec, pageContext: pageContext || "" });
+    console.log("[lcc] re-armed video delay after navigation for tab", tabId);
+    return;
+  }
+  // Audio mode: the tab-capture stream lives in the offscreen doc and survives same-tab navigation, so
+  // PCM (and captions) keep flowing — only the fresh page lost the overlay + caption clock. Re-show the
+  // overlay and re-send the cached clock so captions re-anchor to the still-running stream. Do NOT reset
+  // the relay: that would drop the capture, which can't be re-acquired without a user gesture. (If the
+  // stream actually ended on navigation, offscreen's track-ended -> capture-failed tears it down instead.)
+  sendTab(tabId, { type: "status", on: true, mode: "audio", playbackDelayMs: Math.round(dsec * 1000) });
+  if (lccStreamClock && lccStreamClock.streamStartWall != null) {
+    sendTab(tabId, { type: "stream-clock-start", ...lccStreamClock });
+  }
+  console.log("[lcc] re-armed audio overlay after navigation for tab", tabId);
+}
+// Debounce per tab — a single load emits several onUpdated events. status:complete needs no "tabs"
+// permission. In-page SPA swaps that don't reload the document (e.g. clicking the next YouTube video
+// when the page reuses its <video>) aren't covered here.
+const lccReArmTimers = new Map();
+function scheduleReArm(tabId) {
+  if (lccReArmTimers.has(tabId)) clearTimeout(lccReArmTimers.get(tabId));
+  lccReArmTimers.set(tabId, setTimeout(() => {
+    lccReArmTimers.delete(tabId);
+    reArmCapturedTab(tabId).catch((e) => console.warn("[lcc] tab re-arm failed:", tabId, lccErrorText(e)));
+  }, 500));
+}
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === "complete") scheduleReArm(tabId);
+});
