@@ -254,8 +254,8 @@ assert.match(
 );
 assert.match(
   backgroundJs,
-  /if \(msg\.type === "popup-config-update"\) \{[\s\S]*if \(!captioning && !pageTranslating\) return \{ ok: true, applied: false \};[\s\S]*await ensureOffscreen\(\);[\s\S]*cmd: "config", config[\s\S]*return \{ ok: true, applied: true \};[\s\S]*sendResponse\(res \|\| \{ ok: true \}\)[\s\S]*return true;/,
-  "background acknowledges live config update success or failure",
+  /if \(msg\.type === "popup-config-update"\) \{[\s\S]*if \(!captioning && !pageTranslating\) return \{ ok: true, applied: false \};[\s\S]*await ensureOffscreen\(\);[\s\S]*cmd: "config", config[\s\S]*if \(msg\.resetTranslationContext\) await resetTranslationContext\(\);[\s\S]*return \{ ok: true, applied: true \};[\s\S]*sendResponse\(res \|\| \{ ok: true \}\)[\s\S]*return true;/,
+  "background acknowledges live config update and reset success or failure",
 );
 assert.match(
   backgroundJs,

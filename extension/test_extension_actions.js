@@ -186,6 +186,7 @@ function loadBackgroundHarness({
   failOffscreenClose = false,
   failOffscreenMessage = false,
   failOffscreenPcm = false,
+  failSecondSessionGet = false,
   failSessionGet = false,
   failSessionSet = false,
   failTabMessage = false,
@@ -198,6 +199,7 @@ function loadBackgroundHarness({
   const runtimeMessages = [];
   const sessionSet = [];
   const sessionRemoved = [];
+  let sessionGetCount = 0;
   const tabMessages = [];
   const warnings = [];
 
@@ -246,7 +248,9 @@ function loadBackgroundHarness({
       },
       session: {
         get() {
+          sessionGetCount += 1;
           if (failSessionGet) return Promise.reject(new Error("session get failed"));
+          if (failSecondSessionGet && sessionGetCount === 2) return Promise.reject(new Error("session get failed"));
           return Promise.resolve({ capturedTabId: 456, pageTabId: 123, pageTranslating });
         },
         set(value) {
@@ -423,6 +427,33 @@ function runBackgroundClearTranscript(options) {
   });
   assert.deepEqual(plain(backgroundPageBatchFailure.response), { ok: false, error: "offscreen batch failed" });
 
+  const backgroundConfigReset = await runBackgroundMessage(
+    { type: "popup-config-update", resetTranslationContext: true },
+    { pageTranslating: true },
+  );
+  const configResetSettings = plain(backgroundConfigReset.runtimeMessages[0].config);
+  assert.deepEqual(plain(backgroundConfigReset.response), { ok: true, applied: true });
+  assert.deepEqual(plain(backgroundConfigReset.runtimeMessages), [
+    { target: "offscreen", cmd: "config", config: configResetSettings },
+  ]);
+  assert.deepEqual(plain(backgroundConfigReset.tabMessages), [
+    { tabId: 123, msg: { type: "page-translate-config", settings: configResetSettings } },
+    { tabId: 456, msg: { type: "translation-context-reset" } },
+  ]);
+
+  const backgroundConfigResetFailure = await runBackgroundMessage(
+    { type: "popup-config-update", resetTranslationContext: true },
+    { pageTranslating: true, failSecondSessionGet: true },
+  );
+  const failedConfigResetSettings = plain(backgroundConfigResetFailure.runtimeMessages[0].config);
+  assert.deepEqual(plain(backgroundConfigResetFailure.response), { ok: false, error: "session get failed" });
+  assert.deepEqual(plain(backgroundConfigResetFailure.runtimeMessages), [
+    { target: "offscreen", cmd: "config", config: failedConfigResetSettings },
+  ]);
+  assert.deepEqual(plain(backgroundConfigResetFailure.tabMessages), [
+    { tabId: 123, msg: { type: "page-translate-config", settings: failedConfigResetSettings } },
+  ]);
+
   const backgroundPcmFailure = await runBackgroundOneWay(
     { type: "vd-pcm", pcm: [1, 2, 3] },
     { failOffscreenPcm: true },
@@ -439,7 +470,7 @@ function runBackgroundClearTranscript(options) {
   assert.deepEqual(plain(backgroundOffscreenReadyFailure.runtimeMessages), []);
   assert.match(backgroundOffscreenReadyFailure.warnings.join("\n"), /offscreen-ready resend failed: session get failed/);
 
-  console.log("test_extension_actions: OK (popup/background cleanup, transcript clear, page batch, video PCM, and offscreen-ready paths pass)");
+  console.log("test_extension_actions: OK (popup/background cleanup, transcript clear, page batch, config reset, video PCM, and offscreen-ready paths pass)");
 })().catch((e) => {
   console.error(e);
   process.exit(1);

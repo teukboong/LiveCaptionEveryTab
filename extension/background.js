@@ -294,7 +294,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const pushed = await chrome.runtime.sendMessage({ target: "offscreen", cmd: "config", config });
       if (pushed && pushed.ok === false) return pushed;
       if (pageTranslating && pageTabId != null) sendTab(pageTabId, { type: "page-translate-config", settings: config });
-      if (msg.resetTranslationContext) resetTranslationContext();
+      if (msg.resetTranslationContext) await resetTranslationContext();
       return { ok: true, applied: true };
     })
       .then((res) => sendResponse(res || { ok: true }))
