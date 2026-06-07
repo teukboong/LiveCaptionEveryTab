@@ -83,6 +83,9 @@ with tempfile.TemporaryDirectory() as tmp:
     old_root = host.ROOT
     old_port_listener_pids = host.port_listener_pids
     old_pid_command = host._pid_command
+    old_bridge_pids = host.bridge_pids
+    old_do_stop = host.do_stop
+    old_do_start = host.do_start
     try:
         host.ROOT = str(repo)
         own_cmd = f"/venv/bin/python -u {server}"
@@ -98,16 +101,45 @@ with tempfile.TemporaryDirectory() as tmp:
         check("bridge_pids.filters_foreign", host.bridge_pids(), [101])
         check("foreign_listener.filters_own", host._foreign_listener_pids(), [202])
 
+        ready = host.do_status()
+        check("status.ready_running", ready.get("running"), True)
+        check("status.ready_starting", ready.get("starting"), False)
+        check("status.ready_pid", ready.get("pid"), 101)
+
+        host.port_listener_pids = lambda: []
+        host.bridge_pids = lambda: [101]
+        starting = host.do_status()
+        check("status.starting_running", starting.get("running"), False)
+        check("status.starting_flag", starting.get("starting"), True)
+        check("status.starting_pid", starting.get("pid"), 101)
+
+        host.bridge_pids = old_bridge_pids
         host.port_listener_pids = lambda: [202]
         status = host.do_status()
         check("status.foreign_running", status.get("running"), False)
+        check("status.foreign_starting", status.get("starting"), False)
         check("status.foreign_blocked", status.get("blocked"), True)
         check("start.foreign_blocked", host.do_start({}).get("blocked"), True)
         check("stop.foreign_blocked", host.do_stop().get("blocked"), True)
+
+        start_calls = []
+        host.do_stop = lambda: {"ok": False, "running": True, "error": "still running"}
+        host.do_start = lambda msg=None: start_calls.append(msg) or {"ok": True}
+        restart = host.do_restart({})
+        check("restart.stop_failure_ok", restart.get("ok"), False)
+        check("restart.stop_failure_not_started", len(start_calls), 0)
+
+        host.do_stop = lambda: {"ok": True, "running": False}
+        restart = host.do_restart({"asrEngine": "parakeet"})
+        check("restart.starts_after_stop", restart.get("ok"), True)
+        check("restart.start_msg_forwarded", start_calls, [{"asrEngine": "parakeet"}])
     finally:
         host.ROOT = old_root
         host.port_listener_pids = old_port_listener_pids
         host._pid_command = old_pid_command
+        host.bridge_pids = old_bridge_pids
+        host.do_stop = old_do_stop
+        host.do_start = old_do_start
 
 check("asr.granite", host._asr_engine({"asrEngine": "granite"}), "granite")
 check("asr.qwen3", host._asr_engine({"asrEngine": "qwen3"}), "qwen3")

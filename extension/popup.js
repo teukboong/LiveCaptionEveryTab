@@ -121,6 +121,7 @@ const UI_TEXT = Object.freeze({
     on: "켜짐",
     alreadyOn: "이미 켜짐",
     startRequested: "시작 요청…",
+    starting: "기동 중… 모델 로드 ~40s",
     startingWithSeconds: "기동 중… ({seconds}s · 모델 로드 ~40s)",
     noResponseLog: "응답 없음 — ~/.lcc-bridge.log 확인",
     setupHost: "호스트 미설치 — 터미널에서 ./setup.sh 1회",
@@ -241,6 +242,7 @@ const UI_TEXT = Object.freeze({
     on: "On",
     alreadyOn: "Already on",
     startRequested: "Start requested…",
+    starting: "Starting… model load ~40s",
     startingWithSeconds: "Starting… ({seconds}s · model load ~40s)",
     noResponseLog: "No response — check ~/.lcc-bridge.log",
     setupHost: "Host not installed — run ./setup.sh once in Terminal",
@@ -604,17 +606,28 @@ const bridgeStopBtn = document.getElementById("bridgeStopBtn");
 const bridgeStatusEl = document.getElementById("bridgeStatus");
 let bridgePoll = null;
 let bridgePollBusy = false;
-function setBridgeUI(state, text) {           // state: on | off | starting | nohost
-  bridgeStatusEl.style.color = state === "on" ? "#16a34a" : (state === "nohost" ? "#dc2626" : "#666");
+function bridgeErrorText(r, fallback) {
+  return "" + ((r && (r.error || r.msg)) || fallback);
+}
+function setBridgeUI(state, text) {           // state: on | off | starting | nohost | blocked
+  const errorState = state === "nohost" || state === "blocked";
+  bridgeStatusEl.style.color = state === "on" ? "#16a34a" : (errorState ? "#dc2626" : "#666");
   if (text != null) bridgeStatusEl.textContent = text;
   bridgeBtn.disabled = (state === "starting");
   bridgeStopBtn.style.display = (state === "on" || state === "starting") ? "" : "none";
   bridgeBtn.textContent = state === "on" ? tr("bridgeStarted") : tr("bridgeStart");
 }
+function setBridgeStatusFromReply(r, loadingText) {
+  if (r.noHost) { setBridgeUI("nohost", tr("noHost")); return false; }
+  if (!r.ok || r.blocked) { setBridgeUI("blocked", bridgeErrorText(r, tr("failurePrefix").trim())); return false; }
+  if (r.running) { setBridgeUI("on", tr("on") + (r.pid ? " (pid " + r.pid + ")" : "")); return true; }
+  if (r.starting) { setBridgeUI("starting", loadingText || tr("starting")); return true; }
+  setBridgeUI("off", tr("off"));
+  return true;
+}
 async function refreshBridge() {
   const r = await nmSend({ cmd: "status" });
-  if (r.noHost) { setBridgeUI("nohost", tr("noHost")); return; }
-  setBridgeUI(r.running ? "on" : "off", r.running ? (tr("on") + (r.pid ? " (pid " + r.pid + ")" : "")) : tr("off"));
+  setBridgeStatusFromReply(r);
 }
 function pollBridgeUntilUp(maxSec) {
   if (bridgePoll) clearInterval(bridgePoll);
@@ -626,7 +639,11 @@ function pollBridgeUntilUp(maxSec) {
     try {
       t += 2;
       const r = await nmSend({ cmd: "status" });
-      if (r.running) { clearInterval(bridgePoll); bridgePoll = null; setBridgeUI("on", tr("on")); }
+      if (r.noHost || !r.ok || r.blocked) {
+        clearInterval(bridgePoll); bridgePoll = null;
+        setBridgeStatusFromReply(r);
+      }
+      else if (r.running) { clearInterval(bridgePoll); bridgePoll = null; setBridgeUI("on", tr("on")); }
       else if (t >= maxSec) { clearInterval(bridgePoll); bridgePoll = null; setBridgeUI("off", tr("noResponseLog")); }
       else setBridgeUI("starting", tr("startingWithSeconds", { seconds: t }));
     } finally {
@@ -638,8 +655,9 @@ bridgeBtn.onclick = async () => {
   setBridgeUI("starting", tr("startRequested"));
   const r = await nmSend({ cmd: "start", asrEngine: settings.asrEngine || "granite" });
   if (r.noHost) { setBridgeUI("nohost", tr("setupHost")); return; }
-  if (!r.ok) { setBridgeUI("off", "" + (r.error || tr("failurePrefix").trim())); return; }
-  if (r.already || r.running) { setBridgeUI("on", tr("alreadyOn")); return; }
+  if (!r.ok || r.blocked) { setBridgeUI("blocked", bridgeErrorText(r, tr("failurePrefix").trim())); return; }
+  if (r.running) { setBridgeUI("on", tr("alreadyOn")); return; }
+  if (r.starting) setBridgeUI("starting", r.msg || tr("starting"));
   pollBridgeUntilUp(70);
 };
 bridgeStopBtn.onclick = async () => {
@@ -647,6 +665,7 @@ bridgeStopBtn.onclick = async () => {
   setBridgeUI("starting", tr("stopping"));
   const r = await nmSend({ cmd: "stop" });
   if (r.noHost) { setBridgeUI("nohost", tr("noHost")); return; }
+  if (!r.ok || r.blocked) { setBridgeUI("blocked", bridgeErrorText(r, tr("stopFailed"))); return; }
   setBridgeUI(r.running ? "on" : "off", r.running ? tr("stopFailed") : tr("off"));
 };
 refreshBridge();

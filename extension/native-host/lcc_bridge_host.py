@@ -7,7 +7,7 @@ by that many bytes of UTF-8 JSON, on stdin/stdout. The extension sends one {cmd}
 one reply (chrome.runtime.sendNativeMessage), so this host handles a single message and exits.
 
 Commands:
-  {"cmd":"status"}  -> {ok, running, pid}
+  {"cmd":"status"}  -> {ok, running, starting, pid}
   {"cmd":"start"}   -> launches the bridge DETACHED if the port is free; never double-launches
                        (a second 26B load would blow RAM ~52GB). Returns immediately; the bridge
                        takes ~40s to load models before the port opens, so the popup polls status.
@@ -108,9 +108,14 @@ def _this_bridge_pids(pids):
     return sorted(int(pid) for pid in pids if _cmd_matches_this_bridge(_pid_command(pid)))
 
 
+def _own_listener_pids():
+    return _this_bridge_pids(port_listener_pids())
+
+
 def _foreign_listener_pids():
-    ours = set(_this_bridge_pids(port_listener_pids()))
-    return [pid for pid in port_listener_pids() if pid not in ours]
+    listeners = port_listener_pids()
+    ours = set(_this_bridge_pids(listeners))
+    return [pid for pid in listeners if pid not in ours]
 
 
 def bridge_pids():
@@ -130,10 +135,16 @@ def bridge_pids():
 
 
 def do_status():
+    listener_pids = _own_listener_pids()
     pids = bridge_pids()
     foreign = _foreign_listener_pids()
-    reply = {"ok": True, "running": bool(pids), "pid": (pids[0] if pids else None)}
-    if foreign and not pids:
+    reply = {
+        "ok": True,
+        "running": bool(listener_pids),
+        "starting": bool(pids and not listener_pids),
+        "pid": ((listener_pids or pids)[0] if (listener_pids or pids) else None),
+    }
+    if foreign:
         reply.update({"blocked": True, "error": f"포트 {PORT}가 다른 프로세스에 사용 중: pid {foreign[0]}"})
     return reply
 
@@ -201,7 +212,7 @@ def do_start(msg=None):
             "msg": "CUDA 스택 기동 완료" if data.get("ok", True) else data.get("error", "CUDA 스택 실패"),
             "detail": data,
         }
-    listener_pids = _this_bridge_pids(port_listener_pids())
+    listener_pids = _own_listener_pids()
     if listener_pids:
         return {"ok": True, "running": True, "already": True, "pid": listener_pids[0], "msg": "이미 실행 중"}
     foreign = _foreign_listener_pids()
@@ -265,6 +276,19 @@ def do_stop():
             time.sleep(0.5)
     still_running = bool(bridge_pids())
     return {"ok": not still_running, "running": still_running, "msg": "종료 시도 완료"}
+
+
+def do_restart(msg=None):
+    stopped = do_stop()
+    if not stopped.get("ok"):
+        stopped.setdefault("restart", False)
+        return stopped
+    if stopped.get("running"):
+        stopped.setdefault("ok", False)
+        stopped.setdefault("restart", False)
+        stopped.setdefault("error", stopped.get("msg") or "브릿지 종료 실패")
+        return stopped
+    return do_start(msg)
 
 
 def _venv_python():
@@ -372,8 +396,7 @@ def main():
         elif cmd == "stop":
             reply = do_stop()
         elif cmd == "restart":
-            do_stop()
-            reply = do_start(msg)
+            reply = do_restart(msg)
         elif cmd == "install":
             reply = do_install(msg)
         elif cmd == "install_status":
