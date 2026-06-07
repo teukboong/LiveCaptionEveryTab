@@ -1,4 +1,4 @@
-# Live Caption (KR) — Realtime foreign→Korean captions for any site
+# Live Caption Every Tab — Realtime foreign→Korean captions for any site
 
 [한국어](README.md) · **English** · [日本語](README.ja.md) · [Español](README.es.md) · [中文](README.zh.md)
 

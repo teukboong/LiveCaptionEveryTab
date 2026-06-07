@@ -1,4 +1,4 @@
-# Live Caption (KR) — Mac 설치 가이드 (처음부터)
+# Live Caption Every Tab — Mac 설치 가이드 (처음부터)
 
 유튜브·트위치·**X** 등 **어떤 사이트든 브라우저 탭의 외국어 음성을 실시간 한국어 자막**으로 띄우는 도구. (소리 나는 탭이면 도메인 무관)
 전부 **로컬에서** 돌아간다(클라우드 X, 무료). Apple Silicon Mac + 로컬 Gemma-4 모델 사용.
@@ -39,8 +39,8 @@ Chrome가 없으면 https://www.google.com/chrome 에서 설치.
 ## 2. 코드 받기
 
 ```bash
-git clone https://github.com/teukboong/live-caption-kr.git
-cd live-caption-kr     # bridge/ extension/ 가 보이는 폴더
+git clone https://github.com/teukboong/LiveCaptionEveryTab.git
+cd LiveCaptionEveryTab     # bridge/ extension/ 가 보이는 폴더
 ```
 
 이후 명령들은 **이 폴더(저장소 루트) 안에서** 실행한다고 가정.
@@ -107,7 +107,7 @@ bash bridge/run_bridge.sh
 1. Chrome 주소창에 `chrome://extensions` 입력 → 이동
 2. 우측 상단 **개발자 모드** 켜기
 3. **압축해제된 확장 프로그램을 로드** 클릭 → 받은 폴더 안의 **`extension`** 폴더 선택
-4. (선택) 툴바 퍼즐🧩 아이콘 → **Live Caption (KR)** 옆 **📌 고정**
+4. (선택) 툴바 퍼즐🧩 아이콘 → **Live Caption Every Tab** 옆 **📌 고정**
 
 ---
 

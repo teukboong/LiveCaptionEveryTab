@@ -1,4 +1,4 @@
-# Live Caption (KR) — 任意网站的实时外语→韩语字幕
+# Live Caption Every Tab — 任意网站的实时外语→韩语字幕
 
 [한국어](README.md) · [English](README.en.md) · [日本語](README.ja.md) · [Español](README.es.md) · **中文**
 

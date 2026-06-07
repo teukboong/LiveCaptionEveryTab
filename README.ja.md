@@ -1,4 +1,4 @@
-# Live Caption (KR) — あらゆるサイトの外国語音声をリアルタイム韓国語字幕に
+# Live Caption Every Tab — あらゆるサイトの外国語音声をリアルタイム韓国語字幕に
 
 [한국어](README.md) · [English](README.en.md) · **日本語** · [Español](README.es.md) · [中文](README.zh.md)
 

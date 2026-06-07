@@ -1,4 +1,4 @@
-# Live Caption (KR) — Subtítulos en tiempo real de cualquier sitio (extranjero→coreano)
+# Live Caption Every Tab — Subtítulos en tiempo real de cualquier sitio (extranjero→coreano)
 
 [한국어](README.md) · [English](README.en.md) · [日本語](README.ja.md) · **Español** · [中文](README.zh.md)
 

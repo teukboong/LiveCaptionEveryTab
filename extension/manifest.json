@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Live Caption (KR)",
+  "name": "Live Caption Every Tab",
   "version": "0.1.0",
-  "description": "Realtime foreign→Korean captions for any site (YouTube/Twitch/X/…) via a local Gemma-4 bridge.",
+  "description": "Realtime captions + local-LLM translation for any browser tab (YouTube/Twitch/X/…). Fully local, target language selectable.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoxW5Fdix+4Zd5HBEznAUT/Oo8272eSA/7RjS9SxvclbrT3q23TwK+HogUhQ9cC7snnYQlTQXuup7YLr6LdkhMZytYZRZ4Tc4MkSeZSXMJrvWYFwobq9mnjlCHp3amGSXzeAQVnzuAOoIIL7jyw4PCuMDDlNZuIBWe8ZFx2XfvcJIfo1K2TO94K+Z2sJtvu+jdkmVwBEbLa8MSy2GsiZeIWAnfG0DlbT30g1wvkvbw3Wbjr+ZozAwNVQcn6KVgHr0h9nVTuypUAv7JJsM4mCrnkNxEpMLbQaK17sowkxCbTe2eQz/VgaHpi8m/hcheOEs6PhxCoEdOpoxFle2XOPMLwIDAQAB",
   "permissions": ["tabCapture", "offscreen", "activeTab", "storage", "nativeMessaging"],
   "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "Live Caption (KR)" },
+  "action": { "default_popup": "popup.html", "default_title": "Live Caption Every Tab" },
   "content_scripts": [
     {
       "matches": ["*://*/*"],

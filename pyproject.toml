@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "live-caption-kr"
+name = "live-caption-every-tab"
 version = "0.1.0"
 description = "Realtime foreign->Korean captions for any browser tab, fully local (Gemma 4 + Granite/Qwen3 ASR)."
 readme = "README.md"
@@ -45,8 +45,8 @@ cuda = []
 parakeet = ["sherpa-onnx==1.13.2"]
 
 [project.urls]
-Homepage = "https://github.com/teukboong/live-caption-kr"
-Repository = "https://github.com/teukboong/live-caption-kr"
+Homepage = "https://github.com/teukboong/LiveCaptionEveryTab"
+Repository = "https://github.com/teukboong/LiveCaptionEveryTab"
 
 # This repo ships runnable scripts (bridge/, extension/), not an importable library — install only resolves
 # dependencies. Tell setuptools there are no packages/modules to build so `pip install '.[mlx]'` just works.

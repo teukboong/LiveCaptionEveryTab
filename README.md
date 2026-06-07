@@ -1,4 +1,4 @@
-# Live Caption (KR) — 모든 사이트 실시간 외국어→한국어 자막
+# Live Caption Every Tab — 모든 사이트 실시간 외국어→한국어 자막
 
 **한국어** · [English](README.en.md) · [日本語](README.ja.md) · [Español](README.es.md) · [中文](README.zh.md)
 

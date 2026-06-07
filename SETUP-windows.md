@@ -1,4 +1,4 @@
-# Live Caption (KR) — Windows + NVIDIA 설치 가이드 (WSL2)
+# Live Caption Every Tab — Windows + NVIDIA 설치 가이드 (WSL2)
 
 Mac(Apple MLX)와 **같은 확장프로그램**을, 이번엔 **NVIDIA GPU**로 돌린다. 전사도 Mac과 **같은 모델**
 (granite-speech-4.1=영어 / Qwen3-ASR=다국어)을 CUDA에서 쓴다(whisper 안 씀). 브라우저 쪽은 한 줄도 안 바뀌고,
