@@ -48,6 +48,7 @@ const LCC_RUN_MODES = Object.freeze({
   page: Object.freeze({ page: true, caption: false }),
   both: Object.freeze({ page: true, caption: true }),
 });
+const LCC_RUN_MODE_VALUES = Object.freeze(Object.keys(LCC_RUN_MODES));
 const LCC_CONTENT_PRESETS = Object.freeze({
   general: Object.freeze({ register: "casual", latencyMode: "aggressive" }),
   conference: Object.freeze({ register: "lecture", latencyMode: "stable" }),
@@ -61,6 +62,8 @@ const LCC_UI_LANGS = Object.freeze([
 ]);
 const LCC_ASR_ENGINES = Object.freeze(["granite", "qwen3"]);
 const LCC_LATENCY_MODES = Object.freeze(["stable", "balanced", "aggressive"]);
+const LCC_PAGE_TRANSLATE_STREAMS = Object.freeze(["partial", "final"]);
+const LCC_UI_MODES = Object.freeze(["simple", "advanced"]);
 
 function lccCanonicalLowerToken(value, allowed, fallback) {
   const raw = String(value || fallback || "").trim().toLowerCase();
@@ -86,11 +89,14 @@ globalThis.LCC_TARGET_LANGS = LCC_TARGET_LANGS;
 globalThis.LCC_UI_LANGS = LCC_UI_LANGS;
 globalThis.LCC_DEFAULT_SETTINGS = LCC_DEFAULT_SETTINGS;
 globalThis.LCC_RUN_MODES = LCC_RUN_MODES;
+globalThis.LCC_RUN_MODE_VALUES = LCC_RUN_MODE_VALUES;
 globalThis.LCC_CONTENT_PRESETS = LCC_CONTENT_PRESETS;
 globalThis.LCC_CONTENT_TYPES = LCC_CONTENT_TYPES;
 globalThis.LCC_REGISTERS = LCC_REGISTERS;
 globalThis.LCC_ASR_ENGINES = LCC_ASR_ENGINES;
 globalThis.LCC_LATENCY_MODES = LCC_LATENCY_MODES;
+globalThis.LCC_PAGE_TRANSLATE_STREAMS = LCC_PAGE_TRANSLATE_STREAMS;
+globalThis.LCC_UI_MODES = LCC_UI_MODES;
 globalThis.lccCanonicalTargetLang = lccCanonicalTargetLang;
 globalThis.lccCanonicalUiLang = function lccCanonicalUiLang(value, fallback = "ko") {
   return lccCanonicalLowerToken(value, LCC_UI_LANGS.map((lang) => lang.value), fallback);
@@ -116,6 +122,15 @@ globalThis.lccCanonicalLatencyMode = function lccCanonicalLatencyMode(value, fal
   const raw = String(value || fallback || "aggressive").trim().toLowerCase();
   return lccCanonicalLowerToken(aliases[raw] || raw, LCC_LATENCY_MODES, fallback);
 };
+globalThis.lccCanonicalRunMode = function lccCanonicalRunMode(value, fallback = "video") {
+  return lccCanonicalLowerToken(value, LCC_RUN_MODE_VALUES, fallback);
+};
+globalThis.lccCanonicalPageTranslateStream = function lccCanonicalPageTranslateStream(value, fallback = "partial") {
+  return lccCanonicalLowerToken(value, LCC_PAGE_TRANSLATE_STREAMS, fallback);
+};
+globalThis.lccCanonicalUiMode = function lccCanonicalUiMode(value, fallback = "simple") {
+  return lccCanonicalLowerToken(value, LCC_UI_MODES, fallback);
+};
 globalThis.lccBridgeHello = function lccBridgeHello(ws) {
   ws.send(JSON.stringify({ type: "hello", token: globalThis.LCC_WS_TOKEN }));
 };
@@ -132,7 +147,8 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   out.register = globalThis.lccCanonicalRegister(out.register);
   out.pageRegister = globalThis.lccCanonicalRegister(out.pageRegister, LCC_DEFAULT_SETTINGS.pageRegister);
   out.latencyMode = globalThis.lccCanonicalLatencyMode(out.latencyMode);
-  out.runMode = LCC_RUN_MODES[out.runMode] ? out.runMode : LCC_DEFAULT_SETTINGS.runMode;
+  out.runMode = globalThis.lccCanonicalRunMode(out.runMode);
+  out.uiMode = globalThis.lccCanonicalUiMode(out.uiMode);
   out.fontSize = lccClampNumber(out.fontSize, LCC_DEFAULT_SETTINGS.fontSize, 14, 44);
   out.bottomPct = lccClampNumber(out.bottomPct, LCC_DEFAULT_SETTINGS.bottomPct, 2, 80);
   out.leftPct = lccClampNumber(out.leftPct, LCC_DEFAULT_SETTINGS.leftPct, 5, 95);
@@ -143,16 +159,18 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   out.pageTranslateSelector = String(out.pageTranslateSelector || LCC_DEFAULT_SETTINGS.pageTranslateSelector).trim() || "body";
   out.pageTranslateMinChars = lccClampInteger(out.pageTranslateMinChars, LCC_DEFAULT_SETTINGS.pageTranslateMinChars, 1, 80);
   out.pageTranslateMaxChars = lccClampInteger(out.pageTranslateMaxChars, LCC_DEFAULT_SETTINGS.pageTranslateMaxChars, 80, 8000);
-  out.pageTranslateStream = (out.pageTranslateStream === "final") ? "final" : "partial";
+  out.pageTranslateStream = globalThis.lccCanonicalPageTranslateStream(out.pageTranslateStream);
   out.pageBilingual = out.pageBilingual !== false;
   out.pageVerify = out.pageVerify === true;
   return out;
 };
 globalThis.lccRunModeIncludesPage = function lccRunModeIncludesPage(mode) {
-  return !!(LCC_RUN_MODES[mode] && LCC_RUN_MODES[mode].page);
+  const m = globalThis.lccCanonicalRunMode(mode);
+  return !!(LCC_RUN_MODES[m] && LCC_RUN_MODES[m].page);
 };
 globalThis.lccRunModeIncludesCaption = function lccRunModeIncludesCaption(mode) {
-  return !!(LCC_RUN_MODES[mode] && LCC_RUN_MODES[mode].caption);
+  const m = globalThis.lccCanonicalRunMode(mode);
+  return !!(LCC_RUN_MODES[m] && LCC_RUN_MODES[m].caption);
 };
 globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageContext) {
   const s = globalThis.lccNormalizeSettings(settings);
@@ -170,10 +188,10 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
     contextHint: hint,
     glossary: s.glossary || "",
     pageContextHint: pageHint,
-    runMode: s.runMode || "video",                // content-only: lets the page translator pick the page vs both policy (it isn't a video tab)
+    runMode: globalThis.lccCanonicalRunMode(s.runMode),                // content-only: lets the page translator pick the page vs both policy (it isn't a video tab)
     pageRegister: globalThis.lccCanonicalRegister(s.pageRegister),
     pageGlossary: s.pageGlossary || "",
-    pageTranslateStream: (s.pageTranslateStream === "final") ? "final" : "partial",   // content+offscreen read it; bridge ignores
+    pageTranslateStream: globalThis.lccCanonicalPageTranslateStream(s.pageTranslateStream),   // content+offscreen read it; bridge ignores
     pageBilingual: s.pageBilingual !== false,     // content-only: hover shows the original
     pageVerify: s.pageVerify === true,            // content-only: re-check cached labels in idle
 

@@ -681,8 +681,8 @@ function setMode(mode) {
   document.getElementById("modeAdv").classList.toggle("active", adv);
   document.getElementById("modeSimple").classList.toggle("active", !adv);
 }
-document.getElementById("modeSimple").onclick = () => { settings.uiMode = "simple"; setMode("simple"); saveSettings(); };
-document.getElementById("modeAdv").onclick = () => { settings.uiMode = "advanced"; setMode("advanced"); saveSettings(); };
+document.getElementById("modeSimple").onclick = () => { settings.uiMode = globalThis.lccCanonicalUiMode("simple"); setMode(settings.uiMode); saveSettings(); };
+document.getElementById("modeAdv").onclick = () => { settings.uiMode = globalThis.lccCanonicalUiMode("advanced"); setMode(settings.uiMode); saveSettings(); };
 
 // ---- advanced parameter controls (the raw knobs; ranges handled by the generic RANGES loop) ----
 document.getElementById("latencyMode").addEventListener("change", (e) => {
@@ -698,7 +698,7 @@ document.getElementById("register").addEventListener("change", (e) => {
 document.getElementById("accuracyMode").addEventListener("change", (e) => { settings.accuracyMode = e.target.checked; saveSettings(); });
 document.getElementById("autoPrime").addEventListener("change", (e) => { settings.autoPrime = e.target.checked; saveSettings(); });
 document.getElementById("pageTranslateStream").addEventListener("change", (e) => {
-  settings.pageTranslateStream = e.target.value === "final" ? "final" : "partial";
+  settings.pageTranslateStream = globalThis.lccCanonicalPageTranslateStream(e.target.value);
   e.target.value = settings.pageTranslateStream;
   saveSettings(true);
 });
