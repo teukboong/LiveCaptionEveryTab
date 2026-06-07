@@ -188,6 +188,16 @@ assert.match(
   "content overlay normalizes live setting changes before applying them",
 );
 assert.match(
+  contentJs,
+  /const pushed = await chrome\.runtime\.sendMessage\(\{ type: "popup-config-update", resetTranslationContext: false \}\);[\s\S]*if \(pushed && pushed\.ok === false\) throw new Error/,
+  "content glossary waits for live config push acknowledgement",
+);
+assert.match(
+  contentJs,
+  /const res = await lccAddGlossary\(src\.value, tgt\.value\);[\s\S]*if \(res\.ok\)[\s\S]*else \{ msg\.textContent = res\.error \|\| "원문·번역 둘 다 필요"; \}/,
+  "content glossary reports live config push failures",
+);
+assert.match(
   backgroundJs,
   /async function ensureContentScript\(tabId\) \{[\s\S]*return false;[\s\S]*return true;[\s\S]*return false;[\s\S]*\}/,
   "background content-script injection reports success or failure",

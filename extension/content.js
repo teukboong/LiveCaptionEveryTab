@@ -162,7 +162,7 @@ try {
 let lccGlossBar = null;
 async function lccAddGlossary(term, tr) {
   term = (term || "").trim(); tr = (tr || "").trim();
-  if (!term || !tr) return false;
+  if (!term || !tr) return { ok: false, error: "원문·번역 둘 다 필요" };
   try {
     const s = (await chrome.storage.local.get("lcc-settings"))["lcc-settings"] || {};
     const lines = (s.glossary || "").split("\n").map((l) => l.trim()).filter(Boolean);
@@ -170,9 +170,10 @@ async function lccAddGlossary(term, tr) {
     kept.push(`${term}=${tr}`);                                  // last wins: re-pinning a term replaces it
     s.glossary = kept.join("\n");
     await chrome.storage.local.set({ "lcc-settings": s });
-    chrome.runtime.sendMessage({ type: "popup-config-update", resetTranslationContext: false });
-    return true;
-  } catch (_) { return false; }
+    const pushed = await chrome.runtime.sendMessage({ type: "popup-config-update", resetTranslationContext: false });
+    if (pushed && pushed.ok === false) throw new Error(pushed.error || "브릿지 설정 반영 실패");
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e && e.message || "브릿지 설정 반영 실패" }; }
 }
 function lccEnsureGlossBar() {
   if (lccGlossBar && lccGlossBar.isConnected) return lccGlossBar;
@@ -192,9 +193,9 @@ function lccEnsureGlossBar() {
   bar.append(src, arrow, tgt, add, msg);
   host().appendChild(bar);
   const submit = async () => {
-    const ok = await lccAddGlossary(src.value, tgt.value);
-    if (ok) { msg.textContent = `✓ '${src.value.trim()}' 추가 (다음 발화부터)`; src.value = ""; tgt.value = ""; setTimeout(lccCloseGlossBar, 1100); }
-    else { msg.textContent = "원문·번역 둘 다 필요"; }
+    const res = await lccAddGlossary(src.value, tgt.value);
+    if (res.ok) { msg.textContent = `✓ '${src.value.trim()}' 추가 (다음 발화부터)`; src.value = ""; tgt.value = ""; setTimeout(lccCloseGlossBar, 1100); }
+    else { msg.textContent = res.error || "원문·번역 둘 다 필요"; }
   };
   add.addEventListener("click", submit);
   src.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); tgt.focus(); } });
