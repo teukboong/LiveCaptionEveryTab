@@ -126,6 +126,7 @@ assert.equal(context.lccBuildBridgeConfig({ pageRegister: "CHAT" }, "").pageRegi
 const popupHtml = fs.readFileSync(path.join(root, "extension", "popup.html"), "utf8");
 const popupJs = fs.readFileSync(path.join(root, "extension", "popup.js"), "utf8");
 const contentJs = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+const backgroundJs = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
 assert.match(popupHtml, /<select id="targetLang"><\/select>/, "popup target select is populated from protocol.js");
 assert.match(popupHtml, /<select id="uiLang"><\/select>/, "popup UI-language select is populated from protocol.js");
 assert.match(popupHtml, /id="pageTranslate"/, "popup exposes the page translation toggle");
@@ -164,6 +165,31 @@ assert.match(
   contentJs,
   /settings = globalThis\.lccNormalizeSettings\(\{ \.\.\.settings, \.\.\.ch\["lcc-settings"\]\.newValue \}\);/,
   "content overlay normalizes live setting changes before applying them",
+);
+assert.match(
+  backgroundJs,
+  /async function ensureContentScript\(tabId\) \{[\s\S]*return false;[\s\S]*return true;[\s\S]*return false;[\s\S]*\}/,
+  "background content-script injection reports success or failure",
+);
+assert.match(
+  backgroundJs,
+  /function requireContentScript\(ok\) \{[\s\S]*throw new Error\("이 탭에는 확장 스크립트를 주입할 수 없어요\./,
+  "background reports unsupported tabs before claiming a run started",
+);
+assert.match(
+  backgroundJs,
+  /requireContentScript\(await ensureContentScript\(tabId\)\);[\s\S]*const dsec = Math\.min\(12, Math\.max\(0, Number\(delaySec\) \|\| 0\)\);/,
+  "audio start requires content-script injection before session state",
+);
+assert.match(
+  backgroundJs,
+  /requireContentScript\(await ensureContentScript\(tabId\)\);[\s\S]*const dsec = Math\.min\(12, Math\.max\(0\.5, Number\(delaySec\) \|\| 3\.5\)\);/,
+  "video start requires content-script injection before session state",
+);
+assert.match(
+  backgroundJs,
+  /requireContentScript\(await ensureContentScript\(tabId\)\);[\s\S]*const config = await bridgeConfig\(\);/,
+  "page start requires content-script injection before session state",
 );
 
 console.log("test_protocol: OK (target/UI language settings stay canonical through protocol.js)");

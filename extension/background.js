@@ -76,23 +76,32 @@ const LCC_CONTENT_FILES = ["protocol.js", "pcm.js", "page-seed.js", "content.js"
 // (re)loaded has none — captions wouldn't show without a refresh. Inject on demand: ping the tab; if nothing
 // answers, executeScript the bundle. Already-injected tabs answer the ping and are skipped (no double-run).
 async function ensureContentScript(tabId) {
-  if (tabId == null) return;
+  if (tabId == null) return false;
   const present = await chrome.tabs.sendMessage(tabId, { type: "lcc-ping" }).then((r) => !!(r && r.ok)).catch(() => false);
-  if (present) return;
+  if (present) return true;
   try {
     await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: LCC_CONTENT_FILES });
     await chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, files: ["content.css"] });
+    console.log("[lcc] injected content scripts into tab", tabId);
+    return true;
   } catch (_) {
     try {   // cross-origin subframes may be off-limits to activeTab; the top frame still carries the overlay
       await chrome.scripting.executeScript({ target: { tabId }, files: LCC_CONTENT_FILES });
       await chrome.scripting.insertCSS({ target: { tabId }, files: ["content.css"] });
-    } catch (e) { console.warn("[lcc] content inject failed for tab", tabId, e); return; }
+      console.log("[lcc] injected content scripts into tab", tabId);
+      return true;
+    } catch (e) {
+      console.warn("[lcc] content inject failed for tab", tabId, e);
+      return false;
+    }
   }
-  console.log("[lcc] injected content scripts into tab", tabId);
+}
+function requireContentScript(ok) {
+  if (!ok) throw new Error("이 탭에는 확장 스크립트를 주입할 수 없어요. 일반 웹 페이지에서 다시 시작하세요.");
 }
 async function startAudio(streamId, tabId, delaySec, pageContext) {
   await cleanup();                                  // tear down any prior capture (either mode)
-  await ensureContentScript(tabId);                 // inject into already-open tabs so captions show without a reload
+  requireContentScript(await ensureContentScript(tabId));  // inject into already-open tabs so captions show without a reload
   const dsec = Math.min(12, Math.max(0, Number(delaySec) || 0));
   const config = await bridgeConfig();
   await chrome.storage.session.set({ capturing: true, captioning: true, mode: "audio", capturedTabId: tabId, pendingStreamId: streamId, pageContext: pageContext || "", delaySec: dsec });
@@ -106,7 +115,7 @@ async function startAudio(streamId, tabId, delaySec, pageContext) {
 
 async function startVideo(tabId, delaySec, pageContext) {
   await cleanup();                                  // tear down any prior capture (esp. stale offscreen)
-  await ensureContentScript(tabId);                 // inject into already-open tabs so the delayed-render path is present
+  requireContentScript(await ensureContentScript(tabId));  // inject into already-open tabs so the delayed-render path is present
   const dsec = Math.min(12, Math.max(0.5, Number(delaySec) || 3.5));
   const config = await bridgeConfig();
   // Set session state BEFORE creating the offscreen doc so resendStart() can recover params.
@@ -121,7 +130,7 @@ async function startVideo(tabId, delaySec, pageContext) {
 }
 
 async function startPage(tabId, pageContext) {
-  await ensureContentScript(tabId);                 // page translation needs the content script present
+  requireContentScript(await ensureContentScript(tabId));  // page translation needs the content script present
   const config = await bridgeConfig();
   let pageUrl = "";
   try {
