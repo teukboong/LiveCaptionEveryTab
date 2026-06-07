@@ -1,6 +1,8 @@
 // Caption overlay over the YouTube/Twitch player. Display settings come from storage.local.
 let box = null;
 let settings = { fontSize: 25, bottomPct: 12, leftPct: 50, showSource: true, syncOffsetMs: 0, debugSync: false };
+let lccPeek = false;   // #4 ghost: Alt (Option) held -> temporarily reveal the source line even when hidden
+let lccLastSrc = "";   // #7: latest source line, used to prefill the live glossary bar
 const LCC_IS_TOP = (window.top === window);
 // With all_frames injection, exactly ONE frame renders captions: the video frame in video mode
 // (it holds window.__lccVideoSub), otherwise the top frame. Prevents duplicate captions/transcript
@@ -31,7 +33,7 @@ function applySettings() {
   if (ko) ko.style.fontSize = settings.fontSize + "px";
   if (src) {
     src.style.fontSize = Math.round(settings.fontSize * 0.7) + "px";
-    src.style.display = settings.showSource ? "block" : "none";
+    src.style.display = (settings.showSource || lccPeek) ? "block" : "none";
   }
   if (dbg) dbg.style.display = settings.debugSync ? "block" : "none";
 }
@@ -42,13 +44,33 @@ function setSrc(text) {
   b.querySelector("#lcc-src").textContent = text || "";
   applySettings();
 }
-function setLines(srcText, koText, debugText, isDraft) {
+// #9 Trust gradient: when the number guard flags a translated line as number-uncertain, underline the
+// digit runs (dotted) so the viewer knows to verify them against the source (hold Alt to peek it).
+function lccRenderKoText(koEl, text, mark) {
+  const s = text || "";
+  if (!mark || !/\d/.test(s)) { koEl.textContent = s; return; }
+  koEl.textContent = "";
+  const re = /\d[\d.,:%\/\-]*/g;
+  let last = 0, m;
+  while ((m = re.exec(s)) !== null) {
+    if (m.index > last) koEl.appendChild(document.createTextNode(s.slice(last, m.index)));
+    const sp = document.createElement("span");
+    sp.textContent = m[0];
+    sp.style.borderBottom = "1px dotted rgba(255,196,0,.95)";
+    sp.style.textUnderlineOffset = "2px";
+    sp.title = "숫자 불확실 — 원문과 대조 (Alt: 원문 보기)";
+    koEl.appendChild(sp);
+    last = m.index + m[0].length;
+  }
+  if (last < s.length) koEl.appendChild(document.createTextNode(s.slice(last)));
+}
+function setLines(srcText, koText, debugText, isDraft, opts) {
   if (!lccShouldRender()) return;
   const b = ensureBox();
   b.style.display = "block";
   b.querySelector("#lcc-src").textContent = srcText || "";
   const ko = b.querySelector("#lcc-ko");
-  ko.textContent = koText || "";
+  lccRenderKoText(ko, koText, opts && opts.numUncertain);
   // Optimistic captioning: an in-progress (draft) translation is dimmed+italic; once committed
   // (stable) it snaps to solid. Reads as "the caption is completing", not "the caption flickered".
   ko.style.transition = "opacity .15s ease";
@@ -107,6 +129,96 @@ try {
       }
     });
   }
+} catch (_) {}
+
+// #4 Ghost: hold Alt (Option) to peek the source line while it's hidden. Reveal is temporary — release,
+// focus loss, or tab-hide restores the configured visibility. No-op when showSource is already on.
+const LCC_PEEK_DEBUG = false;   // 진단 로그 토글. NOTE: Atlas 등 에이전트 브라우저는 Option/Alt을 자체 후킹해 content script까지 keydown이 안 옴 → peek 무효. 일반 Chrome/Edge용.
+function lccSetPeek(on) {
+  if (lccPeek === on) return;
+  lccPeek = on;
+  if (LCC_PEEK_DEBUG) console.log("[lcc-peek] set", on, "box=", !!box, "showSource=", settings.showSource, "render=", lccShouldRender());
+  applySettings();
+}
+function lccEditableTarget(t) {
+  if (!t || !t.tagName) return false;
+  return t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable === true;
+}
+try {
+  if (LCC_PEEK_DEBUG) console.log("[lcc-peek] build loaded; top =", LCC_IS_TOP);
+  // Gate on e.altKey (not e.key === "Alt") — the modifier flag is more robust across layouts/IME.
+  window.addEventListener("keydown", (e) => {
+    if (LCC_PEEK_DEBUG && e.altKey) console.log("[lcc-peek] keydown alt; key =", e.key, "editable =", lccEditableTarget(e.target), "top =", LCC_IS_TOP);
+    if (e.altKey && !lccEditableTarget(e.target)) lccSetPeek(true);
+  }, true);
+  window.addEventListener("keyup", (e) => { if (!e.altKey) lccSetPeek(false); }, true);
+  window.addEventListener("blur", () => lccSetPeek(false));
+  document.addEventListener("visibilitychange", () => { if (document.hidden) lccSetPeek(false); });
+} catch (_) {}
+
+// #7 Editable glossary loop: a small bar (Alt+G) pins "source term = translation" into the live glossary.
+// It reuses the popup's hot-reload path — write storage 'lcc-settings'.glossary + fire popup-config-update,
+// which background/offscreen push to the bridge so it applies from the next utterance. No new wiring.
+let lccGlossBar = null;
+async function lccAddGlossary(term, tr) {
+  term = (term || "").trim(); tr = (tr || "").trim();
+  if (!term || !tr) return false;
+  try {
+    const s = (await chrome.storage.local.get("lcc-settings"))["lcc-settings"] || {};
+    const lines = (s.glossary || "").split("\n").map((l) => l.trim()).filter(Boolean);
+    const kept = lines.filter((l) => { const i = l.indexOf("="); const k = (i < 0 ? l : l.slice(0, i)).trim().toLowerCase(); return k !== term.toLowerCase(); });
+    kept.push(`${term}=${tr}`);                                  // last wins: re-pinning a term replaces it
+    s.glossary = kept.join("\n");
+    await chrome.storage.local.set({ "lcc-settings": s });
+    chrome.runtime.sendMessage({ type: "popup-config-update", resetTranslationContext: false });
+    return true;
+  } catch (_) { return false; }
+}
+function lccEnsureGlossBar() {
+  if (lccGlossBar && lccGlossBar.isConnected) return lccGlossBar;
+  const bar = document.createElement("div");
+  bar.id = "lcc-gloss-bar";
+  bar.style.cssText = "position:fixed;top:8%;left:50%;transform:translateX(-50%);z-index:2147483647;display:none;" +
+    "gap:6px;align-items:center;background:rgba(20,20,24,.95);color:#fff;padding:8px 10px;border-radius:10px;" +
+    "font:14px/1.3 system-ui,-apple-system,sans-serif;box-shadow:0 4px 22px rgba(0,0,0,.45);";
+  const mk = (ph, w) => { const i = document.createElement("input"); i.type = "text"; i.placeholder = ph;
+    i.style.cssText = `width:${w}px;padding:5px 7px;border:1px solid #555;border-radius:6px;background:#111;color:#fff;font:inherit;`; return i; };
+  const src = mk("원문 용어", 150);
+  const arrow = document.createElement("span"); arrow.textContent = "→"; arrow.style.opacity = ".7";
+  const tgt = mk("번역", 130);
+  const add = document.createElement("button"); add.textContent = "추가";
+  add.style.cssText = "padding:5px 12px;border:0;border-radius:6px;background:#3b82f6;color:#fff;font:inherit;cursor:pointer;";
+  const msg = document.createElement("span"); msg.style.cssText = "opacity:.85;margin-left:4px;white-space:nowrap;";
+  bar.append(src, arrow, tgt, add, msg);
+  host().appendChild(bar);
+  const submit = async () => {
+    const ok = await lccAddGlossary(src.value, tgt.value);
+    if (ok) { msg.textContent = `✓ '${src.value.trim()}' 추가 (다음 발화부터)`; src.value = ""; tgt.value = ""; setTimeout(lccCloseGlossBar, 1100); }
+    else { msg.textContent = "원문·번역 둘 다 필요"; }
+  };
+  add.addEventListener("click", submit);
+  src.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); tgt.focus(); } });
+  tgt.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
+  bar.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); lccCloseGlossBar(); } });
+  bar._fields = { src, tgt, msg };
+  lccGlossBar = bar;
+  return bar;
+}
+function lccCloseGlossBar() { if (lccGlossBar) lccGlossBar.style.display = "none"; }
+function lccToggleGlossBar() {
+  const bar = lccEnsureGlossBar();
+  if (bar.style.display === "flex") { lccCloseGlossBar(); return; }
+  bar._fields.msg.textContent = "";
+  bar._fields.src.value = lccLastSrc || "";
+  bar._fields.tgt.value = "";
+  bar.style.display = "flex";
+  bar._fields.src.focus(); bar._fields.src.select();
+}
+try {
+  // Alt+G (e.code, layout-independent) toggles the glossary bar. Chrome-targeted; Atlas hooks Alt away.
+  window.addEventListener("keydown", (e) => {
+    if (e.altKey && e.code === "KeyG" && !lccEditableTarget(e.target)) { e.preventDefault(); lccToggleGlossBar(); }
+  }, true);
 } catch (_) {}
 
 // ---- caption display controller: committed captions are durable; source/preview are coalesced ----
@@ -202,6 +314,8 @@ function lccDebugLine(item, now) {
     "q=" + lccFinalQ.length,
     item.tx_wait_ms == null ? "" : "txw=" + Math.round(Number(item.tx_wait_ms) || 0) + "ms",
     item.tx_backlog_ms == null ? "" : "txb=" + Math.round(Number(item.tx_backlog_ms) || 0) + "ms",
+    item.risk ? "risk=" + item.risk : "",
+    item.number_uncertain ? "num?" : "",
   ].filter(Boolean).join(" ");
 }
 function lccRememberFinalStream(unit, now) {
@@ -255,12 +369,14 @@ function lccShowSplit(src, koStable, koDraft, debugText) {
   if (key === lccShown) return;
   lccShown = key; setLinesSplit(src, koStable, koDraft, debugText);
 }
-function lccShow(src, ko, debugText, isDraft) {
-  const key = (src||"")+"|"+(ko||"")+"|"+(isDraft?"D":"C")+"|"+(settings.debugSync?(debugText||""):"");
+function lccShow(src, ko, debugText, isDraft, opts) {
+  const nu = !!(opts && opts.numUncertain);
+  const key = (src||"")+"|"+(ko||"")+"|"+(isDraft?"D":"C")+(nu?"|N":"")+"|"+(settings.debugSync?(debugText||""):"");
   if (key === lccShown) return;     // avoid redundant DOM writes
-  lccShown = key; setLines(src, ko, debugText, isDraft);
+  lccShown = key; setLines(src, ko, debugText, isDraft, opts);
 }
 function lccShowItem(item, now) {
+  if (item && item.src) lccLastSrc = item.src;   // #7: remember the latest source line for the glossary-bar prefill
   const debug = lccDebugLine(item, now);
   if (item.kind === "source") {
     setSrc(item.src);                  // update the source line only; keep the previous translation (sticky)
@@ -270,7 +386,7 @@ function lccShowItem(item, now) {
     if (item.ko) lccLastKoT = now;
   } else {
     const koShow = (item.degraded && item.ko) ? item.ko + " …" : item.ko;   // degraded = last KO partial on tx failure
-    lccShow(item.src, koShow, debug, false);   // committed final: solid
+    lccShow(item.src, koShow, debug, false, { numUncertain: !!item.number_uncertain });   // committed final: solid
     if (item.ko) lccLastKoT = now;     // a translation is on screen -> reset the sticky timeout
   }
   lccShownUnit = item && item.unit != null ? String(item.unit) : null;
@@ -404,6 +520,7 @@ function lccHandleBridgeMessage(msg) {
           unit: u, rev: msg.rev || 0, src: msg.source || "", ko: msg.ko || "",
           start_ms: msg.start_ms, end_ms: msg.end_ms, display_ms: msg.display_ms,
           tx_wait_ms: msg.translation_wait_ms, tx_backlog_ms: msg.translation_backlog_ms,
+          number_uncertain: !!msg.number_uncertain, risk: msg.risk,
         });
       }
     }
@@ -421,6 +538,7 @@ function lccHandleBridgeMessage(msg) {
         kind: "final", unit, rev: msg.rev || 0, src: msg.source || "", ko: msg.ko || "",
         start_ms: msg.start_ms, end_ms: msg.end_ms, display_ms: msg.display_ms, degraded: !!msg.degraded,
         tx_wait_ms: msg.translation_wait_ms, tx_backlog_ms: msg.translation_backlog_ms,
+        number_uncertain: !!msg.number_uncertain, risk: msg.risk,
       });
       const now = lccNow();
       const alreadyStreamed = lccSeenFinalStream(unit, now);
@@ -462,6 +580,7 @@ function lccHandleBridgeMessage(msg) {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === "lcc-ping") { if (LCC_IS_TOP) sendResponse({ ok: true }); return; }   // injection probe (background)
   if (msg.type === "page-context-get") {
     if (!LCC_IS_TOP) return;
     lccUpdateContext();
