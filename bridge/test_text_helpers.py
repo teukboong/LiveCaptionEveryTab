@@ -126,6 +126,30 @@ check("page.stream_first_complete", got, [("a", "공유")])      # segment 2 sti
 s._emit_page_markers("@@1@@\n공유\n\n@@2@@\n로그인\n\n@@3@@\n답글", seg_items, emitted_now, lambda i, src, tgt: got.append((i, tgt)))
 check("page.stream_second_complete", got, [("a", "공유"), ("b", "로그인")])   # seg 1 not re-emitted; seg 3 still growing
 
+# --- long paragraph: sentence-chunked, context-preserving (no model) ---
+check("page.split_sentences", s._split_sentences("One. Two! Three?"), ["One.", "Two!", "Three?"])
+_chunks = s._chunk_text(". ".join("X" * 80 for _ in range(8)) + ".", max_chars=200)
+ok("page.chunk_multi", len(_chunks) >= 2)
+ok("page.chunk_bounded", all(len(c) <= 400 for c in _chunks))         # never wildly over max
+ok("page.chunk_lossless", sum(c.count("X") for c in _chunks) == 8 * 80)
+_orig_tx = s.translate_once
+_calls = []
+def _fake_tx(text, recent_pairs=(), **kw):
+    _calls.append((text, list(recent_pairs)))
+    return "<" + text.strip()[:4] + ">"
+try:
+    s.translate_once = _fake_tx
+    _para = ". ".join("Sentence number %d carrying enough words to be long" % i for i in range(20)) + "."
+    _res = s.translate_page_long_once(_para, [("seedSrc", "씨앗")], target="Korean")
+    ok("page.long_multichunk", len(_calls) >= 2)                       # genuinely chunked
+    ok("page.long_join", isinstance(_res, str) and _res.count("<") == len(_calls))
+    ok("page.long_seed_ctx", bool(_calls[0][1]) and _calls[0][1][0][0] == "seedSrc")  # seeded w/ recent_pairs
+    ok("page.long_ctx_grows", len(_calls[-1][1]) > len(_calls[0][1]))  # later chunk sees prior chunks
+    _short = s.translate_page_long_once("Just one short sentence.", [], target="Korean")
+    ok("page.long_singlechunk", len(_calls) >= 3 and _short.startswith("<"))   # <=1 chunk -> one call
+finally:
+    s.translate_once = _orig_tx
+
 # --- DOM translation batch normalization: untrusted page items stay bounded before model use ---
 dom_items = s._dom_translate_items({
     "items": [

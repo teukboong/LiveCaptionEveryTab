@@ -126,8 +126,10 @@ def _config_bool(value, default=False):
 
 
 DOM_TX_MAX_ITEMS = int(os.environ.get("LCC_DOM_TX_MAX_ITEMS", "8"))
-DOM_TX_MAX_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_CHARS", "900"))
-DOM_TX_MAX_TOTAL_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_TOTAL_CHARS", "4000"))
+DOM_TX_MAX_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_CHARS", "4000"))        # long paragraphs are sentence-chunked, not dropped
+DOM_TX_MAX_TOTAL_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_TOTAL_CHARS", "8000"))
+PAGE_LONG_CHARS = max(200, int(os.environ.get("LCC_PAGE_LONG_CHARS", "600")))   # items longer than this take the sentence-chunked, context-preserving path
+PAGE_CHUNK_CHARS = max(200, int(os.environ.get("LCC_PAGE_CHUNK_CHARS", "500"))) # target size per chunk in that path
 PAGE_TX_BATCH_MIN_TOKENS = max(64, int(os.environ.get("LCC_PAGE_TX_BATCH_MIN_TOKENS", "128")))
 PAGE_TX_BATCH_MAX_TOKENS = max(PAGE_TX_BATCH_MIN_TOKENS, int(os.environ.get("LCC_PAGE_TX_BATCH_MAX_TOKENS", "1536")))
 
@@ -1690,6 +1692,61 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
     return _finish("".join(out))
 
 
+# A long paragraph (e.g. an arXiv intro) is one big text node. Translating it whole risks token/window
+# truncation; translating each sentence in isolation loses pronouns, terminology, and flow. So we sentence-
+# chunk it and translate the chunks SEQUENTIALLY, feeding each chunk the paragraph's already-translated
+# chunks as recent_pairs — the model keeps terms/discourse consistent within the paragraph — then join.
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?。！？…])\s+|\n[ \t]*\n")
+
+
+def _split_sentences(text: str):
+    return [p.strip() for p in _SENT_SPLIT_RE.split(str(text or "").strip()) if p and p.strip()]
+
+
+def _chunk_text(text: str, max_chars: int = None):
+    """Group sentences into <= max_chars chunks without splitting a sentence (a lone over-long sentence is
+    hard-split as a last resort). Returns the chunks in order."""
+    max_chars = max_chars or PAGE_CHUNK_CHARS
+    chunks, cur = [], ""
+    for s in _split_sentences(text):
+        if not cur:
+            cur = s
+        elif len(cur) + 1 + len(s) <= max_chars:
+            cur += " " + s
+        else:
+            chunks.append(cur); cur = s
+        while len(cur) > max_chars * 2:                 # a single giant sentence -> hard split (rare)
+            chunks.append(cur[:max_chars]); cur = cur[max_chars:].strip()
+    if cur:
+        chunks.append(cur)
+    return chunks or [str(text or "").strip()]
+
+
+def translate_page_long_once(text, recent_pairs=(), target: str = "Korean", hint: str = "",
+                             register: str = "casual", glossary_pairs=()):
+    """Translate a long DOM paragraph by sentence-chunking and translating chunks sequentially, each
+    conditioned on the paragraph's already-translated chunks (running context). Every model call stays
+    small (clean translation, no truncation); the joined result is one string for the node."""
+    text = str(text or "")
+    chunks = _chunk_text(text)
+
+    def _tx(chunk, ctx):
+        return _clean(translate_once(chunk, list(ctx), target=target, hint=hint, register=register,
+                                     glossary_pairs=glossary_pairs, kv_reuse=False, profile="page",
+                                     max_tokens=_page_batch_max_tokens([{"text": chunk}])))
+
+    if len(chunks) <= 1:
+        return _tx(text, list(recent_pairs)[-3:])
+    ctx = list(recent_pairs)[-3:]
+    out = []
+    for ch in chunks:
+        t = _tx(ch, ctx)
+        out.append(t)
+        if t and t != ch:
+            ctx = (ctx + [(ch[:160], t[:160])])[-4:]    # running paragraph context for the next chunk
+    return " ".join(p for p in out if p)
+
+
 def run_ask(mode: str, transcript_text: str, question: str = "", target: str = "Korean", on_partial=None):
     """On-demand summary / Q&A over the running transcript (already-resident translator, fresh KV cache)."""
     msgs, max_toks = _ask_messages(mode, transcript_text, question, target)
@@ -2515,7 +2572,11 @@ async def handle(ws):
                             continue
                         page_glossary = page_glossary_pairs if page_glossary_pairs is not None else glossary_pairs
                         page_hint = page_context_hint or context_hint
-                        print(f"[dom-tx] request={request_id} items={len(items)}", flush=True)
+                        # short items ride the marker microbatch; long paragraphs take the sentence-chunked,
+                        # context-preserving path (translated separately so the batch call never goes huge).
+                        short = [it for it in items if len(it["text"]) <= PAGE_LONG_CHARS]
+                        longs = [it for it in items if len(it["text"]) > PAGE_LONG_CHARS]
+                        print(f"[dom-tx] request={request_id} items={len(items)} short={len(short)} long={len(longs)}", flush=True)
                         sent = [0]
                         sent_ids = set()
                         deferred = False
@@ -2530,7 +2591,7 @@ async def handle(ws):
                                 "item_id": item_id, "source": source, "target": out,
                             })
 
-                        if len(items) > 1:
+                        if len(short) > 1:
                             if not await wait_aux_translation_slot(1200):
                                 await send_json({"type": "dom_translate_busy", "request_id": request_id, "retry_ms": 1800})
                                 print("[dom-tx defer] live caption backlog has priority", flush=True)
@@ -2545,7 +2606,7 @@ async def handle(ws):
                                 def _worker(_q=seg_q, _done=_SEG_DONE):
                                     try:
                                         return translate_page_batch_once(
-                                            [dict(item) for item in items],
+                                            [dict(item) for item in short],
                                             list(dom_recent_pairs),
                                             target=target_lang, hint=page_hint, register=page_register,
                                             glossary_pairs=list(page_glossary), on_segment=_on_segment,
@@ -2573,14 +2634,41 @@ async def handle(ws):
                                     except Exception as e:
                                         batch_out = {}
                                         print(f"[dom-tx batch fallback] {e}", flush=True)
-                                for item in items:                   # parsed but not streamed (VLM dict / partial stream)
+                                for item in short:                   # parsed but not streamed (VLM dict / partial stream)
                                     if item["id"] in sent_ids:
                                         continue
                                     if item["id"] in batch_out:
                                         sent_ids.add(item["id"])
                                         await _send_seg(item["id"], item["text"], batch_out[item["id"]])
                         if not deferred:
-                            for item in items:                       # per-item fallback: single item, or batch misses
+                            for item in short:                       # per-item fallback: single short item, or batch misses
+                                if item["id"] in sent_ids:
+                                    continue
+                                if not await wait_aux_translation_slot(1200):
+                                    await send_json({"type": "dom_translate_busy", "request_id": request_id, "retry_ms": 1800})
+                                    print("[dom-tx defer] live caption backlog has priority", flush=True)
+                                    deferred = True
+                                    break
+                                source = item["text"]
+                                try:
+                                    page_tx = functools.partial(
+                                        translate_once, source, list(dom_recent_pairs),
+                                        target=target_lang, hint=page_hint, register=page_register,
+                                        glossary_pairs=list(page_glossary), kv_reuse=False, profile="page",
+                                        max_tokens=_page_batch_max_tokens([dict(item)]),   # _TX_GEN_MAX(64) would truncate
+                                    )
+                                    async with mlx_lock:
+                                        out = await loop.run_in_executor(_mlx_pool, page_tx)
+                                    sent_ids.add(item["id"])
+                                    await _send_seg(item["id"], source, out)
+                                except Exception as e:
+                                    print(f"[dom-tx err] {e}", flush=True)
+                                    await send_json({
+                                        "type": "dom_translate_err", "request_id": request_id,
+                                        "item_id": item["id"], "source": source, "text": str(e)[:240],
+                                    })
+                        if not deferred:
+                            for item in longs:                       # long paragraphs: sentence-chunked, context-preserving
                                 if item["id"] in sent_ids:
                                     continue
                                 if not await wait_aux_translation_slot(1200):
@@ -2589,17 +2677,19 @@ async def handle(ws):
                                     break
                                 source = item["text"]
                                 try:
-                                    page_tx = functools.partial(
-                                        translate_once, source, list(dom_recent_pairs),
+                                    page_long = functools.partial(
+                                        translate_page_long_once, source, list(dom_recent_pairs),
                                         target=target_lang, hint=page_hint, register=page_register,
-                                        glossary_pairs=list(page_glossary), kv_reuse=False, profile="page",
+                                        glossary_pairs=list(page_glossary),
                                     )
+                                    t0 = time.perf_counter()
                                     async with mlx_lock:
-                                        out = await loop.run_in_executor(_mlx_pool, page_tx)
+                                        out = await loop.run_in_executor(_mlx_pool, page_long)
                                     sent_ids.add(item["id"])
                                     await _send_seg(item["id"], source, out)
+                                    print(f"[dom-tx long ok] request={request_id} chars={len(source)} ms={int((time.perf_counter()-t0)*1000)}", flush=True)
                                 except Exception as e:
-                                    print(f"[dom-tx err] {e}", flush=True)
+                                    print(f"[dom-tx long err] {e}", flush=True)
                                     await send_json({
                                         "type": "dom_translate_err", "request_id": request_id,
                                         "item_id": item["id"], "source": source, "text": str(e)[:240],

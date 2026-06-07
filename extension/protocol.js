@@ -33,7 +33,7 @@ const LCC_DEFAULT_SETTINGS = Object.freeze({
   runMode: "video",
   pageTranslateSelector: "body",
   pageTranslateMinChars: 2,
-  pageTranslateMaxChars: 900,
+  pageTranslateMaxChars: 4000,
   pageReveal: true,
   syncOffsetMs: 0,
   debugSync: false,
@@ -89,7 +89,7 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   out.runMode = LCC_RUN_MODES[out.runMode] ? out.runMode : LCC_DEFAULT_SETTINGS.runMode;
   out.pageTranslateSelector = String(out.pageTranslateSelector || LCC_DEFAULT_SETTINGS.pageTranslateSelector).trim() || "body";
   out.pageTranslateMinChars = Math.max(1, Math.min(80, Number(out.pageTranslateMinChars) || LCC_DEFAULT_SETTINGS.pageTranslateMinChars));
-  out.pageTranslateMaxChars = Math.max(80, Math.min(2000, Number(out.pageTranslateMaxChars) || LCC_DEFAULT_SETTINGS.pageTranslateMaxChars));
+  out.pageTranslateMaxChars = Math.max(80, Math.min(8000, Number(out.pageTranslateMaxChars) || LCC_DEFAULT_SETTINGS.pageTranslateMaxChars));
   out.pageReveal = out.pageReveal !== false;
   return out;
 };
@@ -115,6 +115,7 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
     contextHint: hint,
     glossary: s.glossary || "",
     pageContextHint: pageHint,
+    runMode: s.runMode || "video",                // content-only: lets the page translator pick the page vs both policy (it isn't a video tab)
     pageRegister: s.pageRegister || "casual",
     pageGlossary: s.pageGlossary || "",
     pageReveal: s.pageReveal !== false,           // content-only (bridge ignores it); carried so the popup toggle propagates
