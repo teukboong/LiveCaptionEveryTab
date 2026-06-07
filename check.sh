@@ -42,4 +42,5 @@ do
 done
 
 cd "$ROOT"
+"$PY" extension/native-host/test_lcc_bridge_host.py
 node extension/test_protocol.js
