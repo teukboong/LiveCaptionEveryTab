@@ -11,8 +11,8 @@ clear
 echo "Live Caption Every Tab — macOS 설치"
 echo "===================================="
 echo
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "⚠ Python 3가 필요합니다."
+if ! bash ./setup.sh --python-check >/dev/null 2>&1; then
+  echo "⚠ Python 3.10 이상이 필요합니다."
   echo "  https://www.python.org/downloads/ 에서 설치하거나, 터미널에서:  brew install python@3.13"
   echo
   read -r -p "엔터를 누르면 닫힙니다…" _

@@ -216,10 +216,25 @@ def do_stop():
 def _venv_python():
     """A python with the project deps (huggingface_hub): LCC_PYTHON, else the repo .venv, else this host's own
     interpreter (on CUDA/WSL the host already runs under the project venv). None if nothing usable exists."""
-    for p in (os.environ.get("LCC_PYTHON"), os.path.join(ROOT, ".venv", "bin", "python"), sys.executable):
-        if p and os.path.exists(p):
+    for raw in (os.environ.get("LCC_PYTHON"), os.path.join(ROOT, ".venv", "bin", "python"), sys.executable):
+        if not raw:
+            continue
+        p = raw if os.path.sep in raw else shutil.which(raw)
+        if p and os.path.exists(p) and _python_ok(p):
             return p
     return None
+
+
+def _python_ok(path):
+    try:
+        return subprocess.run(
+            [path, "-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=4,
+        ).returncode == 0
+    except Exception:
+        return False
 
 
 def _install_running():
@@ -252,7 +267,7 @@ def do_install(msg=None):
         return {"ok": True, "started": False, "already": True, "msg": "이미 설치 중"}
     py = _venv_python()
     if not py:
-        return {"ok": False, "error": "의존성 있는 python을 못 찾음 — 먼저 setup.sh 를 실행하세요"}
+        return {"ok": False, "error": "Python 3.10+ 환경을 못 찾음 — 먼저 ./setup.sh 를 실행하세요"}
     if not os.path.exists(INSTALLER):
         return {"ok": False, "error": f"install_models.py 없음: {INSTALLER}"}
     try:                                            # seed status so the poller sees progress instantly

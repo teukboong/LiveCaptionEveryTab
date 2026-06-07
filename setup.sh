@@ -9,16 +9,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
-USAGE="usage: ./setup.sh [mlx|cuda|parakeet] [--models] [--tier full|mid|lite|auto]"
+USAGE="usage: ./setup.sh [mlx|cuda|parakeet] [--models] [--tier full|mid|lite|auto] [--python-check]"
 EXTRA=""
 MODELS=0
 TIER="auto"
+PYTHON_CHECK=0
 while [ $# -gt 0 ]; do
   case "$1" in
     mlx|cuda|parakeet) EXTRA="$1" ;;
     --models) MODELS=1 ;;
     --tier) TIER="${2:-auto}"; shift ;;
     --tier=*) TIER="${1#--tier=}" ;;
+    --python-check) PYTHON_CHECK=1 ;;
     -h|--help) echo "$USAGE"; exit 0 ;;
     *) echo "unknown arg: $1 ($USAGE)"; exit 1 ;;
   esac
@@ -28,10 +30,57 @@ if [ -z "$EXTRA" ]; then
   if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then EXTRA="mlx"; else EXTRA="cuda"; fi
 fi
 
-PYBIN="${LCC_PYTHON_BASE:-python3}"
-if ! command -v "$PYBIN" >/dev/null 2>&1; then
-  echo "python3 not found. Install Python 3.10+ first (e.g. brew install python@3.13)." >&2
-  exit 1
+python_ok() {
+  "$1" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+PY
+}
+
+python_version() {
+  "$1" - <<'PY'
+import sys
+print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+PY
+}
+
+pick_python_base() {
+  if [ -n "${LCC_PYTHON_BASE:-}" ]; then
+    local forced
+    forced="$(command -v "$LCC_PYTHON_BASE" 2>/dev/null || true)"
+    if [ -z "$forced" ]; then
+      echo "LCC_PYTHON_BASE를 찾지 못함: $LCC_PYTHON_BASE" >&2
+      return 1
+    fi
+    if ! python_ok "$forced"; then
+      echo "LCC_PYTHON_BASE는 Python 3.10+이어야 함: $forced ($(python_version "$forced" 2>/dev/null || echo unknown))" >&2
+      return 1
+    fi
+    echo "$forced"
+    return 0
+  fi
+
+  local candidates resolved seen
+  candidates="python3.13 python3.12 python3.11 python3.10 python3.14 /opt/homebrew/bin/python3 /usr/local/bin/python3 python3"
+  seen=":"
+  for cand in $candidates; do
+    resolved="$(command -v "$cand" 2>/dev/null || true)"
+    [ -n "$resolved" ] || continue
+    case "$seen" in *":$resolved:"*) continue ;; esac
+    seen="${seen}${resolved}:"
+    if python_ok "$resolved"; then
+      echo "$resolved"
+      return 0
+    fi
+  done
+  echo "Python 3.10+를 찾지 못했습니다. macOS라면 brew install python@3.13 후 다시 실행하세요." >&2
+  return 1
+}
+
+PYBIN="$(pick_python_base)"
+if [ "$PYTHON_CHECK" = "1" ]; then
+  echo "$PYBIN ($(python_version "$PYBIN"))"
+  exit 0
 fi
 
 echo "[setup] creating .venv with $PYBIN  (extra: $EXTRA)"

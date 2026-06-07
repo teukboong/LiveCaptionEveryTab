@@ -52,16 +52,21 @@ cd LiveCaptionEveryTab     # bridge/ extension/ 가 보이는 폴더
 한 줄 설치(권장) — 저장소 안에 `.venv`를 만들고 Apple Silicon 의존성을 깐다:
 
 ```bash
-./setup.sh            # python3 -m venv .venv  +  pip install '.[mlx]'
+./setup.sh            # Python 3.10+ 자동 선택 + .venv 생성 + pip install '.[mlx]'
 ```
 
 수동으로 하려면:
 
 ```bash
-python3 -m venv .venv
+PYBIN="$(./setup.sh --python-check | sed 's/ (.*//')"
+"$PYBIN" -m venv .venv
 .venv/bin/pip install -U pip
 .venv/bin/pip install '.[mlx]'   # core + mlx-lm + mlx-audio(전사 엔진)
 ```
+
+> macOS 기본 `/usr/bin/python3`는 3.9인 경우가 많아서 이 프로젝트 문법(`Python >=3.10`)을 못 읽는다.
+> `./setup.sh`는 `python3.13`, `python3.12`, `python3.11`, `python3.10` 순서로 먼저 찾고, 맞는 버전이 없으면
+> 설치 전에 실패한다.
 
 > 전사 엔진(granite·qwen3)은 mlx-audio로 돈다. granite-speech-4.1의 conv 수정이 PyPI 0.4.3엔 없고
 > git main에 있어 pyproject가 main을 핀해 둔다(0.4.4 릴리스되면 핀 교체). 다른 venv를 쓰면 실행 시
@@ -150,6 +155,14 @@ bash bridge/run_bridge.sh
 | 너무 느림 / RAM 부족 | 아래 "메모리 줄이기" |
 
 확장이 메시지를 받는지 보려면: 유튜브 페이지에서 `F12` → Console 에 `[lcc] content recv: caption ...` 가 뜨면 정상.
+
+빠른 로컬 검증(모델 로드 없음):
+
+```bash
+./check.sh
+```
+
+이 검증은 bridge의 순수 로직 테스트와 extension protocol 테스트만 돌린다. 실제 모델 부팅/자막 송수신은 별도 브릿지 실행 후 `bridge/test_stream_wav.py`로 확인한다.
 
 ---
 
