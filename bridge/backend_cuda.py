@@ -204,7 +204,8 @@ def translate_page_batch_once(items, recent_pairs=(), target="Korean", hint="", 
     del kv_reuse
     import server as _srv
     clean_items = [
-        {"id": str(it.get("id", ""))[:80], "text": str(it.get("text", "")).strip()}
+        {"id": str(it.get("id", ""))[:80], "text": str(it.get("text", "")).strip(),
+         "ctx": str(it.get("ctx", "")).strip()}
         for it in (items or [])
         if isinstance(it, dict) and str(it.get("id", "")).strip() and str(it.get("text", "")).strip()
     ]

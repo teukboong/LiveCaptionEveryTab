@@ -934,6 +934,23 @@ function lccPageApplyPartialToNode(node, state, source, target, requestId, sourc
   node.nodeValue = state.partialFull;
   return true;
 }
+const LCC_PAGE_BLOCK_TAGS = new Set([
+  "P", "LI", "BLOCKQUOTE", "DD", "DT", "FIGCAPTION", "TD", "TH", "CAPTION", "DIV",
+  "H1", "H2", "H3", "H4", "H5", "H6", "ARTICLE", "SECTION", "ASIDE", "MAIN", "DETAILS", "SUMMARY",
+]);
+const LCC_PAGE_BLOCK_CTX_MAX = 600;
+function lccPageBlockContext(node, core) {
+  // Text of the nearest semantic block (p/li/td/heading/...): sent as reference-only context so a fragment
+  // split out by inline elements is translated with its surrounding prose. "" when the node IS essentially
+  // the whole block (no extra context) or the block is too big to be useful.
+  let el = node.parentElement, hops = 0;
+  while (el && hops < 6 && !LCC_PAGE_BLOCK_TAGS.has(el.tagName)) { el = el.parentElement; hops += 1; }
+  if (!el || !LCC_PAGE_BLOCK_TAGS.has(el.tagName)) return "";
+  let txt;
+  try { txt = lccPageSourceNorm(el.textContent); } catch (_) { return ""; }
+  if (!txt || txt.length > LCC_PAGE_BLOCK_CTX_MAX || txt.length < core.length * 1.3) return "";
+  return txt;
+}
 function lccPageQueueNode(node) {
   if (!lccPageNodeAllowed(node)) return false;
   const state = lccPageStateFor(node);
@@ -968,7 +985,7 @@ function lccPageQueueNode(node) {
     }
     return false;
   }
-  work = { text: parts.core, norm: lccPageSourceNorm(parts.core), nodes: new Set([node]), status: "queued", hot };
+  work = { text: parts.core, norm: lccPageSourceNorm(parts.core), ctx: lccPageBlockContext(node, parts.core), nodes: new Set([node]), status: "queued", hot };
   lccPageWork.set(key, work);
   (hot ? lccPageHotQueue : lccPageColdQueue).push(key);
   lccPageScheduleFlush();
@@ -1087,7 +1104,7 @@ function lccPageFlush() {
       queue.shift();
       work.status = "pending";
       for (const n of work.nodes) { const st = lccPageTranslateState.get(n); if (st) st.pending = true; }
-      items.push({ id: key, text: work.text });
+      items.push(work.ctx ? { id: key, text: work.text, ctx: work.ctx } : { id: key, text: work.text });
       chars += work.text.length;
     }
     return true;

@@ -169,6 +169,14 @@ try:
 finally:
     s.translate_once = _orig_tx
 
+# --- semantic block context: items carry an optional ctx (surrounding block) that rides into the prompt ---
+_ctxitems = s._dom_translate_items({"items": [{"id": "x", "text": "fragment", "ctx": "A longer surrounding block of text here."}]})
+ok("page.ctx_preserved", bool(_ctxitems) and _ctxitems[0].get("ctx") == "A longer surrounding block of text here.")
+_ctxmsg = s._translate_page_batch_messages([{"id": "x", "text": "fragment", "ctx": "A longer surrounding block of text here."}], target="Korean")[-1]["content"]
+ok("page.ctx_in_prompt", "reference only" in _ctxmsg and "surrounding page text" in _ctxmsg and "@@1@@" in _ctxmsg)
+ok("page.ctx_skip_when_equal", "reference only" not in s._translate_page_batch_messages([{"id": "y", "text": "hello", "ctx": "hello"}], target="Korean")[-1]["content"])
+ok("page.ctx_absent_no_preamble", s._translate_page_batch_messages([{"id": "z", "text": "hello"}], target="Korean")[-1]["content"].startswith("@@1@@"))
+
 # --- DOM translation batch normalization: untrusted page items stay bounded before model use ---
 dom_items = s._dom_translate_items({
     "items": [

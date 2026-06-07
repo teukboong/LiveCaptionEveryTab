@@ -208,10 +208,11 @@ function queueOrSendDomBatch(msg) {
     type: "dom_translate_batch",
     request_id: String(msg.requestId),
     partial: String((currentConfig && currentConfig.pageTranslateStream) || "partial") === "partial",
-    items: msg.items.slice(0, 12).map((it) => ({
-      id: String(it.id || ""),
-      text: String(it.text || ""),
-    })).filter((it) => it.id && it.text.trim()),
+    items: msg.items.slice(0, 12).map((it) => {
+      const o = { id: String(it.id || ""), text: String(it.text || "") };
+      if (it.ctx) o.ctx = String(it.ctx);
+      return o;
+    }).filter((it) => it.id && it.text.trim()),
   };
   if (!payload.items.length) return;
   const raw = JSON.stringify(payload);

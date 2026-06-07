@@ -132,11 +132,15 @@ PAGE_LONG_CHARS = max(200, int(os.environ.get("LCC_PAGE_LONG_CHARS", "600")))   
 PAGE_CHUNK_CHARS = max(200, int(os.environ.get("LCC_PAGE_CHUNK_CHARS", "500"))) # target size per chunk in that path
 PAGE_TX_BATCH_MIN_TOKENS = max(64, int(os.environ.get("LCC_PAGE_TX_BATCH_MIN_TOKENS", "128")))
 PAGE_TX_BATCH_MAX_TOKENS = max(PAGE_TX_BATCH_MIN_TOKENS, int(os.environ.get("LCC_PAGE_TX_BATCH_MAX_TOKENS", "1536")))
+PAGE_BLOCK_CONTEXT = os.environ.get("LCC_PAGE_BLOCK_CONTEXT", "1") != "0"   # use the client's surrounding-block text as reference context
+PAGE_BLOCK_CTX_MAX = max(80, int(os.environ.get("LCC_PAGE_BLOCK_CTX_MAX", "600")))         # per-block context cap (chars)
+PAGE_BLOCK_CTX_TOTAL = max(200, int(os.environ.get("LCC_PAGE_BLOCK_CTX_TOTAL", "1200")))   # total context cap per batch (chars)
 
 
 def _dom_translate_items(payload, *, max_items=DOM_TX_MAX_ITEMS, max_chars=DOM_TX_MAX_CHARS,
                          max_total_chars=DOM_TX_MAX_TOTAL_CHARS):
-    """Normalize untrusted page-translation items from the extension before they reach the model."""
+    """Normalize untrusted page-translation items from the extension before they reach the model. Each item
+    may carry an optional `ctx` (the surrounding semantic block's text) for reference-only context."""
     raw_items = payload.get("items") if isinstance(payload, dict) else None
     if not isinstance(raw_items, list):
         return []
@@ -152,7 +156,11 @@ def _dom_translate_items(payload, *, max_items=DOM_TX_MAX_ITEMS, max_chars=DOM_T
         if total + len(text) > max_total_chars and out:
             break
         total += len(text)
-        out.append({"id": item_id, "text": text})
+        item = {"id": item_id, "text": text}
+        ctx = str(raw.get("ctx", "")).strip()
+        if ctx:
+            item["ctx"] = ctx[:PAGE_BLOCK_CTX_MAX]
+        out.append(item)
     return out
 
 
@@ -1293,11 +1301,40 @@ def _page_marker_system(target: str, hint: str = "", glossary_pairs=(), recent_p
     return s
 
 
+def _page_block_context_preamble(items):
+    """Marker-free reference context: the distinct surrounding-block texts of the batch's fragments. The model
+    uses it for terminology/pronoun/flow when translating segments that were split out of a larger block; the
+    @@n@@ parser ignores these lines, so it can't corrupt output. Lives in the user turn (not the system
+    prefix) so the page KV prefix stays reusable. Deduped + capped."""
+    if not PAGE_BLOCK_CONTEXT:
+        return ""
+    seen, ctxs, total = set(), [], 0
+    for it in items:
+        ctx = _clean(str(it.get("ctx", "")))
+        if not ctx or ctx == _clean(str(it.get("text", ""))):     # ctx == the segment itself adds nothing
+            continue
+        ctx = re.sub(r"@@+", "", ctx).strip()                     # never let marker-looking text into context
+        key = ctx[:120]
+        if not ctx or key in seen:
+            continue
+        seen.add(key)
+        ctxs.append(ctx[:PAGE_BLOCK_CTX_MAX])
+        total += len(ctxs[-1])
+        if len(ctxs) >= 3 or total >= PAGE_BLOCK_CTX_TOTAL:
+            break
+    if not ctxs:
+        return ""
+    return ("[surrounding page text — reference only, DO NOT translate or output these lines]\n"
+            + "\n".join(ctxs)
+            + "\n[now translate ONLY the @@n@@ segments below]\n\n")
+
+
 def _translate_page_batch_messages(items, recent_pairs=(), target="Korean", hint="", register="casual",
                                    glossary_pairs=()):
     """Prompt for page DOM microbatch translation. Output is @@n@@-marked segments so the content script can
     map every replacement back to its text node and the bridge can stream segments as they complete; a missing
-    marker falls back to per-item translation."""
+    marker falls back to per-item translation. A marker-free block-context preamble (when items carry `ctx`)
+    gives the model the surrounding prose for fragments split by inline elements."""
     msgs = [{"role": "system", "content": _page_marker_system(target, hint, glossary_pairs, recent_pairs)}]
     src_lang = _src_lang(" ".join(str(it.get("text", "")) for it in items))
     few = _fewshot(target, register, src_lang, "page")[:min(PAGE_TX_FEWSHOT_MAX, 4)]
@@ -1305,7 +1342,7 @@ def _translate_page_batch_messages(items, recent_pairs=(), target="Korean", hint
         ex_in = _page_marker_input([{"text": src} for src, _ in few])
         ex_out = "\n\n".join(f"@@{i + 1}@@\n{tgt}" for i, (_, tgt) in enumerate(few))
         msgs += [{"role": "user", "content": ex_in}, {"role": "assistant", "content": ex_out}]
-    msgs.append({"role": "user", "content": _page_marker_input(items)})
+    msgs.append({"role": "user", "content": _page_block_context_preamble(items) + _page_marker_input(items)})
     return msgs
 
 
@@ -1656,7 +1693,8 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
     back to per-item translation."""
     global _page_tx_cache, _page_tx_cache_ids, _TX_KV_WINDOW
     clean_items = [
-        {"id": str(it.get("id", ""))[:80], "text": str(it.get("text", "")).strip()}
+        {"id": str(it.get("id", ""))[:80], "text": str(it.get("text", "")).strip(),
+         "ctx": str(it.get("ctx", "")).strip()}
         for it in (items or [])
         if isinstance(it, dict) and str(it.get("id", "")).strip() and str(it.get("text", "")).strip()
     ]
