@@ -377,6 +377,30 @@ function runBackgroundClearTranscript(options) {
   assert.deepEqual(plain(backgroundOffscreenCloseFailure.sessionSet), []);
   assert.deepEqual(plain(backgroundOffscreenCloseFailure.tabMessages), []);
 
+  const backgroundAnswerFailure = await runBackgroundMessage(
+    { route: "background", type: "answer", text: "summary" },
+    { failSessionSet: true },
+  );
+  assert.deepEqual(plain(backgroundAnswerFailure.response), { ok: false, error: "session set failed" });
+  assert.deepEqual(plain(backgroundAnswerFailure.sessionSet), [{ "lcc-answer": { text: "summary", done: true } }]);
+
+  const backgroundWsStateFailure = await runBackgroundMessage(
+    { route: "background", type: "wsstate", open: true },
+    { failSessionSet: true },
+  );
+  assert.deepEqual(plain(backgroundWsStateFailure.response), { ok: false, error: "session set failed" });
+  assert.deepEqual(plain(backgroundWsStateFailure.sessionSet), [{ wsOpen: true }]);
+
+  const backgroundCaptionStateFailure = await runBackgroundMessage(
+    { route: "background", type: "caption", text: "hello", ko: "안녕" },
+    { failSessionSet: true },
+  );
+  assert.deepEqual(plain(backgroundCaptionStateFailure.response), { ok: false, error: "session set failed" });
+  assert.deepEqual(plain(backgroundCaptionStateFailure.tabMessages), [
+    { tabId: 456, msg: { type: "caption", text: "hello", ko: "안녕" } },
+  ]);
+  assert.deepEqual(plain(backgroundCaptionStateFailure.sessionSet), [{ wsOpen: true }]);
+
   const pageBatch = { type: "page-translate-batch", requestId: "ptr1", items: [{ id: "n1", text: "Hello" }] };
   const backgroundPageBatch = await runBackgroundMessage(pageBatch, { pageTranslating: true, senderTabId: 123 });
   assert.deepEqual(plain(backgroundPageBatch.response), { ok: true, routed: true });
