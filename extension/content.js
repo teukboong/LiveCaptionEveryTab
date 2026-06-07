@@ -221,6 +221,67 @@ try {
   }, true);
 } catch (_) {}
 
+// #3 "방금 뭐랬지": Alt+R toggles a panel of the recent captions (text DVR — no audio replay). Reads
+// lccTranscript (committed finals), newest at the bottom. Snapshot on open; reopen to refresh.
+let lccRecentPanel = null;
+function lccCloseRecent() { if (lccRecentPanel) lccRecentPanel.style.display = "none"; }
+function lccShowRecent() {
+  if (!lccRecentPanel || !lccRecentPanel.isConnected) {
+    const p = document.createElement("div");
+    p.id = "lcc-recent";
+    p.style.cssText = "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2147483646;display:none;" +
+      "width:min(760px,86vw);max-height:64vh;overflow-y:auto;background:rgba(15,15,20,.96);color:#fff;padding:16px 20px;" +
+      "border-radius:14px;box-shadow:0 8px 40px rgba(0,0,0,.55);font-family:system-ui,-apple-system,'Apple SD Gothic Neo',sans-serif;";
+    host().appendChild(p);
+    lccRecentPanel = p;
+  }
+  const p = lccRecentPanel;
+  p.textContent = "";
+  const head = document.createElement("div");
+  head.textContent = "방금 자막 다시보기  ·  Alt+R / Esc 닫기";
+  head.style.cssText = "font-size:13px;opacity:.55;margin-bottom:12px;";
+  p.appendChild(head);
+  const items = lccTranscript.slice(-14);
+  if (!items.length) {
+    const e = document.createElement("div"); e.textContent = "(아직 자막 기록이 없어요)"; e.style.opacity = ".6"; p.appendChild(e);
+  } else {
+    const now = Date.now();
+    for (const it of items) {
+      const row = document.createElement("div");
+      row.style.cssText = "margin:10px 0;padding-left:11px;border-left:2px solid rgba(255,255,255,.13);";
+      const ko = document.createElement("div");
+      ko.style.cssText = "font-size:19px;font-weight:600;line-height:1.45;";
+      const secs = Math.max(0, Math.round((now - (it.t || now)) / 1000));
+      const ago = document.createElement("span");
+      ago.textContent = (secs < 1 ? "방금" : "-" + secs + "s") + "  ";
+      ago.style.cssText = "font-size:11px;opacity:.4;font-weight:400;";
+      ko.appendChild(ago);
+      ko.appendChild(document.createTextNode(it.ko || ""));
+      row.appendChild(ko);
+      if (it.source) {
+        const src = document.createElement("div");
+        src.textContent = it.source;
+        src.style.cssText = "font-size:13px;opacity:.5;margin-top:3px;";
+        row.appendChild(src);
+      }
+      p.appendChild(row);
+    }
+  }
+  p.style.display = "block";
+  p.scrollTop = p.scrollHeight;   // newest (bottom) into view
+}
+function lccToggleRecent() {
+  if (lccRecentPanel && lccRecentPanel.style.display === "block") { lccCloseRecent(); return; }
+  lccShowRecent();
+}
+try {
+  // Alt+R toggles the recent-captions panel; Esc closes it. Chrome-targeted.
+  window.addEventListener("keydown", (e) => {
+    if (e.altKey && e.code === "KeyR" && !lccEditableTarget(e.target)) { e.preventDefault(); lccToggleRecent(); }
+    else if (e.key === "Escape" && lccRecentPanel && lccRecentPanel.style.display === "block") lccCloseRecent();
+  }, true);
+} catch (_) {}
+
 // ---- caption display controller: committed captions are durable; source/preview are coalesced ----
 const lccFinalQ = [];               // committed sentences waiting their turn on screen
 const lccLatestRev = new Map();     // unit_id -> latest source/preview rev
