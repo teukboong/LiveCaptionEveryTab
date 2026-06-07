@@ -82,6 +82,15 @@ try:
     else:
         ok("read_message.too_large", False)
 
+    payload = json.dumps(["status"]).encode()
+    sys.stdin = FakeStdin(struct.pack("<I", len(payload)) + payload)
+    try:
+        host.read_message()
+    except ValueError as e:
+        ok("read_message.non_object", "JSON object" in str(e))
+    else:
+        ok("read_message.non_object", False)
+
     fake_out = FakeStdout()
     sys.stdout = fake_out
     host.send_message({"ok": False, "error": "메시지 파싱 실패"})

@@ -47,7 +47,10 @@ def read_message():
     data = sys.stdin.buffer.read(n)
     if len(data) != n:
         raise ValueError(f"truncated native message: expected {n} bytes, got {len(data)}")
-    return json.loads(data.decode("utf-8"))
+    msg = json.loads(data.decode("utf-8"))
+    if not isinstance(msg, dict):
+        raise ValueError("native message must be a JSON object")
+    return msg
 
 
 def send_message(obj):
