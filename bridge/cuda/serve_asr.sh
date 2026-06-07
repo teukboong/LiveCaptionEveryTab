@@ -3,7 +3,7 @@
 # OpenAI /v1/audio/transcriptions on :8000. The bridge selects the model with the popup's 전사 엔진.
 # Run inside WSL2. (These are the SAME ASR models as the Mac/MLX path — no whisper.)
 #
-#   $PY -m pip install -U "transformers>=4.46" torch torchaudio accelerate soundfile fastapi "uvicorn[standard]" python-multipart
+#   $PY -m pip install -U qwen-asr "transformers>=4.57" torch torchaudio accelerate soundfile fastapi "uvicorn[standard]" python-multipart
 #   bash serve_asr.sh
 set -euo pipefail
 

@@ -143,9 +143,11 @@ async def transcriptions(
     audio, sr = sf.read(io.BytesIO(await file.read()), dtype="float32")
     if getattr(audio, "ndim", 1) > 1:              # stereo → mono
         audio = audio.mean(axis=1)
-    if sr != SR:                                   # the bridge sends 16k, but be safe
-        import librosa
-        audio = librosa.resample(audio, orig_sr=sr, target_sr=SR)
+    if sr != SR and getattr(audio, "size", 0) > 1:   # the bridge sends 16k, but be safe — linear resample (numpy is core; no heavy librosa dep)
+        import numpy as np
+        n = max(1, int(round(audio.shape[0] * SR / sr)))
+        audio = np.interp(np.linspace(0, audio.shape[0] - 1, n),
+                          np.arange(audio.shape[0]), audio).astype("float32")
     try:
         text = _transcribe(engine, audio)
     except Exception as e:

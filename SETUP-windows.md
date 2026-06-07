@@ -82,7 +82,7 @@ python3 -m venv ~/.venvs/lcc
 # 브리지 코어 (stdlib HTTP라 무거운 패키지 없음)
 ~/.venvs/lcc/bin/pip install websockets numpy silero-vad onnxruntime
 # 전사 서버 (granite/qwen3 = transformers, CUDA)
-~/.venvs/lcc/bin/pip install -U "transformers>=4.46" torch torchaudio accelerate soundfile fastapi "uvicorn[standard]" python-multipart
+~/.venvs/lcc/bin/pip install -U qwen-asr "transformers>=4.57" torch torchaudio accelerate soundfile fastapi "uvicorn[standard]" python-multipart
 ```
 > torch는 CUDA 빌드로 깔려야 한다(`python -c "import torch;print(torch.cuda.is_available())"` → True). 아니면
 > https://pytorch.org 의 CUDA wheel 명령으로 재설치.
