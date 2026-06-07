@@ -181,9 +181,10 @@ async function runPopupStartWithCleanup(reply) {
   return popup;
 }
 
-async function runBackgroundClearTranscript({ failLocalRemove = false } = {}) {
+async function runBackgroundMessage(message, { failLocalRemove = false, failSessionSet = false } = {}) {
   let listener = null;
   const localRemoved = [];
+  const sessionSet = [];
   const sessionRemoved = [];
   const tabMessages = [];
 
@@ -222,7 +223,11 @@ async function runBackgroundClearTranscript({ failLocalRemove = false } = {}) {
       },
       session: {
         get() { return Promise.resolve({ capturedTabId: 456 }); },
-        set() { return Promise.resolve(); },
+        set(value) {
+          sessionSet.push(value);
+          if (failSessionSet) return Promise.reject(new Error("session set failed"));
+          return Promise.resolve();
+        },
         remove(key) {
           sessionRemoved.push(key);
           return Promise.resolve();
@@ -253,11 +258,15 @@ async function runBackgroundClearTranscript({ failLocalRemove = false } = {}) {
   assert.equal(typeof listener, "function");
 
   const response = await new Promise((resolve) => {
-    const keepsChannelOpen = listener({ type: "popup-clear-transcript", tabId: 123 }, {}, resolve);
+    const keepsChannelOpen = listener(message, {}, resolve);
     assert.equal(keepsChannelOpen, true);
   });
 
-  return { localRemoved, response, sessionRemoved, tabMessages };
+  return { localRemoved, response, sessionRemoved, sessionSet, tabMessages };
+}
+
+function runBackgroundClearTranscript(options) {
+  return runBackgroundMessage({ type: "popup-clear-transcript", tabId: 123 }, options);
 }
 
 (async () => {
@@ -299,7 +308,11 @@ async function runBackgroundClearTranscript({ failLocalRemove = false } = {}) {
   assert.deepEqual(plain(backgroundFailure.sessionRemoved), []);
   assert.deepEqual(plain(backgroundFailure.tabMessages), []);
 
-  console.log("test_extension_actions: OK (popup start cleanup + transcript clear success/failure paths pass)");
+  const backgroundCleanupFailure = await runBackgroundMessage({ type: "popup-cleanup" }, { failSessionSet: true });
+  assert.deepEqual(plain(backgroundCleanupFailure.response), { ok: false, error: "session set failed" });
+  assert.equal(plain(backgroundCleanupFailure.sessionSet).length, 1);
+
+  console.log("test_extension_actions: OK (popup/background cleanup + transcript clear success/failure paths pass)");
 })().catch((e) => {
   console.error(e);
   process.exit(1);

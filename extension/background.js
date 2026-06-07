@@ -226,7 +226,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }).catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
     return true;
   }
-  if (msg.type === "popup-cleanup") { cleanup().then(() => sendResponse({ ok: true })); return true; }
+  if (msg.type === "popup-cleanup") {
+    cleanup()
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+    return true;
+  }
   if (msg.type === "popup-config-update") {
     chrome.storage.session.get(["captioning", "pageTranslating", "pageTabId"]).then(async ({ captioning, pageTranslating, pageTabId }) => {
       if (!captioning && !pageTranslating) return { ok: true, applied: false };
