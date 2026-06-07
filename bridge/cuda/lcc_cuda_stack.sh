@@ -6,8 +6,9 @@ set -euo pipefail
 CMD="${1:-status}"
 ENGINE="${2:-${LCC_ASR_ENGINE:-granite}}"
 
-ROOT="${LCC_ROOT:-$HOME/live-caption/projects/live-caption}"
-CUDA_DIR="${LCC_CUDA_DIR:-$ROOT/bridge/cuda}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="${LCC_ROOT:-$(cd "$HERE/../.." && pwd)}"
+CUDA_DIR="${LCC_CUDA_DIR:-$HERE}"
 LOG_DIR="${LCC_CUDA_LOG_DIR:-$HOME/models/live-caption-cuda8/logs}"
 STATE_DIR="${LCC_CUDA_STATE_DIR:-$HOME/.cache/live-caption-cuda}"
 mkdir -p "$LOG_DIR" "$STATE_DIR"

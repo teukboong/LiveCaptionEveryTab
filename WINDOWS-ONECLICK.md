@@ -6,7 +6,7 @@ The installer:
 
 - installs Chrome if it is missing;
 - installs or verifies Ubuntu WSL2;
-- copies this project into `/root/live-caption/projects/live-caption` inside WSL;
+- copies this project into `/root/LiveCaptionEveryTab` inside WSL;
 - installs Ubuntu packages, a Python venv, and a CUDA llama.cpp build;
 - downloads the Gemma 4 E4B QAT GGUF translation model;
 - registers the Windows native messaging host so the popup Bridge Start/Stop buttons control the WSL CUDA stack;

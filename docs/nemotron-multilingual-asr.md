@@ -47,7 +47,7 @@ sed -i '' 's#chunk_size_ms_list = \[80, 160, 560, 1120\]#chunk_size_ms_list = [1
 .venv/bin/python export_onnx.py        # -> 1120/{encoder,decoder,joiner}.int8.onnx + tokens.txt
 
 # 3) bake the 'auto' language prompt into encoder.int8.onnx (ONNX graph surgery)
-cp <repo>/projects/live-caption/bridge/tools/bake_nemotron_prompt.py .
+cp bridge/tools/bake_nemotron_prompt.py .
 .venv/bin/python bake_nemotron_prompt.py     # edits 1120/encoder.int8.onnx in place
 
 # 4) install into the model dir the bridge looks for

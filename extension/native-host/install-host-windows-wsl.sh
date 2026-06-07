@@ -31,13 +31,13 @@ fi
 LOCALAPPDATA_WIN="$("$CMD_EXE" /c "echo %LOCALAPPDATA%" 2>/dev/null | tr -d '\r' | tail -1)"
 [ -n "$LOCALAPPDATA_WIN" ] || { echo "%LOCALAPPDATA% 확인 실패" >&2; exit 1; }
 LOCALAPPDATA_WSL="$(wslpath -u "$LOCALAPPDATA_WIN")"
-INSTALL_DIR="$LOCALAPPDATA_WSL/HesperidesLiveCaption"
+INSTALL_DIR="$LOCALAPPDATA_WSL/LiveCaptionEveryTab"
 mkdir -p "$INSTALL_DIR"
 
 DISTRO="${LCC_WSL_DISTRO:-}"
 WSL_USER="${LCC_WSL_USER:-}"
-STACK_CMD="${LCC_CUDA_STACK_CMD:-$HOME/live-caption/projects/live-caption/bridge/cuda/lcc_cuda_stack.sh}"
-ROOT="${LCC_ROOT:-$HOME/live-caption/projects/live-caption}"
+ROOT="${LCC_ROOT:-$(cd "$DIR/../.." && pwd)}"
+STACK_CMD="${LCC_CUDA_STACK_CMD:-$ROOT/bridge/cuda/lcc_cuda_stack.sh}"
 PY="${LCC_NATIVE_PYTHON:-/usr/bin/python3}"
 
 [ -x "$STACK_CMD" ] || { echo "CUDA stack script 없음: $STACK_CMD" >&2; exit 1; }

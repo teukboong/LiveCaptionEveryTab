@@ -130,14 +130,14 @@ Invoke-WslRoot "true"
 
 Write-Step "Copy Live Caption into WSL"
 $sourceWsl = To-WslPath $packageRoot
-Invoke-WslRoot "set -e; mkdir -p /root/live-caption/projects; if [ -e /root/live-caption/projects/live-caption ]; then mv /root/live-caption/projects/live-caption /root/live-caption/projects/live-caption.bak-\$(date +%Y%m%d%H%M%S); fi; cp -a '$sourceWsl' /root/live-caption/projects/live-caption"
-Write-Host "WSL project: /root/live-caption/projects/live-caption" -ForegroundColor Green
+Invoke-WslRoot "set -e; mkdir -p /root; if [ -e /root/LiveCaptionEveryTab ]; then mv /root/LiveCaptionEveryTab /root/LiveCaptionEveryTab.bak-\$(date +%Y%m%d%H%M%S); fi; cp -a '$sourceWsl' /root/LiveCaptionEveryTab"
+Write-Host "WSL project: /root/LiveCaptionEveryTab" -ForegroundColor Green
 
 Write-Step "Install CUDA stack inside WSL"
-Invoke-WslRoot "set -e; cd /root/live-caption/projects/live-caption; bash bridge/cuda/install_cuda_wsl.sh"
+Invoke-WslRoot "set -e; cd /root/LiveCaptionEveryTab; bash bridge/cuda/install_cuda_wsl.sh"
 
 Write-Step "Register Windows native host"
-Invoke-WslRoot "set -e; cd /root/live-caption/projects/live-caption; LCC_WSL_DISTRO='$Distro' LCC_WSL_USER=root LCC_ROOT=/root/live-caption/projects/live-caption LCC_CUDA_STACK_CMD=/root/live-caption/projects/live-caption/bridge/cuda/lcc_cuda_stack.sh LCC_NATIVE_PYTHON=/root/.venvs/lcc-asr/bin/python bash extension/native-host/install-host-windows-wsl.sh"
+Invoke-WslRoot "set -e; cd /root/LiveCaptionEveryTab; LCC_WSL_DISTRO='$Distro' LCC_WSL_USER=root LCC_ROOT=/root/LiveCaptionEveryTab LCC_CUDA_STACK_CMD=/root/LiveCaptionEveryTab/bridge/cuda/lcc_cuda_stack.sh LCC_NATIVE_PYTHON=/root/.venvs/lcc-asr/bin/python bash extension/native-host/install-host-windows-wsl.sh"
 
 Write-Step "Copy extension and create launcher"
 Copy-Extension -SourceRoot $packageRoot -DestinationRoot $extensionDir

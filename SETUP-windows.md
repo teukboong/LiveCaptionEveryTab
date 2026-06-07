@@ -55,8 +55,8 @@ sudo apt update && sudo apt install -y build-essential cmake git ffmpeg python3-
 
 ```bash
 # Windows의 폴더를 WSL2에서 쓰면 디스크 I/O가 느리다 → WSL2 홈에 두는 걸 권장
-git clone <이 저장소> ~/live-caption     # 또는 tar 풀기
-cd ~/live-caption/projects/live-caption
+git clone https://github.com/teukboong/LiveCaptionEveryTab.git ~/LiveCaptionEveryTab     # 또는 tar 풀기
+cd ~/LiveCaptionEveryTab
 ```
 
 ---
@@ -110,7 +110,7 @@ export PATH="$HOME/llama.cpp/build/bin:$PATH"   # serve_llama.sh가 llama-server
 
 설정 파일을 한 번 복사:
 ```bash
-cd ~/live-caption/projects/live-caption/bridge/cuda
+cd ~/LiveCaptionEveryTab/bridge/cuda
 cp lcc-cuda.env.example ~/.lcc-cuda.env
 # 기본값이 다 맞으면 그대로 둬도 됨. GGUF 경로만 다르면 ~/.lcc-cuda.env 의 LCC_LLAMA_GGUF 수정.
 ```
@@ -118,13 +118,13 @@ cp lcc-cuda.env.example ~/.lcc-cuda.env
 세 개를 각각 켠다(순서대로):
 ```bash
 # 터미널 1 — 번역 서버 (:8080)
-cd ~/live-caption/projects/live-caption/bridge/cuda && bash serve_llama.sh
+cd ~/LiveCaptionEveryTab/bridge/cuda && bash serve_llama.sh
 
 # 터미널 2 — 전사 서버 granite/qwen3 (:8000)
-cd ~/live-caption/projects/live-caption/bridge/cuda && bash serve_asr.sh
+cd ~/LiveCaptionEveryTab/bridge/cuda && bash serve_asr.sh
 
 # 터미널 3 — 브리지 (:8765)
-cd ~/live-caption/projects/live-caption/bridge/cuda && bash run_bridge_cuda.sh
+cd ~/LiveCaptionEveryTab/bridge/cuda && bash run_bridge_cuda.sh
 ```
 브리지에 `[bridge] ready (CUDA HTTP backend …)` 와 두 엔드포인트 `reachable` 로그가 뜨면 준비 완료.
 
