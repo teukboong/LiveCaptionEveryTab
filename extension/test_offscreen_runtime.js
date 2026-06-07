@@ -13,7 +13,7 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-async function loadOffscreen({ failSocket = false, failTypes = [] } = {}) {
+async function loadOffscreen({ failSocket = false, failSocketSend = false, failTypes = [] } = {}) {
   let listener = null;
   const runtimeMessages = [];
   const sockets = [];
@@ -33,6 +33,7 @@ async function loadOffscreen({ failSocket = false, failTypes = [] } = {}) {
     }
 
     send(data) {
+      if (failSocketSend) throw new Error("ws send failed");
       this.sent.push(data);
     }
 
@@ -151,6 +152,16 @@ function sendOffscreenMessage(harness, msg) {
   assert.deepEqual(plain(failedStartPageResponse), { ok: true });
   assert.deepEqual(plain(startPageFailure.runtimeMessages.slice(1)), [
     { route: "background", type: "err", text: "페이지 번역 시작 실패: socket failed" },
+  ]);
+
+  const configFailure = await loadOffscreen({ failSocketSend: true });
+  const configStartResponse = await sendOffscreenMessage(configFailure, { target: "offscreen", cmd: "start-page", pageContext: "", config: {} });
+  assert.deepEqual(plain(configStartResponse), { ok: true });
+  const failedConfigResponse = await sendOffscreenMessage(configFailure, { target: "offscreen", cmd: "config", config: {} });
+  await flushMicrotasks();
+  assert.deepEqual(plain(failedConfigResponse), { ok: false, error: "ws send failed" });
+  assert.deepEqual(plain(configFailure.runtimeMessages.slice(1)), [
+    { route: "background", type: "err", text: "config 전송 실패: ws send failed" },
   ]);
 
   console.log("test_offscreen_runtime: OK (offscreen runtime failures are observable)");

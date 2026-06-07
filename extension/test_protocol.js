@@ -269,7 +269,7 @@ assert.match(
 );
 assert.match(
   offscreenJs,
-  /else if \(msg\.cmd === "config"\) \{[\s\S]*sendBridgeConfig\(\);[\s\S]*sendResponse\(\{ ok: true \}\);[\s\S]*sendResponse\(\{ ok: false, error: errorText\(e\) \}\);[\s\S]*\}/,
+  /else if \(msg\.cmd === "config"\) \{[\s\S]*const sent = sendBridgeConfig\(\);[\s\S]*sendResponse\(sent && sent\.ok === false \? sent : \{ ok: true \}\);[\s\S]*sendResponse\(\{ ok: false, error: errorText\(e\) \}\);[\s\S]*\}/,
   "offscreen acknowledges live config updates",
 );
 assert.match(

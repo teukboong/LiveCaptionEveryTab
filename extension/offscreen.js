@@ -76,8 +76,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   else if (msg.cmd === "config") {
     try {
       currentConfig = msg.config || {};
-      sendBridgeConfig();
-      sendResponse({ ok: true });
+      const sent = sendBridgeConfig();
+      sendResponse(sent && sent.ok === false ? sent : { ok: true });
     } catch (e) {
       sendResponse({ ok: false, error: errorText(e) });
     }
@@ -155,13 +155,18 @@ function connectWS() {
   };
 }
 function sendBridgeConfig() {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return { ok: true, sent: false };
   try {
     ws.send(JSON.stringify(globalThis.lccBuildBridgeConfig(currentConfig, currentPageContext)));
     wsConfigured = true;
     flushBufferedPcm();
     flushDomBatches();
-  } catch (e) { report("config 전송 실패: " + errorText(e)); }
+    return { ok: true, sent: true };
+  } catch (e) {
+    const error = errorText(e);
+    report("config 전송 실패: " + error);
+    return { ok: false, error };
+  }
 }
 function scheduleReconnect() {
   if (reconnectTimer || !active) return;
