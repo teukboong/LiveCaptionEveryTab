@@ -51,7 +51,7 @@ def read_message():
 
 
 def send_message(obj):
-    data = json.dumps(obj).encode("utf-8")
+    data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
     sys.stdout.buffer.write(struct.pack("<I", len(data)))
     sys.stdout.buffer.write(data)
     sys.stdout.buffer.flush()

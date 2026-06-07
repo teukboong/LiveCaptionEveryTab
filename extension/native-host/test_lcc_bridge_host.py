@@ -54,7 +54,13 @@ class FakeStdin:
         self.buffer = io.BytesIO(data)
 
 
+class FakeStdout:
+    def __init__(self):
+        self.buffer = io.BytesIO()
+
+
 old_stdin = sys.stdin
+old_stdout = sys.stdout
 try:
     payload = json.dumps({"cmd": "status"}).encode()
     sys.stdin = FakeStdin(struct.pack("<I", len(payload)) + payload)
@@ -75,8 +81,18 @@ try:
         ok("read_message.too_large", "too large" in str(e))
     else:
         ok("read_message.too_large", False)
+
+    fake_out = FakeStdout()
+    sys.stdout = fake_out
+    host.send_message({"ok": False, "error": "메시지 파싱 실패"})
+    out = fake_out.buffer.getvalue()
+    (n,) = struct.unpack("<I", out[:4])
+    body = out[4:4+n]
+    ok("send_message.utf8_korean", "메시지 파싱 실패".encode("utf-8") in body)
+    check("send_message.round_trip", json.loads(body.decode("utf-8")).get("ok"), False)
 finally:
     sys.stdin = old_stdin
+    sys.stdout = old_stdout
 
 with tempfile.TemporaryDirectory() as tmp:
     tmp_path = Path(tmp)
