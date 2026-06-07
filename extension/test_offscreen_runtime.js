@@ -57,16 +57,20 @@ async function loadOffscreen({ failTypes = [] } = {}) {
   return { listener, runtimeMessages, warnings };
 }
 
+function sendOffscreenMessage(harness, msg) {
+  return new Promise((resolve) => {
+    const keepsChannelOpen = harness.listener(msg, {}, resolve);
+    assert.equal(keepsChannelOpen, undefined);
+  });
+}
+
 (async () => {
   const readyFailure = await loadOffscreen({ failTypes: ["offscreen-ready"] });
   assert.deepEqual(plain(readyFailure.runtimeMessages), [{ route: "background", type: "offscreen-ready" }]);
   assert.match(readyFailure.warnings.join("\n"), /background delivery failed: offscreen-ready background offscreen-ready failed/);
 
   const askFailure = await loadOffscreen({ failTypes: ["answer"] });
-  const response = await new Promise((resolve) => {
-    const keepsChannelOpen = askFailure.listener({ target: "offscreen", cmd: "ask", mode: "summary" }, {}, resolve);
-    assert.equal(keepsChannelOpen, undefined);
-  });
+  const response = await sendOffscreenMessage(askFailure, { target: "offscreen", cmd: "ask", mode: "summary" });
   await flushMicrotasks();
   await flushMicrotasks();
   assert.deepEqual(plain(response), { ok: true });
@@ -75,7 +79,30 @@ async function loadOffscreen({ failTypes = [] } = {}) {
   ]);
   assert.match(askFailure.warnings.join("\n"), /background delivery failed: answer background answer failed/);
 
-  console.log("test_offscreen_runtime: OK (offscreen background delivery failures are observable)");
+  const batchRouting = await loadOffscreen();
+  const batchResponse = await sendOffscreenMessage(batchRouting, {
+    target: "offscreen",
+    cmd: "dom-translate-batch",
+    requestId: "req-1",
+    items: [{ id: "node-1", text: "Hello world" }],
+  });
+  assert.deepEqual(plain(batchResponse), { ok: true });
+
+  const brokenItem = {};
+  Object.defineProperty(brokenItem, "id", {
+    get() {
+      throw new Error("bad item id");
+    },
+  });
+  const failedBatchResponse = await sendOffscreenMessage(batchRouting, {
+    target: "offscreen",
+    cmd: "dom-translate-batch",
+    requestId: "req-2",
+    items: [brokenItem],
+  });
+  assert.deepEqual(plain(failedBatchResponse), { ok: false, error: "bad item id" });
+
+  console.log("test_offscreen_runtime: OK (offscreen runtime failures are observable)");
 })().catch((e) => {
   console.error(e);
   process.exit(1);

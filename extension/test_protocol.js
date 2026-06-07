@@ -254,13 +254,18 @@ assert.match(
 );
 assert.match(
   offscreenJs,
-  /else if \(msg\.cmd === "ask"\) \{[\s\S]*sendResponse\(\{ ok: true \}\);[\s\S]*sendResponse\(\{ ok: false, error: String\(e && e\.message \|\| e\) \}\);[\s\S]*\}/,
+  /else if \(msg\.cmd === "ask"\) \{[\s\S]*sendResponse\(\{ ok: true \}\);[\s\S]*sendResponse\(\{ ok: false, error: errorText\(e\) \}\);[\s\S]*\}/,
   "offscreen acknowledges AI request handling",
 );
 assert.match(
   offscreenJs,
-  /else if \(msg\.cmd === "config"\) \{[\s\S]*sendBridgeConfig\(\);[\s\S]*sendResponse\(\{ ok: true \}\);[\s\S]*sendResponse\(\{ ok: false, error: String\(e && e\.message \|\| e\) \}\);[\s\S]*\}/,
+  /else if \(msg\.cmd === "config"\) \{[\s\S]*sendBridgeConfig\(\);[\s\S]*sendResponse\(\{ ok: true \}\);[\s\S]*sendResponse\(\{ ok: false, error: errorText\(e\) \}\);[\s\S]*\}/,
   "offscreen acknowledges live config updates",
+);
+assert.match(
+  offscreenJs,
+  /else if \(msg\.cmd === "dom-translate-batch"\) \{[\s\S]*queueOrSendDomBatch\(msg\);[\s\S]*sendResponse\(\{ ok: true \}\);[\s\S]*sendResponse\(\{ ok: false, error: errorText\(e\) \}\);[\s\S]*\}/,
+  "offscreen acknowledges page batch handling success or failure",
 );
 assert.match(
   offscreenJs,

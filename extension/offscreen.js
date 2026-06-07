@@ -61,11 +61,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sendBridgeConfig();
       sendResponse({ ok: true });
     } catch (e) {
-      sendResponse({ ok: false, error: String(e && e.message || e) });
+      sendResponse({ ok: false, error: errorText(e) });
     }
   }
   else if (msg.cmd === "pcm") { if (relayMode && msg.pcm && msg.pcm.length) queueOrSendPcm(Int16Array.from(msg.pcm)); }   // video-mode PCM from delay.js
-  else if (msg.cmd === "dom-translate-batch") queueOrSendDomBatch(msg);
+  else if (msg.cmd === "dom-translate-batch") {
+    try {
+      queueOrSendDomBatch(msg);
+      sendResponse({ ok: true });
+    } catch (e) {
+      sendResponse({ ok: false, error: errorText(e) });
+    }
+  }
   else if (msg.cmd === "stop") stop();
   else if (msg.cmd === "ask") {
     try {
@@ -76,7 +83,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
       sendResponse({ ok: true });
     } catch (e) {
-      sendResponse({ ok: false, error: String(e && e.message || e) });
+      sendResponse({ ok: false, error: errorText(e) });
     }
   }
 });
