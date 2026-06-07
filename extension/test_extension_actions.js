@@ -186,6 +186,7 @@ function loadBackgroundHarness({
   failOffscreenMessage = false,
   failOffscreenPcm = false,
   failSessionSet = false,
+  failTabMessage = false,
   pageTranslating = false,
   senderTabId,
 } = {}) {
@@ -254,6 +255,7 @@ function loadBackgroundHarness({
       get() { return Promise.resolve({ url: "https://example.test" }); },
       sendMessage(tabId, msg) {
         tabMessages.push({ tabId, msg });
+        if (failTabMessage) return Promise.reject(new Error("tab message failed"));
         return Promise.resolve({ ok: true });
       },
       onRemoved: { addListener() {} },
@@ -290,6 +292,8 @@ async function runBackgroundMessage(message, options = {}) {
     const keepsChannelOpen = harness.listener(message, sender, resolve);
     assert.equal(keepsChannelOpen, true);
   });
+  await flushMicrotasks();
+  await flushMicrotasks();
 
   return { ...harness, response };
 }
@@ -347,6 +351,14 @@ function runBackgroundClearTranscript(options) {
   assert.deepEqual(plain(backgroundFailure.response), { ok: false, error: "local remove failed" });
   assert.deepEqual(plain(backgroundFailure.sessionRemoved), []);
   assert.deepEqual(plain(backgroundFailure.tabMessages), []);
+
+  const backgroundTabFailure = await runBackgroundClearTranscript({ failTabMessage: true });
+  assert.deepEqual(plain(backgroundTabFailure.response), { ok: true });
+  assert.deepEqual(plain(backgroundTabFailure.tabMessages), [
+    { tabId: 456, msg: { type: "transcript-clear" } },
+    { tabId: 123, msg: { type: "transcript-clear" } },
+  ]);
+  assert.match(backgroundTabFailure.warnings.join("\n"), /tab delivery failed: 456 transcript-clear tab message failed/);
 
   const backgroundCleanupFailure = await runBackgroundMessage({ type: "popup-cleanup" }, { failSessionSet: true });
   assert.deepEqual(plain(backgroundCleanupFailure.response), { ok: false, error: "session set failed" });

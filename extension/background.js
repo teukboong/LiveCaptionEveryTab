@@ -6,7 +6,9 @@ importScripts("protocol.js");
 console.log("[lcc] background service worker loaded");
 
 const LCC_OFFSCREEN_WARN_INTERVAL_MS = 2000;
+const LCC_TAB_WARN_INTERVAL_MS = 2000;
 let lccLastOffscreenWarnAt = 0;
+let lccLastTabWarnAt = 0;
 
 function lccErrorText(e) {
   return String(e && e.message || e || "unknown error");
@@ -34,10 +36,24 @@ function sendOffscreenBestEffort(msg, label) {
 
 function sendTab(tabId, msg) {
   if (tabId == null) return;
+  const label = msg && msg.type || "message";
   try {
     const p = chrome.tabs.sendMessage(tabId, msg);
-    if (p && typeof p.catch === "function") p.catch(() => {});
-  } catch (_) {}
+    if (p && typeof p.then === "function") {
+      p
+        .then((res) => { if (res && res.ok === false) warnTabDelivery(tabId, label, res.error || res.msg || "not ok"); })
+        .catch((e) => warnTabDelivery(tabId, label, e));
+    }
+  } catch (e) {
+    warnTabDelivery(tabId, label, e);
+  }
+}
+
+function warnTabDelivery(tabId, label, e) {
+  const now = Date.now();
+  if (now - lccLastTabWarnAt < LCC_TAB_WARN_INTERVAL_MS) return;
+  lccLastTabWarnAt = now;
+  console.warn("[lcc] tab delivery failed:", tabId, label, lccErrorText(e));
 }
 
 async function ensureOffscreen() {
