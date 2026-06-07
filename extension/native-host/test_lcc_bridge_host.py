@@ -155,6 +155,8 @@ with tempfile.TemporaryDirectory() as tmp:
     old_installer = host.INSTALLER
     old_venv_python = host._venv_python
     old_popen = host.subprocess.Popen
+    old_pid_command = host._pid_command
+    old_kill = host.os.kill
     try:
         host.INSTALL_STATUS = str(status_path)
         host.INSTALL_LOG = str(log_path)
@@ -176,6 +178,18 @@ with tempfile.TemporaryDirectory() as tmp:
         check("install_status.dead_pid_ok", dead_pid.get("ok"), False)
         ok("install_status.dead_pid_log_hint", "로그:" in dead_pid.get("error", ""))
 
+        host.os.kill = lambda _pid, _sig: None
+        host._pid_command = lambda pid: f"/usr/bin/python3 {installer}" if int(pid) == 303 else "/usr/bin/python3 /tmp/other/install_models.py"
+        status_path.write_text(json.dumps({"tier": "full", "done": False, "ok": True, "pid": 303, "ts": int(time.time())}))
+        active_install = host.do_install_status()
+        check("install_status.active_installer_done", active_install.get("done"), False)
+        check("install_running.matches_installer", bool(host._install_running()), True)
+
+        status_path.write_text(json.dumps({"tier": "full", "done": False, "ok": True, "pid": 404, "ts": int(time.time())}))
+        foreign_pid = host.do_install_status()
+        check("install_status.foreign_pid_done", foreign_pid.get("done"), True)
+        check("install_status.foreign_pid_ok", foreign_pid.get("ok"), False)
+
         host._venv_python = lambda: "/usr/bin/python3"
         def raise_popen(*_args, **_kwargs):
             raise OSError("boom")
@@ -191,6 +205,8 @@ with tempfile.TemporaryDirectory() as tmp:
         host.INSTALLER = old_installer
         host._venv_python = old_venv_python
         host.subprocess.Popen = old_popen
+        host._pid_command = old_pid_command
+        host.os.kill = old_kill
 
 check("asr.granite", host._asr_engine({"asrEngine": "granite"}), "granite")
 check("asr.qwen3", host._asr_engine({"asrEngine": "qwen3"}), "qwen3")

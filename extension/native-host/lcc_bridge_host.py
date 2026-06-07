@@ -89,19 +89,23 @@ def _pid_command(pid):
         return ""
 
 
-def _cmd_matches_this_bridge(cmd):
+def _cmd_has_path(cmd, path):
     if not cmd:
         return False
-    server = _server_py()
-    raw_server = os.path.normpath(os.path.join(ROOT, "bridge", "server.py"))
+    real_path = os.path.realpath(path)
+    raw_path = os.path.normpath(path)
     try:
         tokens = shlex.split(cmd)
     except Exception:
         tokens = cmd.split()
     for token in tokens:
-        if os.path.realpath(token) == server or os.path.normpath(token) == raw_server:
+        if os.path.realpath(token) == real_path or os.path.normpath(token) == raw_path:
             return True
     return False
+
+
+def _cmd_matches_this_bridge(cmd):
+    return _cmd_has_path(cmd, os.path.join(ROOT, "bridge", "server.py"))
 
 
 def _this_bridge_pids(pids):
@@ -327,11 +331,18 @@ def _install_running():
     pid = st.get("pid")
     if not pid:
         return None                  # seed without a child pid yet -> not a live run
-    try:
-        os.kill(int(pid), 0)
-    except Exception:
+    if not _install_pid_active(pid):
         return None
     return st
+
+
+def _install_pid_active(pid):
+    try:
+        pid = int(pid)
+        os.kill(pid, 0)
+    except Exception:
+        return False
+    return _cmd_has_path(_pid_command(pid), INSTALLER)
 
 
 def _write_install_status(st):
@@ -392,9 +403,7 @@ def do_install_status():
         if age > 15:
             st = _install_status_failure(st, "설치 프로세스가 시작되지 않았습니다 — 다시 시도하세요")
         return {"ok": True, **st}
-    try:
-        os.kill(int(pid), 0)
-    except Exception:
+    if not _install_pid_active(pid):
         st = _install_status_failure(st, f"설치 프로세스가 종료됐지만 완료 상태가 없습니다(pid {pid}). 로그: {INSTALL_LOG}")
     return {"ok": True, **st}
 
