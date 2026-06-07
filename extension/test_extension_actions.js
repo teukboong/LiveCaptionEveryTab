@@ -181,9 +181,16 @@ async function runPopupStartWithCleanup(reply) {
   return popup;
 }
 
-async function runBackgroundMessage(message, { failLocalRemove = false, failSessionSet = false } = {}) {
+async function runBackgroundMessage(message, {
+  failLocalRemove = false,
+  failOffscreenMessage = false,
+  failSessionSet = false,
+  pageTranslating = false,
+  senderTabId,
+} = {}) {
   let listener = null;
   const localRemoved = [];
+  const runtimeMessages = [];
   const sessionSet = [];
   const sessionRemoved = [];
   const tabMessages = [];
@@ -204,7 +211,11 @@ async function runBackgroundMessage(message, { failLocalRemove = false, failSess
           listener = fn;
         },
       },
-      sendMessage() {
+      sendMessage(msg) {
+        runtimeMessages.push(msg);
+        if (failOffscreenMessage && msg && msg.cmd === "dom-translate-batch") {
+          return Promise.resolve({ ok: false, error: "offscreen batch failed" });
+        }
         return Promise.resolve({ ok: true });
       },
     },
@@ -222,7 +233,7 @@ async function runBackgroundMessage(message, { failLocalRemove = false, failSess
         },
       },
       session: {
-        get() { return Promise.resolve({ capturedTabId: 456 }); },
+        get() { return Promise.resolve({ capturedTabId: 456, pageTabId: 123, pageTranslating }); },
         set(value) {
           sessionSet.push(value);
           if (failSessionSet) return Promise.reject(new Error("session set failed"));
@@ -258,11 +269,12 @@ async function runBackgroundMessage(message, { failLocalRemove = false, failSess
   assert.equal(typeof listener, "function");
 
   const response = await new Promise((resolve) => {
-    const keepsChannelOpen = listener(message, {}, resolve);
+    const sender = senderTabId == null ? {} : { tab: { id: senderTabId } };
+    const keepsChannelOpen = listener(message, sender, resolve);
     assert.equal(keepsChannelOpen, true);
   });
 
-  return { localRemoved, response, sessionRemoved, sessionSet, tabMessages };
+  return { localRemoved, response, runtimeMessages, sessionRemoved, sessionSet, tabMessages };
 }
 
 function runBackgroundClearTranscript(options) {
@@ -312,7 +324,25 @@ function runBackgroundClearTranscript(options) {
   assert.deepEqual(plain(backgroundCleanupFailure.response), { ok: false, error: "session set failed" });
   assert.equal(plain(backgroundCleanupFailure.sessionSet).length, 1);
 
-  console.log("test_extension_actions: OK (popup/background cleanup + transcript clear success/failure paths pass)");
+  const pageBatch = { type: "page-translate-batch", requestId: "ptr1", items: [{ id: "n1", text: "Hello" }] };
+  const backgroundPageBatch = await runBackgroundMessage(pageBatch, { pageTranslating: true, senderTabId: 123 });
+  assert.deepEqual(plain(backgroundPageBatch.response), { ok: true, routed: true });
+  assert.deepEqual(plain(backgroundPageBatch.runtimeMessages), [
+    { target: "offscreen", cmd: "dom-translate-batch", tabId: 123, requestId: "ptr1", items: [{ id: "n1", text: "Hello" }] },
+  ]);
+
+  const backgroundPageBatchInactive = await runBackgroundMessage(pageBatch, { pageTranslating: true, senderTabId: 999 });
+  assert.deepEqual(plain(backgroundPageBatchInactive.response), { ok: true, routed: false });
+  assert.deepEqual(plain(backgroundPageBatchInactive.runtimeMessages), []);
+
+  const backgroundPageBatchFailure = await runBackgroundMessage(pageBatch, {
+    failOffscreenMessage: true,
+    pageTranslating: true,
+    senderTabId: 123,
+  });
+  assert.deepEqual(plain(backgroundPageBatchFailure.response), { ok: false, error: "offscreen batch failed" });
+
+  console.log("test_extension_actions: OK (popup/background cleanup, transcript clear, and page batch paths pass)");
 })().catch((e) => {
   console.error(e);
   process.exit(1);

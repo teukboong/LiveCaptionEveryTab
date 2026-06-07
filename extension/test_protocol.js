@@ -239,8 +239,8 @@ assert.match(
 );
 assert.match(
   backgroundJs,
-  /if \(msg\.type === "page-translate-batch"\) \{[\s\S]*chrome\.storage\.session\.get\(\["pageTranslating", "pageTabId"\]\)[\s\S]*if \(!pageTranslating \|\| tabId == null \|\| pageTabId !== tabId\) return null;[\s\S]*cmd: "dom-translate-batch"/,
-  "background routes page translation batches only for the active page tab",
+  /if \(msg\.type === "page-translate-batch"\) \{[\s\S]*if \(!pageTranslating \|\| tabId == null \|\| pageTabId !== tabId\) return \{ ok: true, routed: false \};[\s\S]*cmd: "dom-translate-batch"[\s\S]*sendResponse\(res \|\| \{ ok: true, routed: false \}\)[\s\S]*return true;/,
+  "background acknowledges page translation batch routing",
 );
 assert.match(
   offscreenJs,

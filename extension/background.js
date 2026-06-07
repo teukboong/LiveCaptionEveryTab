@@ -287,12 +287,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const tabId = sender && sender.tab && sender.tab.id;
     chrome.storage.session.get(["pageTranslating", "pageTabId"])
       .then(({ pageTranslating, pageTabId }) => {
-        if (!pageTranslating || tabId == null || pageTabId !== tabId) return null;
+        if (!pageTranslating || tabId == null || pageTabId !== tabId) return { ok: true, routed: false };
         return ensureOffscreen()
-          .then(() => chrome.runtime.sendMessage({ target: "offscreen", cmd: "dom-translate-batch", tabId, requestId: msg.requestId, items: msg.items || [] }));
+          .then(() => chrome.runtime.sendMessage({ target: "offscreen", cmd: "dom-translate-batch", tabId, requestId: msg.requestId, items: msg.items || [] }))
+          .then((res) => (res && res.ok === false) ? res : { ok: true, routed: true });
       })
-      .catch((e) => console.error("[lcc] page batch route", e));
-    return;
+      .then((res) => sendResponse(res || { ok: true, routed: false }))
+      .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+    return true;
   }
   if (msg.route === "background" || msg.target === "background") {
     forward(msg)
