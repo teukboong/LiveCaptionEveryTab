@@ -334,6 +334,20 @@ def _install_running():
     return st
 
 
+def _write_install_status(st):
+    try:
+        with open(INSTALL_STATUS, "w") as f:
+            json.dump(st, f)
+    except Exception:
+        pass
+
+
+def _install_status_failure(st, error):
+    failed = {**(st or {}), "done": True, "ok": False, "error": error, "ts": int(time.time())}
+    _write_install_status(failed)
+    return failed
+
+
 def do_install(msg=None):
     """Spawn the tier model downloader DETACHED (full/mid/lite). Returns immediately; popup polls
     install_status. Sets LCC_LM_TIER in .env on success (handled by install_models.py)."""
@@ -348,12 +362,9 @@ def do_install(msg=None):
         return {"ok": False, "error": "Python 3.10+ 환경을 못 찾음 — 먼저 ./setup.sh 를 실행하세요"}
     if not os.path.exists(INSTALLER):
         return {"ok": False, "error": f"install_models.py 없음: {INSTALLER}"}
-    try:                                            # seed status so the poller sees progress instantly
-        with open(INSTALL_STATUS, "w") as f:
-            json.dump({"tier": tier, "backend": backend, "done": False, "ok": True, "current": "시작 중…",
-                       "index": 0, "total": 0, "ts": int(time.time())}, f)
-    except Exception:
-        pass
+    seed = {"tier": tier, "backend": backend, "done": False, "ok": True, "current": "시작 중…",
+            "index": 0, "total": 0, "ts": int(time.time())}
+    _write_install_status(seed)                     # seed status so the poller sees progress instantly
     env = _start_env(msg or {})
     try:
         logf = open(INSTALL_LOG, "ab")
@@ -361,22 +372,31 @@ def do_install(msg=None):
                              stdout=logf, stderr=logf, start_new_session=True, env=env)
     except Exception as e:
         hlog(f"install spawn err: {e}")
+        _install_status_failure(seed, f"설치 시작 실패: {e}")
         return {"ok": False, "error": f"설치 시작 실패: {e}"}
-    try:                                            # record the child pid so install_status reflects a live run
-        with open(INSTALL_STATUS, "w") as f:
-            json.dump({"tier": tier, "backend": backend, "done": False, "ok": True, "current": "시작 중…",
-                       "index": 0, "total": 0, "pid": p.pid, "ts": int(time.time())}, f)
-    except Exception:
-        pass
+    _write_install_status({**seed, "pid": p.pid, "ts": int(time.time())})  # record child pid for live polling
     return {"ok": True, "started": True, "tier": tier, "backend": backend, "msg": "설치 시작 — 모델 다운로드(수 GB)"}
 
 
 def do_install_status():
     try:
         with open(INSTALL_STATUS) as f:
-            return {"ok": True, **json.load(f)}
+            st = json.load(f)
     except Exception:
         return {"ok": True, "idle": True}
+    if st.get("done"):
+        return {"ok": True, **st}
+    pid = st.get("pid")
+    age = int(time.time()) - int(st.get("ts") or 0)
+    if not pid:
+        if age > 15:
+            st = _install_status_failure(st, "설치 프로세스가 시작되지 않았습니다 — 다시 시도하세요")
+        return {"ok": True, **st}
+    try:
+        os.kill(int(pid), 0)
+    except Exception:
+        st = _install_status_failure(st, f"설치 프로세스가 종료됐지만 완료 상태가 없습니다(pid {pid}). 로그: {INSTALL_LOG}")
+    return {"ok": True, **st}
 
 
 def handle_message(msg):

@@ -5,9 +5,11 @@ These pin the startup/install guardrails that the popup relies on, without launc
 touching Chrome's native-host registry.
 """
 import importlib.util
+import json
 import os
 import stat
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -140,6 +142,55 @@ with tempfile.TemporaryDirectory() as tmp:
         host.bridge_pids = old_bridge_pids
         host.do_stop = old_do_stop
         host.do_start = old_do_start
+
+with tempfile.TemporaryDirectory() as tmp:
+    tmp_path = Path(tmp)
+    status_path = tmp_path / "install-status.json"
+    log_path = tmp_path / "install.log"
+    installer = tmp_path / "install_models.py"
+    installer.write_text("# fake installer\n")
+
+    old_status = host.INSTALL_STATUS
+    old_log = host.INSTALL_LOG
+    old_installer = host.INSTALLER
+    old_venv_python = host._venv_python
+    old_popen = host.subprocess.Popen
+    try:
+        host.INSTALL_STATUS = str(status_path)
+        host.INSTALL_LOG = str(log_path)
+        host.INSTALLER = str(installer)
+
+        status_path.write_text(json.dumps({"tier": "lite", "done": False, "ok": True, "ts": int(time.time())}))
+        fresh_seed = host.do_install_status()
+        check("install_status.fresh_seed_done", fresh_seed.get("done"), False)
+        check("install_status.fresh_seed_ok", fresh_seed.get("ok"), True)
+
+        status_path.write_text(json.dumps({"tier": "lite", "done": False, "ok": True, "ts": int(time.time()) - 30}))
+        stale_seed = host.do_install_status()
+        check("install_status.stale_seed_done", stale_seed.get("done"), True)
+        check("install_status.stale_seed_ok", stale_seed.get("ok"), False)
+
+        status_path.write_text(json.dumps({"tier": "mid", "done": False, "ok": True, "pid": 99999999, "ts": int(time.time())}))
+        dead_pid = host.do_install_status()
+        check("install_status.dead_pid_done", dead_pid.get("done"), True)
+        check("install_status.dead_pid_ok", dead_pid.get("ok"), False)
+        ok("install_status.dead_pid_log_hint", "로그:" in dead_pid.get("error", ""))
+
+        host._venv_python = lambda: "/usr/bin/python3"
+        def raise_popen(*_args, **_kwargs):
+            raise OSError("boom")
+        host.subprocess.Popen = raise_popen
+        spawn_fail = host.do_install({"tier": "lite"})
+        check("install.spawn_fail_ok", spawn_fail.get("ok"), False)
+        failed_status = json.loads(status_path.read_text())
+        check("install.spawn_fail_status_done", failed_status.get("done"), True)
+        check("install.spawn_fail_status_ok", failed_status.get("ok"), False)
+    finally:
+        host.INSTALL_STATUS = old_status
+        host.INSTALL_LOG = old_log
+        host.INSTALLER = old_installer
+        host._venv_python = old_venv_python
+        host.subprocess.Popen = old_popen
 
 check("asr.granite", host._asr_engine({"asrEngine": "granite"}), "granite")
 check("asr.qwen3", host._asr_engine({"asrEngine": "qwen3"}), "qwen3")
