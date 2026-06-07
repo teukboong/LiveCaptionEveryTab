@@ -613,6 +613,11 @@ const LCC_NM_HOSTS = [
   "io.github.teukboong.livecaption",
   "com.hesperides.livecaption",
 ];
+function isNativeHostMissingError(message) {
+  const text = String(message || "").toLowerCase();
+  return text.includes("specified native messaging host not found") ||
+    text.includes("no such native application");
+}
 function nmSend(msg) {
   return LCC_NM_HOSTS.reduce((chain, host) => {
     return chain.then((prev) => {
@@ -628,7 +633,10 @@ function nmSendOne(host, msg) {
   return new Promise((resolve) => {
     try {
       chrome.runtime.sendNativeMessage(host, msg, (resp) => {
-        if (chrome.runtime.lastError) resolve({ ok: false, noHost: true, error: chrome.runtime.lastError.message });
+        if (chrome.runtime.lastError) {
+          const error = chrome.runtime.lastError.message;
+          resolve({ ok: false, noHost: isNativeHostMissingError(error), error });
+        }
         else resolve(resp || { ok: false, error: tr("emptyNativeResponse") });
       });
     } catch (e) { resolve({ ok: false, noHost: true, error: String(e) }); }

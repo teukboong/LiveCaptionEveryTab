@@ -71,7 +71,12 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-async function loadPopup({ runtimeReplies = {}, settings = {}, activeTab = { id: 123 } } = {}) {
+async function loadPopup({
+  nativeLastErrorByCommand = {},
+  runtimeReplies = {},
+  settings = {},
+  activeTab = { id: 123 },
+} = {}) {
   const document = makeDocument();
   const runtimeMessages = [];
   const streamRequests = [];
@@ -93,6 +98,12 @@ async function loadPopup({ runtimeReplies = {}, settings = {}, activeTab = { id:
       },
       sendNativeMessage(_host, msg, cb) {
         nativeMessages.push(msg);
+        if (Object.hasOwn(nativeLastErrorByCommand, msg.cmd)) {
+          chrome.runtime.lastError = { message: nativeLastErrorByCommand[msg.cmd] };
+          cb(undefined);
+          chrome.runtime.lastError = null;
+          return undefined;
+        }
         if (msg.cmd === "install_status") cb({ ok: true, idle: true });
         else if (msg.cmd === "status") cb({ ok: true, running: false });
         else cb({ ok: true });
@@ -354,6 +365,16 @@ function runBackgroundClearTranscript(options) {
   );
   assert.deepEqual(plain(startCleanupFailure.streamRequests), []);
   assert.equal(startCleanupFailure.document.getElementById("status").textContent, "실패: cleanup failed");
+
+  const nativeHostMissing = await loadPopup({
+    nativeLastErrorByCommand: { status: "Specified native messaging host not found." },
+  });
+  assert.equal(nativeHostMissing.document.getElementById("bridgeStatus").textContent, "호스트 미설치");
+
+  const nativeHostCommunicationFailure = await loadPopup({
+    nativeLastErrorByCommand: { status: "Native host has exited." },
+  });
+  assert.equal(nativeHostCommunicationFailure.document.getElementById("bridgeStatus").textContent, "Native host has exited.");
 
   const backgroundSuccess = await runBackgroundClearTranscript();
   assert.deepEqual(plain(backgroundSuccess.localRemoved), [["lcc-transcript", "lcc-session"]]);
