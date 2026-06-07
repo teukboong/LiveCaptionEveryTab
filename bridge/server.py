@@ -2152,6 +2152,9 @@ async def handle(ws):
         priority = 0 if final else 5
         if not final:
             latest_preview_rev[unit_id] = rev
+            if len(latest_preview_rev) > 512:                  # bound long sessions (unit ids are monotonic)
+                for u in sorted(latest_preview_rev)[:-256]:
+                    latest_preview_rev.pop(u, None)
             if trans_q.full():
                 preview_drop_count += 1
                 scheduler_stats["preview_drop_trans_q_full"] += 1
@@ -2401,7 +2404,15 @@ async def handle(ws):
     async def transcribe(audio):
         if len(audio) < int(MIN_SEC * SR) * 2:
             return None
-        return await _on_asr_pool(asr_engine, transcribe_pcm, audio, asr_hint, asr_engine)
+        try:
+            return await _on_asr_pool(asr_engine, transcribe_pcm, audio, asr_hint, asr_engine)
+        except Exception as e:
+            # A transient ASR failure (OOM, a malformed frame, a model hiccup) must never kill
+            # inference_loop — it has no other guard, and a dead loop silently freezes all captions
+            # and then wedges the WS reader on a full work_q. Treat it as no-speech and carry on,
+            # mirroring translation_loop's "never kill the loop" stance.
+            print(f"[asr err] {e}", flush=True)
+            return None
 
     async def inference_loop():
         # ASR stays separate from translation: this loop creates fast source atoms and translation units,
@@ -2612,6 +2623,7 @@ async def handle(ws):
                             recent_pairs.clear()
                             translation_cache.clear()
                             preview_results.clear()
+                            latest_preview_rev.clear()
                             pending_preview_jobs.clear()
                             pending_final_jobs.clear()
                             print(f"[cfg] translation context reset epoch={translation_epoch} target={target_lang}", flush=True)
