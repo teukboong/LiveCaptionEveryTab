@@ -5,9 +5,12 @@ These pin the startup/install guardrails that the popup relies on, without launc
 touching Chrome's native-host registry.
 """
 import importlib.util
+import io
 import json
 import os
 import stat
+import struct
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -44,6 +47,36 @@ def ok(name, cond):
 
 
 host = load_host()
+
+
+class FakeStdin:
+    def __init__(self, data):
+        self.buffer = io.BytesIO(data)
+
+
+old_stdin = sys.stdin
+try:
+    payload = json.dumps({"cmd": "status"}).encode()
+    sys.stdin = FakeStdin(struct.pack("<I", len(payload)) + payload)
+    check("read_message.valid", host.read_message(), {"cmd": "status"})
+
+    sys.stdin = FakeStdin(struct.pack("<I", 5) + b"{}")
+    try:
+        host.read_message()
+    except ValueError as e:
+        ok("read_message.truncated", "truncated native message" in str(e))
+    else:
+        ok("read_message.truncated", False)
+
+    sys.stdin = FakeStdin(struct.pack("<I", host.MAX_MESSAGE_BYTES + 1))
+    try:
+        host.read_message()
+    except ValueError as e:
+        ok("read_message.too_large", "too large" in str(e))
+    else:
+        ok("read_message.too_large", False)
+finally:
+    sys.stdin = old_stdin
 
 with tempfile.TemporaryDirectory() as tmp:
     tmp_path = Path(tmp)

@@ -26,6 +26,7 @@ ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))                     # re
 INSTALLER = os.path.join(ROOT, "bridge", "install_models.py")
 INSTALL_STATUS = os.path.join(os.path.expanduser("~"), ".lcc-install.json")
 INSTALL_LOG = os.path.join(os.path.expanduser("~"), ".lcc-install.log")
+MAX_MESSAGE_BYTES = 1024 * 1024
 
 
 def hlog(msg):
@@ -41,7 +42,11 @@ def read_message():
     if len(raw_len) < 4:
         return None
     (n,) = struct.unpack("<I", raw_len)
+    if n > MAX_MESSAGE_BYTES:
+        raise ValueError(f"native message too large: {n} bytes")
     data = sys.stdin.buffer.read(n)
+    if len(data) != n:
+        raise ValueError(f"truncated native message: expected {n} bytes, got {len(data)}")
     return json.loads(data.decode("utf-8"))
 
 
