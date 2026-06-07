@@ -834,6 +834,7 @@ function lccPageNodeAllowed(node) {
   if (!parent || parent.closest(LCC_PAGE_EXCLUDE_SELECTOR)) return false;
   const state = lccPageTranslateState.get(node);
   if (state && state.translatedFull && node.nodeValue === state.translatedFull) return false;
+  if (state && state.revealing) return false;   // mid-reveal partial text must not re-enter the queue
   if (!lccPageNodeStyled(parent)) return false;
   if (!lccPagePrefetchScanning && !lccPageNearViewport(parent)) return false;   // prefetch relaxes the window
   const { core } = lccPageTextParts(node.nodeValue);
@@ -862,7 +863,65 @@ function lccPagePruneWork(work) {
   }
   return work.nodes.size > 0;
 }
-function lccPageApplyToNode(node, state, source, target, expectedFull, pre, post, originalFull) {
+// ---- reveal animation: paint a freshly-arrived translation grapheme-by-grapheme over ~160ms. Purely
+// visual — the model/bridge pipeline is untouched (we already hold the final string). Gated to the
+// viewport, short strings, no reduced-motion; cache hits and off-screen nodes snap instantly.
+const LCC_PAGE_REVEAL_MAX_CHARS = 120;
+const LCC_PAGE_REVEAL_MS = 160;
+function lccPageGraphemes(s) {
+  s = String(s || "");
+  try {
+    if (typeof Intl !== "undefined" && Intl.Segmenter) {
+      return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(s)].map((x) => x.segment);
+    }
+  } catch (_) {}
+  return Array.from(s);   // fallback: code points (still won't split surrogate pairs)
+}
+function lccPageRevealEnabled() {
+  return lccPageTranslateSettings.pageReveal !== false;
+}
+function lccPageShouldReveal(node, target) {
+  if (!lccPageRevealEnabled()) return false;
+  if (!target || target.length > LCC_PAGE_REVEAL_MAX_CHARS) return false;
+  if (typeof document !== "undefined" && document.hidden) return false;
+  if (!node || !node.parentElement || !lccPageInViewport(node.parentElement)) return false;
+  try { if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return false; } catch (_) {}
+  return true;
+}
+function lccPageRevealCancel(state) {
+  if (state && state.revealRaf) { try { cancelAnimationFrame(state.revealRaf); } catch (_) {} state.revealRaf = 0; }
+  if (state) state.revealing = false;
+}
+function lccPageRevealToNode(node, state, pre, target, post, animate) {
+  pre = String(pre || ""); post = String(post || "");
+  const finalFull = pre + String(target || "") + post;
+  state.translated = target;
+  state.translatedFull = finalFull;           // final value is set up front; reveal only changes what's painted
+  if (state.revealRaf) { try { cancelAnimationFrame(state.revealRaf); } catch (_) {} state.revealRaf = 0; }
+  if (!animate || !lccPageShouldReveal(node, target)) {
+    state.revealing = false;
+    node.nodeValue = finalFull;               // instant
+    return;
+  }
+  const chars = lccPageGraphemes(target);
+  const seq = (state.revealSeq || 0) + 1;
+  state.revealSeq = seq;
+  state.revealing = true;
+  const started = lccPageNow();
+  const budget = Math.max(60, Math.min(LCC_PAGE_REVEAL_MS, chars.length * 18));
+  const step = () => {
+    if (state.revealSeq !== seq) return;      // a newer reveal/apply owns this node
+    if (!lccPageTranslateOn || !node.isConnected) { state.revealing = false; state.revealRaf = 0; return; }
+    if (!state.revealing) { state.revealRaf = 0; node.nodeValue = finalFull; return; }
+    const p = Math.min(1, (lccPageNow() - started) / budget);
+    const n = Math.max(1, Math.ceil(chars.length * p));
+    node.nodeValue = pre + chars.slice(0, n).join("") + post;   // one DOM write per frame (rAF-coalesced)
+    if (p < 1) state.revealRaf = requestAnimationFrame(step);
+    else { state.revealing = false; state.revealRaf = 0; node.nodeValue = finalFull; }
+  };
+  state.revealRaf = requestAnimationFrame(step);
+}
+function lccPageApplyToNode(node, state, source, target, expectedFull, pre, post, originalFull, animate) {
   state.source = source;
   state.sourceNorm = lccPageSourceNorm(source);
   state.pre = pre || "";
@@ -870,9 +929,7 @@ function lccPageApplyToNode(node, state, source, target, expectedFull, pre, post
   state.expectedFull = expectedFull;
   state.originalFull = originalFull || expectedFull;
   state.pending = false;
-  state.translated = target;
-  state.translatedFull = state.pre + target + state.post;
-  node.nodeValue = state.translatedFull;       // direct browser DOM replacement, not an overlay
+  lccPageRevealToNode(node, state, state.pre, target, state.post, animate);   // animate only fresh results
 }
 function lccPageQueueNode(node) {
   if (!lccPageNodeAllowed(node)) return false;
@@ -1061,13 +1118,16 @@ function lccPageClearTransient(restore) {
   if (restore) {
     for (const node of lccPageTranslateNodes) {
       const state = lccPageTranslateState.get(node);
-      if (state && node.isConnected && state.translatedFull && node.nodeValue === state.translatedFull) {
-        node.nodeValue = state.originalFull;
+      const wasRevealing = !!(state && state.revealing);
+      lccPageRevealCancel(state);
+      if (state && node.isConnected && state.originalFull &&
+          (wasRevealing || (state.translatedFull && node.nodeValue === state.translatedFull))) {
+        node.nodeValue = state.originalFull;   // revert fully-translated AND mid-reveal partials to source
       }
       lccPageTranslateState.delete(node);
     }
   } else {
-    for (const node of lccPageTranslateNodes) lccPageTranslateState.delete(node);
+    for (const node of lccPageTranslateNodes) { lccPageRevealCancel(lccPageTranslateState.get(node)); lccPageTranslateState.delete(node); }
   }
   lccPageTranslateNodes.clear();
   lccPageTranslateReqSeq = 0;
@@ -1186,7 +1246,7 @@ function lccPageTranslateApply(msg) {
     if (node.nodeValue !== state.expectedFull && lccPageSourceNorm(currentParts.core) !== sourceNorm) { lccPageTranslateStats.dropChanged += 1; continue; }
     const pre = node.nodeValue === state.expectedFull ? (state.pre || "") : currentParts.pre;
     const post = node.nodeValue === state.expectedFull ? (state.post || "") : currentParts.post;
-    lccPageApplyToNode(node, state, source, target, node.nodeValue, pre, post);
+    lccPageApplyToNode(node, state, source, target, node.nodeValue, pre, post, node.nodeValue, true);   // fresh -> animate
     applied += 1;
   }
   if (applied > 0) lccPageRememberCache(source, target);

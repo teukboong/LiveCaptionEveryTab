@@ -34,6 +34,7 @@ const LCC_DEFAULT_SETTINGS = Object.freeze({
   pageTranslateSelector: "body",
   pageTranslateMinChars: 2,
   pageTranslateMaxChars: 900,
+  pageReveal: true,
   syncOffsetMs: 0,
   debugSync: false,
   uiMode: "simple",
@@ -89,6 +90,7 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   out.pageTranslateSelector = String(out.pageTranslateSelector || LCC_DEFAULT_SETTINGS.pageTranslateSelector).trim() || "body";
   out.pageTranslateMinChars = Math.max(1, Math.min(80, Number(out.pageTranslateMinChars) || LCC_DEFAULT_SETTINGS.pageTranslateMinChars));
   out.pageTranslateMaxChars = Math.max(80, Math.min(2000, Number(out.pageTranslateMaxChars) || LCC_DEFAULT_SETTINGS.pageTranslateMaxChars));
+  out.pageReveal = out.pageReveal !== false;
   return out;
 };
 globalThis.lccRunModeIncludesPage = function lccRunModeIncludesPage(mode) {
@@ -115,6 +117,7 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
     pageContextHint: pageHint,
     pageRegister: s.pageRegister || "casual",
     pageGlossary: s.pageGlossary || "",
+    pageReveal: s.pageReveal !== false,           // content-only (bridge ignores it); carried so the popup toggle propagates
     accuracyMode: s.accuracyMode ?? false,
     autoPrime: s.autoPrime ?? true,
   };
