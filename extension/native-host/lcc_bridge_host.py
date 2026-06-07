@@ -369,7 +369,10 @@ def _write_install_status(st):
 def _read_install_status():
     try:
         with open(INSTALL_STATUS) as f:
-            return json.load(f), None
+            st = json.load(f)
+        if not isinstance(st, dict):
+            raise ValueError(f"install status must be a JSON object, got {type(st).__name__}")
+        return st, None
     except FileNotFoundError:
         return None, None
     except Exception as e:

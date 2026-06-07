@@ -230,6 +230,13 @@ with tempfile.TemporaryDirectory() as tmp:
         check("install_status.broken_json_done", broken.get("done"), True)
         check("install_running.broken_json", host._install_running(), None)
 
+        status_path.write_text(json.dumps(["lite"]))
+        non_object = host.do_install_status()
+        check("install_status.non_object_ok", non_object.get("ok"), False)
+        check("install_status.non_object_done", non_object.get("done"), True)
+        ok("install_status.non_object_error", "JSON object" in non_object.get("error", ""))
+        check("install_running.non_object", host._install_running(), None)
+
         status_path.write_text(json.dumps({"tier": "lite", "done": False, "ok": True, "ts": int(time.time())}))
         fresh_seed = host.do_install_status()
         check("install_status.fresh_seed_done", fresh_seed.get("done"), False)
