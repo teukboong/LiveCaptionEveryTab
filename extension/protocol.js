@@ -67,6 +67,16 @@ function lccCanonicalLowerToken(value, allowed, fallback) {
   return allowed.includes(raw) ? raw : fallback;
 }
 
+function lccClampNumber(value, fallback, min, max) {
+  const n = (value == null || String(value).trim() === "") ? Number(fallback) : Number(value);
+  const safe = Number.isFinite(n) ? n : fallback;
+  return Math.max(min, Math.min(max, safe));
+}
+
+function lccClampInteger(value, fallback, min, max) {
+  return Math.round(lccClampNumber(value, fallback, min, max));
+}
+
 function lccCanonicalTargetLang(value, fallback = "Korean") {
   const raw = String(value || fallback || "Korean").trim().toLowerCase();
   return LCC_TARGET_LANGS.find((lang) => lang.toLowerCase() === raw) || fallback;
@@ -123,9 +133,16 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   out.pageRegister = globalThis.lccCanonicalRegister(out.pageRegister, LCC_DEFAULT_SETTINGS.pageRegister);
   out.latencyMode = globalThis.lccCanonicalLatencyMode(out.latencyMode);
   out.runMode = LCC_RUN_MODES[out.runMode] ? out.runMode : LCC_DEFAULT_SETTINGS.runMode;
+  out.fontSize = lccClampNumber(out.fontSize, LCC_DEFAULT_SETTINGS.fontSize, 14, 44);
+  out.bottomPct = lccClampNumber(out.bottomPct, LCC_DEFAULT_SETTINGS.bottomPct, 2, 80);
+  out.leftPct = lccClampNumber(out.leftPct, LCC_DEFAULT_SETTINGS.leftPct, 5, 95);
+  out.delaySec = lccClampNumber(out.delaySec, LCC_DEFAULT_SETTINGS.delaySec, 0, 12);
+  out.sentSilenceMs = lccClampInteger(out.sentSilenceMs, LCC_DEFAULT_SETTINGS.sentSilenceMs, 500, 2500);
+  out.vadLevel = lccClampInteger(out.vadLevel, LCC_DEFAULT_SETTINGS.vadLevel, 0, 3);
+  out.syncOffsetMs = lccClampInteger(out.syncOffsetMs, LCC_DEFAULT_SETTINGS.syncOffsetMs, -2000, 2000);
   out.pageTranslateSelector = String(out.pageTranslateSelector || LCC_DEFAULT_SETTINGS.pageTranslateSelector).trim() || "body";
-  out.pageTranslateMinChars = Math.max(1, Math.min(80, Number(out.pageTranslateMinChars) || LCC_DEFAULT_SETTINGS.pageTranslateMinChars));
-  out.pageTranslateMaxChars = Math.max(80, Math.min(8000, Number(out.pageTranslateMaxChars) || LCC_DEFAULT_SETTINGS.pageTranslateMaxChars));
+  out.pageTranslateMinChars = lccClampInteger(out.pageTranslateMinChars, LCC_DEFAULT_SETTINGS.pageTranslateMinChars, 1, 80);
+  out.pageTranslateMaxChars = lccClampInteger(out.pageTranslateMaxChars, LCC_DEFAULT_SETTINGS.pageTranslateMaxChars, 80, 8000);
   out.pageTranslateStream = (out.pageTranslateStream === "final") ? "final" : "partial";
   out.pageBilingual = out.pageBilingual !== false;
   out.pageVerify = out.pageVerify === true;

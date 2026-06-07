@@ -48,6 +48,27 @@ assert.equal(context.lccNormalizeSettings({ pageBilingual: false }).pageBilingua
 assert.equal(context.lccNormalizeSettings({}).pageBilingual, true);
 assert.equal(context.lccNormalizeSettings({ pageVerify: true }).pageVerify, true);
 assert.equal(context.lccNormalizeSettings({}).pageVerify, false);
+const clamped = context.lccNormalizeSettings({
+  fontSize: "999",
+  bottomPct: "-5",
+  leftPct: "NaN",
+  delaySec: "0",
+  sentSilenceMs: "99999",
+  vadLevel: "2.7",
+  syncOffsetMs: "-9999",
+  pageTranslateMinChars: "0",
+  pageTranslateMaxChars: "99999",
+});
+assert.equal(clamped.fontSize, 44);
+assert.equal(clamped.bottomPct, 2);
+assert.equal(clamped.leftPct, context.LCC_DEFAULT_SETTINGS.leftPct);
+assert.equal(clamped.delaySec, 0);
+assert.equal(clamped.sentSilenceMs, 2500);
+assert.equal(clamped.vadLevel, 3);
+assert.equal(clamped.syncOffsetMs, -2000);
+assert.equal(clamped.pageTranslateMinChars, 1);
+assert.equal(clamped.pageTranslateMaxChars, 8000);
+assert.equal(context.lccNormalizeSettings({ fontSize: "" }).fontSize, context.LCC_DEFAULT_SETTINGS.fontSize);
 assert.equal(context.lccRunModeIncludesPage("page"), true);
 assert.equal(context.lccRunModeIncludesCaption("page"), false);
 assert.equal(context.lccRunModeIncludesPage("both"), true);
@@ -58,6 +79,8 @@ assert.equal(context.lccBuildBridgeConfig({ asrEngine: "QWEN3" }, "").asrEngine,
 assert.equal(context.lccBuildBridgeConfig({ asrEngine: "parakeet" }, "").asrEngine, "granite");
 assert.equal(context.lccBuildBridgeConfig({ register: "NEWS" }, "").register, "news");
 assert.equal(context.lccBuildBridgeConfig({ latencyMode: "fast" }, "").latencyMode, "aggressive");
+assert.equal(context.lccBuildBridgeConfig({ vadLevel: "-7" }, "").vadLevel, 0);
+assert.equal(context.lccBuildBridgeConfig({ sentSilenceMs: "99999" }, "").sentSilenceMs, 2500);
 assert.equal(Object.hasOwn(context.lccBuildBridgeConfig({ uiLang: "en" }, ""), "uiLang"), false);
 const pageCfg = context.lccBuildBridgeConfig({
   contextHint: "video terms",
