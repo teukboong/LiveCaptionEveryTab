@@ -42,6 +42,7 @@ do
 done
 
 cd "$ROOT"
+"$PY" tools/quality_gate.py
 "$PY" extension/native-host/test_lcc_bridge_host.py
 for js_file in extension/*.js; do
   node --check "$js_file"
