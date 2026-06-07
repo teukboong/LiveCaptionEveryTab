@@ -69,23 +69,17 @@ python3 -m venv .venv
 
 ---
 
-## 4. 모델 다운로드 (~26GB, 1번만)
+## 4. 모델 다운로드 (티어별, 1번만)
 
-HuggingFace에서 자동으로 받지만, 미리 받아두면 첫 실행이 빠름:
+가장 쉬운 길은 **팝업의 Full/Mid/Lite 버튼** — 고른 티어만 받아 배선한다. 안 받아도 첫 실행 때 자동.
+미리 터미널로 받으려면(**고른 티어만**, 디스크 절약):
 
 ```bash
-.venv/bin/python - <<'PY'
-from huggingface_hub import snapshot_download as d
-for r in ["ibm-granite/granite-speech-4.1-2b",        # 전사 — 영어 (Granite) ~5GB
-          "Qwen/Qwen3-ASR-1.7B",                       # 전사 — 일어·다국어 (Qwen3-ASR) ~4GB
-          "mlx-community/gemma-4-26b-a4b-it-4bit"]:    # 모국어 번역 (full 티어) ~14GB
-    print("downloading", r); d(r)
-print("완료")
-PY
+./setup.sh --models --tier auto      # auto = 메모리에 맞춰 자동 (또는 full|mid|lite 지정)
 ```
 
-(받다 끊겨도 다시 실행하면 이어받음.) RAM이 작으면 번역은 **티어**가 자동으로 더 작은 모델(E4B/E2B)을
-고른다 — 아래 "메모리 줄이기" 참고. 자동감지가 고른 모델은 첫 실행 로그(`[bridge] tier=…`)에 찍힌다.
+- 받는 용량: full ~14GB(+ASR) · mid ~6GB · lite ~4GB. 전부 받지 않고 **한 티어만** 받는다.
+- (받다 끊겨도 다시 실행하면 이어받음.) 자동감지가 고른 티어는 첫 실행 로그(`[bridge] tier=…`)에 찍힌다 — 아래 "메모리 줄이기" 참고.
 
 ---
 

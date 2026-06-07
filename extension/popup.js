@@ -320,7 +320,6 @@ async function startInstall(tier) {
   setInstStatus("" + TIER_LABEL[tier] + " 설치 요청…", "#666");
   const r = await nmSend({ cmd: "install", tier });
   if (r.noHost) { setInstBusy(false); setInstStatus("호스트 미설치 — 터미널에서 ./setup.sh 1회", "#dc2626"); return; }
-  if (r.cuda) { setInstBusy(false); setInstStatus(r.msg || "CUDA: 모델은 setup이 받습니다", "#746d5f"); return; }
   if (!r.ok) { setInstBusy(false); setInstStatus("" + (r.error || "실패"), "#dc2626"); return; }
   pollInstall();
 }

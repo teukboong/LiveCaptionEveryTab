@@ -51,6 +51,14 @@
 - MTP는 이 하드웨어에서 무의미해 미사용(MoE·dense·E4B 전부 검증)
 - ⚠️ 정품 Chrome/Edge/Brave 필요 — ChatGPT Atlas 등 일부 Chromium 포크는 `chrome.tabCapture` 미구현
 
+## 설치 (가장 쉬운 길)
+
+터미널이 어렵다면 **더블클릭 설치**:
+- **macOS** — `install-mac.command` 더블클릭 (막히면 우클릭 → 열기). venv·의존성·팝업 호스트까지 한 번에.
+- **Windows** — `install-windows-oneclick.bat` 더블클릭 (WSL2+CUDA+모델까지 자동).
+
+이후엔 **확장 팝업이 전부** 합니다 — 브릿지 켜기, 그리고 **모델은 고른 티어만**(Full/Mid/Lite) 받아 디스크를 아낍니다. (터미널파는 `./setup.sh [--models --tier lite]`)
+
 ## 실행
 ### 1) 브릿지 서버
 ```bash

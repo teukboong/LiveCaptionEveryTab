@@ -214,8 +214,12 @@ def do_stop():
 
 
 def _venv_python():
-    """Same interpreter run_bridge.sh uses: LCC_PYTHON override, else <root>/.venv/bin/python."""
-    return os.environ.get("LCC_PYTHON") or os.path.join(ROOT, ".venv", "bin", "python")
+    """A python with the project deps (huggingface_hub): LCC_PYTHON, else the repo .venv, else this host's own
+    interpreter (on CUDA/WSL the host already runs under the project venv). None if nothing usable exists."""
+    for p in (os.environ.get("LCC_PYTHON"), os.path.join(ROOT, ".venv", "bin", "python"), sys.executable):
+        if p and os.path.exists(p):
+            return p
+    return None
 
 
 def _install_running():
@@ -228,11 +232,12 @@ def _install_running():
     if st.get("done"):
         return None
     pid = st.get("pid")
-    if pid:
-        try:
-            os.kill(int(pid), 0)
-        except Exception:
-            return None
+    if not pid:
+        return None                  # seed without a child pid yet -> not a live run
+    try:
+        os.kill(int(pid), 0)
+    except Exception:
+        return None
     return st
 
 
@@ -242,33 +247,35 @@ def do_install(msg=None):
     tier = str((msg or {}).get("tier") or "").strip().lower()
     if tier not in ("full", "mid", "lite"):
         return {"ok": False, "error": f"unknown tier: {tier}"}
-    if CUDA_STACK_CMD:
-        # CUDA: translation/ASR models are GGUF, fetched at setup (install_cuda_wsl.sh) and served by the stack.
-        # The popup downloader is MLX-only, so don't pull unused MLX weights here — just say so.
-        return {"ok": True, "cuda": True, "started": False,
-                "msg": "CUDA: 모델은 setup(install_cuda_wsl.sh)이 받아 서버가 GGUF로 서빙합니다 — 팝업 설치는 Mac(MLX) 전용"}
+    backend = "cuda" if CUDA_STACK_CMD else "mlx"   # tier downloader is backend-aware (MLX repos vs CUDA GGUF)
     if _install_running():
         return {"ok": True, "started": False, "already": True, "msg": "이미 설치 중"}
     py = _venv_python()
-    if not os.path.exists(py):
-        return {"ok": False, "error": f"venv 없음: {py} — 먼저 setup.sh 를 실행하세요"}
+    if not py:
+        return {"ok": False, "error": "의존성 있는 python을 못 찾음 — 먼저 setup.sh 를 실행하세요"}
     if not os.path.exists(INSTALLER):
         return {"ok": False, "error": f"install_models.py 없음: {INSTALLER}"}
     try:                                            # seed status so the poller sees progress instantly
         with open(INSTALL_STATUS, "w") as f:
-            json.dump({"tier": tier, "done": False, "ok": True, "current": "시작 중…",
+            json.dump({"tier": tier, "backend": backend, "done": False, "ok": True, "current": "시작 중…",
                        "index": 0, "total": 0, "ts": int(time.time())}, f)
     except Exception:
         pass
     env = _start_env(msg or {})
     try:
         logf = open(INSTALL_LOG, "ab")
-        subprocess.Popen([py, INSTALLER, tier], stdin=subprocess.DEVNULL,
-                         stdout=logf, stderr=logf, start_new_session=True, env=env)
+        p = subprocess.Popen([py, INSTALLER, tier, "--backend", backend], stdin=subprocess.DEVNULL,
+                             stdout=logf, stderr=logf, start_new_session=True, env=env)
     except Exception as e:
         hlog(f"install spawn err: {e}")
         return {"ok": False, "error": f"설치 시작 실패: {e}"}
-    return {"ok": True, "started": True, "tier": tier, "msg": "설치 시작 — 모델 다운로드(수 GB)"}
+    try:                                            # record the child pid so install_status reflects a live run
+        with open(INSTALL_STATUS, "w") as f:
+            json.dump({"tier": tier, "backend": backend, "done": False, "ok": True, "current": "시작 중…",
+                       "index": 0, "total": 0, "pid": p.pid, "ts": int(time.time())}, f)
+    except Exception:
+        pass
+    return {"ok": True, "started": True, "tier": tier, "backend": backend, "msg": "설치 시작 — 모델 다운로드(수 GB)"}
 
 
 def do_install_status():

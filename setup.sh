@@ -1,22 +1,28 @@
 #!/usr/bin/env bash
 # One-shot setup: create a repo-local .venv and install dependencies for your platform.
-#   ./setup.sh                 # auto: 'mlx' on Apple Silicon, 'cuda' elsewhere
-#   ./setup.sh mlx|cuda|parakeet   # force a specific extra
-#   ./setup.sh --models        # also prefetch the default models (~20GB, optional)
+#   ./setup.sh                          # auto backend (mlx on Apple Silicon, cuda elsewhere)
+#   ./setup.sh mlx|cuda|parakeet        # force a backend extra
+#   ./setup.sh --models                 # also fetch models for the AUTO-detected tier (disk-frugal: one tier)
+#   ./setup.sh --models --tier lite     # fetch only that tier (full|mid|lite|auto)
 # Override the base interpreter with LCC_PYTHON_BASE=python3.13 ./setup.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
+USAGE="usage: ./setup.sh [mlx|cuda|parakeet] [--models] [--tier full|mid|lite|auto]"
 EXTRA=""
 MODELS=0
-for a in "$@"; do
-  case "$a" in
-    mlx|cuda|parakeet) EXTRA="$a" ;;
+TIER="auto"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    mlx|cuda|parakeet) EXTRA="$1" ;;
     --models) MODELS=1 ;;
-    -h|--help) echo "usage: ./setup.sh [mlx|cuda|parakeet] [--models]"; exit 0 ;;
-    *) echo "unknown arg: $a (usage: ./setup.sh [mlx|cuda|parakeet] [--models])"; exit 1 ;;
+    --tier) TIER="${2:-auto}"; shift ;;
+    --tier=*) TIER="${1#--tier=}" ;;
+    -h|--help) echo "$USAGE"; exit 0 ;;
+    *) echo "unknown arg: $1 ($USAGE)"; exit 1 ;;
   esac
+  shift
 done
 if [ -z "$EXTRA" ]; then
   if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then EXTRA="mlx"; else EXTRA="cuda"; fi
@@ -45,15 +51,8 @@ elif [ "$EXTRA" = "cuda" ] && [ -f extension/native-host/install-host-windows-ws
 fi
 
 if [ "$MODELS" = "1" ]; then
-  echo "[setup] prefetching default models (~20GB, resumable)…"
-  .venv/bin/python - <<'PY'
-from huggingface_hub import snapshot_download as d
-for r in ["ibm-granite/granite-speech-4.1-2b",
-          "Qwen/Qwen3-ASR-1.7B",
-          "mlx-community/gemma-4-26b-a4b-it-4bit"]:
-    print("downloading", r); d(r)
-print("done")
-PY
+  echo "[setup] fetching models for tier '$TIER' ($EXTRA) — only this tier, to save disk (resumable)…"
+  .venv/bin/python bridge/install_models.py "$TIER" --backend "$EXTRA"
 fi
 
 echo

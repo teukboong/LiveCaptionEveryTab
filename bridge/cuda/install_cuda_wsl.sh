@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # One-click WSL2/CUDA setup for the Windows Live Caption package.
 # Run as root inside Ubuntu WSL. It installs the bridge venv, builds llama.cpp with CUDA,
-# downloads the E4B translation GGUF, and writes ~/.lcc-cuda.env for popup-managed start/stop.
+# downloads the chosen tier's translation GGUF (arg/LCC_LM_TIER: full|mid|lite, default mid — one tier, not
+# all, to save disk), and writes ~/.lcc-cuda.env for popup-managed start/stop. Tiers are also switchable later
+# from the popup. Usage: install_cuda_wsl.sh [full|mid|lite]
 set -euo pipefail
 
 ROOT="${LCC_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
@@ -13,10 +15,13 @@ LLAMA_REPO="${LCC_LLAMA_REPO:-https://github.com/ggml-org/llama.cpp.git}"
 LLAMA_REF="${LCC_LLAMA_REF:-master}"
 LLAMA_BIN="$LLAMA_DIR/build/bin/llama-server"
 
-GEMMA_REPO="${LCC_GEMMA_REPO:-google/gemma-4-E4B-it-qat-q4_0-gguf}"
-GEMMA_FILE="${LCC_GEMMA_FILE:-gemma-4-E4B_q4_0-it.gguf}"
-GEMMA_DIR="$MODEL_ROOT/gemma-4-E4B-it-qat-q4_0/gguf"
-GEMMA_PATH="$GEMMA_DIR/$GEMMA_FILE"
+TIER="${1:-${LCC_LM_TIER:-mid}}"
+case "$TIER" in
+  full) GEMMA_REPO="${LCC_GEMMA_REPO:-google/gemma-4-26B-A4B-it-qat-q4_0-gguf}" ;;
+  lite) GEMMA_REPO="${LCC_GEMMA_REPO:-google/gemma-4-E2B-it-qat-q4_0-gguf}" ;;
+  *)    TIER="mid"; GEMMA_REPO="${LCC_GEMMA_REPO:-google/gemma-4-E4B-it-qat-q4_0-gguf}" ;;
+esac
+GEMMA_DIR="$MODEL_ROOT/$TIER"   # GEMMA_PATH is set after download (located, not a guessed filename)
 
 ASR_GRANITE_HF="${LCC_CUDA_ASR_GRANITE_HF:-ibm-granite/granite-speech-4.1-2b-GGUF:Q8_0}"
 ASR_QWEN3_HF="${LCC_CUDA_ASR_QWEN3_HF:-mradermacher/Qwen3-ASR-1.7B-GGUF:Q6_K}"
@@ -59,26 +64,29 @@ cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" -DGGML_CUDA=ON -DLLAMA_CURL=ON -DCMA
 cmake --build "$LLAMA_DIR/build" --config Release -j"$(nproc)" --target llama-server llama-cli
 [ -x "$LLAMA_BIN" ] || { echo "llama-server build output missing: $LLAMA_BIN" >&2; exit 1; }
 
-log "Download translation model"
+log "Download translation model (tier: $TIER)"
 mkdir -p "$GEMMA_DIR"
-if [ ! -f "$GEMMA_PATH" ]; then
-  "$VENV/bin/python" - "$GEMMA_REPO" "$GEMMA_FILE" "$GEMMA_DIR" <<'PY'
-import os
-import sys
-from huggingface_hub import hf_hub_download
+GEMMA_PATH="$("$VENV/bin/python" - "$GEMMA_REPO" "$GEMMA_DIR" <<'PY'
+import os, sys, glob
+from huggingface_hub import snapshot_download
 
-repo, filename, out_dir = sys.argv[1:]
+repo, out_dir = sys.argv[1:]
 token = os.environ.get("HF_TOKEN") or None
 try:
-    path = hf_hub_download(repo_id=repo, filename=filename, local_dir=out_dir, token=token)
+    path = snapshot_download(repo_id=repo, allow_patterns=["*.gguf"], local_dir=out_dir, token=token)
 except Exception as exc:
     raise SystemExit(
-        f"failed to download {repo}/{filename}. If this model is gated, accept the license on Hugging Face, "
-        f"set HF_TOKEN, and rerun install-windows-oneclick.bat. error={exc}"
+        f"failed to download {repo}. If gated, accept the license on Hugging Face, set HF_TOKEN, and rerun "
+        f"install-windows-oneclick.bat. error={exc}"
     )
-print(path)
+ggufs = sorted(glob.glob(os.path.join(path, "**", "*.gguf"), recursive=True))
+main = [g for g in ggufs if "mmproj" not in os.path.basename(g).lower()] or ggufs
+if not main:
+    raise SystemExit(f"no .gguf found in {repo}")
+print(main[0])
 PY
-fi
+)"
+[ -f "$GEMMA_PATH" ] || { echo "translation GGUF download failed: $GEMMA_REPO" >&2; exit 1; }
 
 log "Write CUDA environment"
 cat > "$HOME/.lcc-cuda.env" <<EOF
@@ -86,6 +94,7 @@ LCC_ROOT=$ROOT
 LCC_PYTHON=$VENV/bin/python
 LCC_LLAMA_BIN=$LLAMA_BIN
 LCC_LLAMA_GGUF=$GEMMA_PATH
+LCC_LM_TIER=$TIER
 LCC_LLAMA_CTX=2048
 LCC_LLAMA_NGL=all
 LCC_CUDA_CHAT_PORT=18080
