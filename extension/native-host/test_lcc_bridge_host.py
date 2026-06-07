@@ -10,6 +10,7 @@ import json
 import os
 import stat
 import struct
+import subprocess
 import sys
 import tempfile
 import time
@@ -102,6 +103,21 @@ try:
 finally:
     sys.stdin = old_stdin
     sys.stdout = old_stdout
+
+payload = json.dumps({"cmd": "status"}).encode()
+native = subprocess.run(
+    [sys.executable, str(HOST_PATH), "chrome-extension://ddcflpihicaobncgpmadoipiofpllgnl/"],
+    input=struct.pack("<I", len(payload)) + payload,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+)
+check("native_origin_argv.rc", native.returncode, 0)
+if len(native.stdout) >= 4:
+    (n,) = struct.unpack("<I", native.stdout[:4])
+    reply = json.loads(native.stdout[4:4+n].decode("utf-8"))
+    check("native_origin_argv.reply_ok", reply.get("ok"), True)
+else:
+    fails.append(f"native_origin_argv.stdout: got {native.stdout!r}, stderr {native.stderr!r}")
 
 with tempfile.TemporaryDirectory() as tmp:
     tmp_path = Path(tmp)

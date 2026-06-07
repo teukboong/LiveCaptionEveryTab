@@ -205,6 +205,7 @@ function loadBackgroundHarness({
   hasOffscreenDocument = false,
   pageTranslating = false,
   senderTabId,
+  tabUrl = "https://example.test",
 } = {}) {
   let listener = null;
   const localRemoved = [];
@@ -213,6 +214,7 @@ function loadBackgroundHarness({
   const sessionRemoved = [];
   let sessionGetCount = 0;
   const tabMessages = [];
+  const errors = [];
   const warnings = [];
 
   const chrome = {
@@ -279,7 +281,7 @@ function loadBackgroundHarness({
     tabs: {
       get() {
         if (failTabGet) return Promise.reject(new Error("tab get failed"));
-        return Promise.resolve({ url: "https://example.test" });
+        return Promise.resolve({ url: tabUrl });
       },
       sendMessage(tabId, msg) {
         tabMessages.push({ tabId, msg });
@@ -295,7 +297,7 @@ function loadBackgroundHarness({
   const context = {
     chrome,
     console: {
-      error: console.error,
+      error(...args) { errors.push(args.map((arg) => String(arg)).join(" ")); },
       log() {},
       warn(...args) { warnings.push(args.map((arg) => String(arg)).join(" ")); },
     },
@@ -309,7 +311,7 @@ function loadBackgroundHarness({
   };
   vm.runInContext(fs.readFileSync(path.join(extensionRoot, "background.js"), "utf8"), context, { filename: "background.js" });
   assert.equal(typeof listener, "function");
-  return { listener, localRemoved, runtimeMessages, sessionRemoved, sessionSet, tabMessages, warnings, senderTabId };
+  return { errors, listener, localRemoved, runtimeMessages, sessionRemoved, sessionSet, tabMessages, warnings, senderTabId };
 }
 
 async function runBackgroundMessage(message, options = {}) {
@@ -465,6 +467,18 @@ function runBackgroundClearTranscript(options) {
     { target: "offscreen", cmd: "start-page", pageContext: "page ctx", config: startPageSettings },
   ]);
   assert.match(backgroundStartPageUrlFailure.warnings.join("\n"), /page URL lookup failed: 123 tab get failed/);
+
+  const backgroundRestrictedTab = await runBackgroundMessage(
+    { type: "popup-start-video", tabId: 123, delaySec: 3, pageContext: "" },
+    { tabUrl: "chrome://extensions/" },
+  );
+  assert.deepEqual(plain(backgroundRestrictedTab.response), {
+    ok: false,
+    error: "이 탭(chrome://)에는 확장 스크립트를 주입할 수 없어요. 일반 웹 페이지에서 다시 시작하세요.",
+  });
+  assert.match(backgroundRestrictedTab.warnings.join("\n"), /unsupported content tab: 123 chrome:\/\/extensions\//);
+  assert.match(backgroundRestrictedTab.errors.join("\n"), /startVideo Error: 이 탭\(chrome:\/\/\)/);
+  assert.deepEqual(plain(backgroundRestrictedTab.runtimeMessages), []);
 
   const backgroundConfigReset = await runBackgroundMessage(
     { type: "popup-config-update", resetTranslationContext: true },

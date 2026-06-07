@@ -123,32 +123,57 @@ async function resendStart() {
 }
 
 const LCC_CONTENT_FILES = ["protocol.js", "pcm.js", "page-seed.js", "content.js", "delay.js"];
+function unsupportedTabReason(tab) {
+  const url = String(tab && tab.url || "");
+  const scheme = (url.match(/^([a-z][a-z0-9+.-]*):/i) || [])[1];
+  if (!scheme) return "";
+  if (scheme === "http" || scheme === "https" || scheme === "file") return "";
+  return `이 탭(${scheme}://)에는 확장 스크립트를 주입할 수 없어요. 일반 웹 페이지에서 다시 시작하세요.`;
+}
+async function injectContentFiles(target) {
+  await chrome.scripting.executeScript({ target, files: LCC_CONTENT_FILES });
+  await chrome.scripting.insertCSS({ target, files: ["content.css"] });
+}
+function contentScriptFailure(tabId, tab, e) {
+  const where = tab && tab.url ? ` (${tab.url})` : "";
+  console.warn("[lcc] content inject failed for tab", tabId, where, e);
+  const error = `이 탭에는 확장 스크립트를 주입할 수 없어요. 일반 웹 페이지에서 다시 시작하세요.${where ? ` URL: ${tab.url}` : ""}`;
+  return { ok: false, error };
+}
 // Manifest declares content scripts for page-load only, so a tab that was already open when the extension
 // (re)loaded has none — captions wouldn't show without a refresh. Inject on demand: ping the tab; if nothing
 // answers, executeScript the bundle. Already-injected tabs answer the ping and are skipped (no double-run).
 async function ensureContentScript(tabId) {
-  if (tabId == null) return false;
+  if (tabId == null) return { ok: false };
+  const tab = await chrome.tabs.get(tabId).catch((e) => {
+    console.warn("[lcc] content tab lookup failed:", tabId, lccErrorText(e));
+    return null;
+  });
+  const unsupported = unsupportedTabReason(tab);
+  if (unsupported) {
+    console.warn("[lcc] unsupported content tab:", tabId, tab && tab.url);
+    return { ok: false, error: unsupported };
+  }
   const present = await chrome.tabs.sendMessage(tabId, { type: "lcc-ping" }).then((r) => !!(r && r.ok)).catch(() => false);
-  if (present) return true;
+  if (present) return { ok: true };
   try {
-    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: LCC_CONTENT_FILES });
-    await chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, files: ["content.css"] });
+    await injectContentFiles({ tabId, allFrames: true });
     console.log("[lcc] injected content scripts into tab", tabId);
-    return true;
+    return { ok: true };
   } catch (_) {
     try {   // cross-origin subframes may be off-limits to activeTab; the top frame still carries the overlay
-      await chrome.scripting.executeScript({ target: { tabId }, files: LCC_CONTENT_FILES });
-      await chrome.scripting.insertCSS({ target: { tabId }, files: ["content.css"] });
+      await injectContentFiles({ tabId });
       console.log("[lcc] injected content scripts into tab", tabId);
-      return true;
+      return { ok: true };
     } catch (e) {
-      console.warn("[lcc] content inject failed for tab", tabId, e);
-      return false;
+      return contentScriptFailure(tabId, tab, e);
     }
   }
 }
-function requireContentScript(ok) {
-  if (!ok) throw new Error("이 탭에는 확장 스크립트를 주입할 수 없어요. 일반 웹 페이지에서 다시 시작하세요.");
+function requireContentScript(result) {
+  if (!result || result === false || result.ok === false) {
+    throw new Error(result && result.error || "이 탭에는 확장 스크립트를 주입할 수 없어요. 일반 웹 페이지에서 다시 시작하세요.");
+  }
 }
 async function startAudio(streamId, tabId, delaySec, pageContext) {
   await cleanup();                                  // tear down any prior capture (either mode)

@@ -518,6 +518,13 @@ def run_cli(argv):
     return 0 if reply.get("ok") and not reply.get("blocked") else 1
 
 
+def _native_messaging_origin_arg(argv):
+    if not argv:
+        return False
+    first = str(argv[0])
+    return first.startswith("chrome-extension://") or first.startswith("moz-extension://")
+
+
 def main():
     try:
         msg = read_message()
@@ -536,6 +543,6 @@ def main():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
+    if len(sys.argv) > 1 and not _native_messaging_origin_arg(sys.argv[1:]):
         raise SystemExit(run_cli(sys.argv[1:]))
     main()

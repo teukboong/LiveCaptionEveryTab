@@ -214,13 +214,13 @@ assert.match(
 );
 assert.match(
   backgroundJs,
-  /async function ensureContentScript\(tabId\) \{[\s\S]*return false;[\s\S]*return true;[\s\S]*return false;[\s\S]*\}/,
+  /async function ensureContentScript\(tabId\) \{[\s\S]*return \{ ok: false \};[\s\S]*return \{ ok: true \};[\s\S]*return contentScriptFailure\(tabId, tab, e\);[\s\S]*\}/,
   "background content-script injection reports success or failure",
 );
 assert.match(
   backgroundJs,
-  /function requireContentScript\(ok\) \{[\s\S]*throw new Error\("이 탭에는 확장 스크립트를 주입할 수 없어요\./,
-  "background reports unsupported tabs before claiming a run started",
+  /function requireContentScript\(result\) \{[\s\S]*throw new Error\(result && result\.error \|\| "이 탭에는 확장 스크립트를 주입할 수 없어요\./,
+  "background reports the actual unsupported-tab reason before claiming a run started",
 );
 assert.match(
   backgroundJs,
