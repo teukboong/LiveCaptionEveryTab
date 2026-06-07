@@ -4,6 +4,7 @@ __pycache__/
 *.pem
 extension/native-host/.crx-private-key.pem
 # repo-local virtualenv + user config (keep .env.example tracked)
+/.venv
 /.venv/
 .env
 .env.policy

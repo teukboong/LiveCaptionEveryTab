@@ -130,7 +130,10 @@ async function forward(msg) {
     chrome.action.setBadgeText({ text: msg.open ? "ON" : "…" });
   }
   const { capturedTabId, pageTabId, mode, delaySec } = await chrome.storage.session.get(["capturedTabId", "pageTabId", "mode", "delaySec"]);
-  const { target: _target, ...payload } = msg;
+  const { route: _route, ...payloadWithMaybeRouteTarget } = msg;
+  const payload = payloadWithMaybeRouteTarget.target === "background"
+    ? (({ target: _target, ...rest }) => rest)(payloadWithMaybeRouteTarget)
+    : payloadWithMaybeRouteTarget;
   if (msg.type === "caption" && capturedTabId != null) sendTab(capturedTabId, payload);
   else if (msg.type === "caption_partial" && capturedTabId != null) sendTab(capturedTabId, payload);
   else if (msg.type === "source" && capturedTabId != null) sendTab(capturedTabId, payload);
@@ -165,6 +168,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const active = !!captioning || !!pageTranslating || !!capturing;
       sendResponse({ capturing: active, captioning: !!captioning, pageTranslating: !!pageTranslating, wsOpen: !!wsOpen });
     });
+    return true;
+  }
+  if (msg.type === "content-ready") {
+    const tabId = sender && sender.tab && sender.tab.id;
+    chrome.storage.session.get(["pageTranslating", "pageTabId"]).then(async ({ pageTranslating, pageTabId }) => {
+      const shouldResumePage = !!pageTranslating && tabId != null && pageTabId === tabId;
+      sendResponse({ ok: true, pageTranslating: shouldResumePage, settings: shouldResumePage ? await bridgeConfig() : null });
+    }).catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
     return true;
   }
   if (msg.type === "popup-cleanup") { cleanup().then(() => sendResponse({ ok: true })); return true; }
@@ -207,5 +218,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch((e) => console.error("[lcc] page batch route", e));
     return;
   }
-  if (msg.target === "background") { forward(msg); return; }
+  if (msg.route === "background" || msg.target === "background") {
+    forward(msg)
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+    return true;
+  }
 });

@@ -17,11 +17,11 @@ const DOM_BATCH_QUEUE_BYTES = 128 * 1024;                  // bound page transla
 
 function report(text) {
   console.log("[lcc-offscreen]", text);
-  chrome.runtime.sendMessage({ target: "background", type: "err", text });
+  chrome.runtime.sendMessage({ route: "background", type: "err", text });
 }
 function notice(text) {
   console.log("[lcc-offscreen]", text);
-  chrome.runtime.sendMessage({ target: "background", type: "notice", text });
+  chrome.runtime.sendMessage({ route: "background", type: "notice", text });
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
@@ -40,7 +40,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "ask", mode: msg.mode, transcript: msg.transcript || "", question: msg.question || "" }));
     } else {
-      chrome.runtime.sendMessage({ target: "background", type: "answer", text: "자막을 시작한 상태에서만 요약/질문이 됩니다." });
+      chrome.runtime.sendMessage({ route: "background", type: "answer", text: "자막을 시작한 상태에서만 요약/질문이 됩니다." });
     }
   }
 });
@@ -50,7 +50,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 // chrome.storage here, so we can't self-resume from session — instead announce readiness and let
 // the service worker (re)deliver the start params + settings. Dedupe in start()/startRelay makes
 // the warm message + this handshake idempotent.
-chrome.runtime.sendMessage({ target: "background", type: "offscreen-ready" });
+chrome.runtime.sendMessage({ route: "background", type: "offscreen-ready" });
 
 function connectWS() {
   if (ws && ws.readyState !== WebSocket.CLOSED) {
@@ -64,7 +64,7 @@ function connectWS() {
   ws.binaryType = "arraybuffer";
   ws.onopen = () => {
     backoff = 0;                                    // good connect -> reset backoff
-    chrome.runtime.sendMessage({ target: "background", type: "wsstate", open: true });
+    chrome.runtime.sendMessage({ route: "background", type: "wsstate", open: true });
     globalThis.lccBridgeHello(ws);
     sendBridgeConfig();
   };
@@ -72,7 +72,7 @@ function connectWS() {
     wsConfigured = false;
     resetStreamClock();                              // new WS means server audio_ms starts at 0 again
     if (relayMode) relayReconnect = true;            // bridge audio_ms resets on reconnect -> offscreen must re-anchor (wall-based)
-    chrome.runtime.sendMessage({ target: "background", type: "wsstate", open: false });
+    chrome.runtime.sendMessage({ route: "background", type: "wsstate", open: false });
     const why = ev && (ev.code || ev.reason) ? "브릿지 연결 끊김 (" + ev.code + (ev.reason ? " · " + ev.reason : "") + ")" : "브릿지 연결 끊김";
     report(why);
     if (active) scheduleReconnect();                // dropped/restarted while capturing -> retry (audio stays up)
@@ -86,7 +86,7 @@ function connectWS() {
           d.type === "dom_translate_busy" || d.type === "dom_translate_err" ||
           d.type === "answer_partial" || d.type === "answer" ||
           d.type === "err" || d.type === "notice") {   // surface bridge diagnostics (e.g. ASR switch failure) — content.js renders them
-        chrome.runtime.sendMessage({ target: "background", ...d });
+        chrome.runtime.sendMessage({ route: "background", ...d });
       }
     } catch (_) {}
   };
@@ -127,7 +127,7 @@ function announceStreamClock() {
   if (relayMode && !relayReconnect) return;   // initial video anchor is stamped precisely by delay.js (page perf); offscreen re-anchors only after a reconnect
   streamClockSent = true;
   chrome.runtime.sendMessage({
-    target: "background",
+    route: "background",
     type: "stream-clock-start",
     mode: relayMode ? "video" : "audio",
     playbackDelayMs: Math.round(currentDelaySec * 1000),
@@ -302,7 +302,7 @@ async function start(streamId, pageContext, requestedDelaySec, config) {
     // restart isn't deduped away. stop(false) detaches onclose, so announce the closed state here.
     report("탭 오디오 캡처/설정 실패: " + (e && e.message || e));
     stop(false);
-    chrome.runtime.sendMessage({ target: "background", type: "wsstate", open: false });
+    chrome.runtime.sendMessage({ route: "background", type: "wsstate", open: false });
     throw e;
   }
 }

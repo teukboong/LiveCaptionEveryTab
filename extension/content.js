@@ -531,9 +531,10 @@ const LCC_PAGE_EXCLUDE_SELECTOR = [
   "[contenteditable='true']", "[contenteditable='']", "[aria-hidden='true']",
   "#lcc-overlay",
 ].join(",");
-const LCC_PAGE_BATCH_SIZE = 5;
+const LCC_PAGE_BATCH_SIZE = 2;
 const LCC_PAGE_BATCH_CHARS = 1800;
 const LCC_PAGE_SCAN_LIMIT = 90;
+const LCC_PAGE_MAX_INFLIGHT = 2;
 let lccPageTranslateOn = false;
 let lccPageTranslateSettings = { ...globalThis.LCC_DEFAULT_SETTINGS };
 let lccPageTranslateObserver = null;
@@ -548,6 +549,7 @@ const lccPageTranslateNodes = new Set();
 const lccPageTranslateById = new Map();
 const lccPageTranslateState = new WeakMap();
 const lccPageTranslateRequests = new Map();
+const lccPageTranslateStats = { resultSeen: 0, applied: 0, dropNoNode: 0, dropSource: 0, dropChanged: 0, dropEmpty: 0 };
 
 function lccPageTextParts(raw) {
   const text = String(raw || "");
@@ -648,6 +650,7 @@ function lccPageScheduleFlush(ms = 120) {
 function lccPageFlush() {
   lccPageTranslateFlushTimer = null;
   if (!lccPageTranslateOn || !lccPageTranslateQueue.length) return;
+  if (lccPageTranslateRequests.size >= LCC_PAGE_MAX_INFLIGHT) return;
   const items = [];
   let chars = 0;
   while (lccPageTranslateQueue.length && items.length < LCC_PAGE_BATCH_SIZE) {
@@ -673,7 +676,7 @@ function lccPageFlush() {
     lccPageTranslateRequests.set(requestId, { items, timer });
     try { chrome.runtime.sendMessage({ type: "page-translate-batch", requestId, items }); } catch (_) {}
   }
-  if (lccPageTranslateQueue.length) lccPageScheduleFlush(220);
+  if (lccPageTranslateQueue.length && lccPageTranslateRequests.size < LCC_PAGE_MAX_INFLIGHT) lccPageScheduleFlush(220);
 }
 function lccPageTranslateStart(rawSettings) {
   if (!LCC_IS_TOP) return;
@@ -737,16 +740,26 @@ function lccPageTranslateStop(restore) {
 }
 function lccPageTranslateApply(msg) {
   if (!lccPageTranslateOn) return;
+  lccPageTranslateStats.resultSeen += 1;
   const node = lccPageTranslateById.get(String(msg.item_id || ""));
   const state = node && lccPageTranslateState.get(node);
-  if (!node || !state || !node.isConnected) return;
+  if (!node || !state || !node.isConnected) { lccPageTranslateStats.dropNoNode += 1; return; }
   const source = String(msg.source || "");
   const target = String(msg.target || "").trim();
   state.pending = false;
-  if (!target || source !== state.source || node.nodeValue !== state.expectedFull) return;
+  if (!target) { lccPageTranslateStats.dropEmpty += 1; return; }
+  if (source !== state.source) { lccPageTranslateStats.dropSource += 1; return; }
+  const currentParts = lccPageTextParts(node.nodeValue);
+  if (node.nodeValue !== state.expectedFull && currentParts.core !== source) {
+    lccPageTranslateStats.dropChanged += 1;
+    return;
+  }
   state.translated = target;
-  state.translatedFull = (state.pre || "") + target + (state.post || "");
+  const pre = node.nodeValue === state.expectedFull ? (state.pre || "") : currentParts.pre;
+  const post = node.nodeValue === state.expectedFull ? (state.post || "") : currentParts.post;
+  state.translatedFull = pre + target + post;
   node.nodeValue = state.translatedFull;       // direct browser DOM replacement, not an overlay
+  lccPageTranslateStats.applied += 1;
 }
 function lccPageTranslateDone(msg) {
   const requestId = String(msg.request_id || "");
@@ -759,6 +772,7 @@ function lccPageTranslateDone(msg) {
     if (state && state.source === item.text) state.pending = false;
   }
   lccPageTranslateRequests.delete(requestId);
+  if (lccPageTranslateQueue.length) lccPageScheduleFlush(120);
 }
 function lccPageTranslateRetry(msg) {
   const requestId = String(msg.request_id || "");
@@ -775,6 +789,17 @@ function lccPageTranslateRetry(msg) {
   }
   lccPageScheduleFlush(Math.max(500, Math.min(5000, Number(msg.retry_ms) || 1600)));
 }
+
+function lccResumePageTranslateIfActive() {
+  if (!LCC_IS_TOP) return;
+  try {
+    chrome.runtime.sendMessage({ type: "content-ready" }, (res) => {
+      if (chrome.runtime.lastError || !res || !res.pageTranslating) return;
+      lccPageTranslateStart(res.settings || {});
+    });
+  } catch (_) {}
+}
+lccResumePageTranslateIfActive();
 
 // ---- transcript accumulation -> storage.local (the popup renders history / export / summary / Q&A) ----
 const lccTranscript = [];

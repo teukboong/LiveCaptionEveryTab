@@ -532,11 +532,25 @@ chrome.storage.session.get("lcc-answer").then((r) => {
 
 // ---- bridge control (native-messaging host launches/stops the local server.py) ----
 // Requires the one-time host install: extension/native-host/install-host.sh
-const LCC_NM_HOST = "io.github.teukboong.livecaption";
+const LCC_NM_HOSTS = [
+  "io.github.teukboong.livecaption",
+  "com.hesperides.livecaption",
+];
 function nmSend(msg) {
+  return LCC_NM_HOSTS.reduce((chain, host) => {
+    return chain.then((prev) => {
+      if (prev && !prev.noHost) return prev;
+      return nmSendOne(host, msg).then((resp) => {
+        if (!resp.noHost) return resp;
+        return { ...resp, error: resp.error || (prev && prev.error) };
+      });
+    });
+  }, Promise.resolve(null)).then((resp) => resp || { ok: false, noHost: true, error: "native host unavailable" });
+}
+function nmSendOne(host, msg) {
   return new Promise((resolve) => {
     try {
-      chrome.runtime.sendNativeMessage(LCC_NM_HOST, msg, (resp) => {
+      chrome.runtime.sendNativeMessage(host, msg, (resp) => {
         if (chrome.runtime.lastError) resolve({ ok: false, noHost: true, error: chrome.runtime.lastError.message });
         else resolve(resp || { ok: false, error: tr("emptyNativeResponse") });
       });
