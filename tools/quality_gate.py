@@ -17,6 +17,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXT = ROOT / "extension"
+LIVE_BRIDGE_TESTS = {
+    "bridge/test_stream_wav.py",
+    "bridge/test_target.py",
+}
 
 
 @dataclass(frozen=True)
@@ -167,10 +171,32 @@ def assert_protocol_loads_first() -> None:
         fail("offscreen.html must load protocol.js before offscreen.js")
 
 
+def assert_check_sh_covers_default_tests() -> None:
+    check_sh = read(ROOT / "check.sh")
+    tests = sorted(
+        rel(path)
+        for base in (ROOT / "bridge", ROOT / "extension", ROOT / "extension" / "native-host")
+        for path in base.glob("test_*")
+        if path.suffix in {".py", ".js"}
+    )
+
+    def check_sh_mentions(path: str) -> bool:
+        return path in check_sh or (path.startswith("bridge/") and Path(path).name in check_sh)
+
+    missing = [path for path in tests if path not in LIVE_BRIDGE_TESTS and not check_sh_mentions(path)]
+    if missing:
+        fail(f"check.sh must run model-free tests: {missing!r}")
+
+    live_in_default = [path for path in LIVE_BRIDGE_TESTS if check_sh_mentions(path)]
+    if live_in_default:
+        fail(f"check.sh must keep live websocket/model tests out of the fast default gate: {live_in_default!r}")
+
+
 def main() -> None:
     assert_file_rules()
     assert_injected_content_order()
     assert_protocol_loads_first()
+    assert_check_sh_covers_default_tests()
     print("quality_gate: OK (extension boundaries and SSOT load order pass)")
 
 
