@@ -42,14 +42,25 @@ Gemma 4 specifically and does not depend on those terms.
 Third-party software dependencies (installed via pip, not vendored)
 ================================================================================
 
-  mlx, mlx-lm                    Apache-2.0 / MIT   (Apple)
-  mlx-audio                      MIT                (https://github.com/Blaizzy/mlx-audio)
-  silero-vad                     MIT
-  sherpa-onnx                    Apache-2.0         (k2-fsa)
-  onnxruntime                    MIT                (Microsoft)
-  websockets                     BSD-3-Clause
-  huggingface_hub                Apache-2.0
-  numpy                          BSD-3-Clause
+  Shared (both backends):
+    silero-vad                   MIT
+    onnxruntime                  MIT                (Microsoft)
+    websockets                   BSD-3-Clause
+    huggingface_hub              Apache-2.0
+    numpy                        BSD-3-Clause
+    psutil                       BSD-3-Clause
+
+  Apple Silicon / MLX backend:
+    mlx, mlx-lm                  Apache-2.0 / MIT   (Apple)   — full-tier translator
+    mlx-vlm                      MIT                          — mid/lite (Gemma-4 nano) translator
+    mlx-audio                    MIT  (Blaizzy/mlx-audio)     — granite/qwen3 ASR
+    sherpa-onnx                  Apache-2.0  (k2-fsa)         — optional Parakeet ASR (power-user)
+
+  Windows + NVIDIA / CUDA backend (run on the GPU box; ASR uses transformers/qwen-asr, NOT mlx-audio):
+    transformers                 Apache-2.0  (Hugging Face)   — granite ASR server
+    qwen-asr                     Apache-2.0  (Qwen)           — qwen3 ASR server
+    torch, torchaudio            BSD-3-Clause                 — ASR server runtime
+    llama.cpp (server)           MIT  (ggml-org)              — translation server (26B/E4B/E2B GGUF)
 
 Each component is the property of its respective owners and is provided under
 its own license terms. The license tags above are best-effort summaries; the

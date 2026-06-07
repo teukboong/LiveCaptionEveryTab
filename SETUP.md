@@ -165,9 +165,9 @@ bash extension/native-host/install-host.sh
 
 | 티어 | 번역 모델 | 가중치 | 권장 여유 메모리 |
 |---|---|---|---|
-| `full` | gemma-4-26B-A4B | ~14GB | ~22GB 이상 |
-| `mid`  | gemma-4-E4B (QAT) | ~5GB | ~12GB |
-| `lite` | gemma-4-E2B (+ASR 0.6B) | ~3.2GB | ~8GB |
+| `full` | gemma-4-26B-A4B (mlx_lm) | ~14GB | ~22GB 이상 |
+| `mid`  | gemma-4-E4B nano (mlx_vlm) | ~5.9GB | ~12GB |
+| `lite` | gemma-4-E2B nano (+ASR 0.6B) | ~4.3GB | ~10GB |
 
 티어를 **고정**하려면(매 실행 동일) `.env`에 한 줄:
 

@@ -70,7 +70,16 @@ def _normalize_latency_mode(value, default="aggressive"):
     return mode if mode in ("stable", "balanced", "aggressive") else default
 
 
-_TARGET_LANGS = {"Korean", "English", "Japanese", "Chinese", "Spanish", "French", "German"}
+# Gemma 4 is broadly multilingual (140+ langs); expose a generous set of widely-used targets. Any name here is
+# inserted into the prompt as "into {target}" — few-shot/register anchors exist only for a few (graceful: others
+# translate fine without anchors). Keep in sync with the popup targetLang <select>.
+_TARGET_LANGS = {
+    "Korean", "English", "Japanese", "Chinese", "Spanish", "French", "German", "Portuguese", "Italian",
+    "Russian", "Dutch", "Polish", "Turkish", "Vietnamese", "Thai", "Indonesian", "Arabic", "Hindi",
+    "Bengali", "Ukrainian", "Czech", "Greek", "Hebrew", "Romanian", "Hungarian", "Swedish", "Danish",
+    "Norwegian", "Finnish", "Filipino", "Malay", "Tamil", "Telugu", "Urdu", "Persian", "Swahili",
+    "Catalan", "Croatian", "Slovak", "Bulgarian", "Serbian", "Lithuanian", "Slovenian", "Estonian", "Latvian",
+}
 
 def _normalize_target_lang(value, default="Korean"):
     raw = str(value or default or "Korean").strip()
@@ -119,6 +128,10 @@ except Exception as e:
     mx = None
     lm_load = lm_stream = make_sampler = None
     make_prompt_cache = trim_prompt_cache = can_trim_prompt_cache = None
+try:
+    from mlx_vlm import load as vlm_load, generate as vlm_generate   # Gemma-4 nano (mid/lite) translator path
+except Exception:
+    vlm_load = vlm_generate = None
 
 BACKEND = _normalize_backend(os.environ.get("LCC_BACKEND"), "mlx")   # mlx (Apple) | cuda (HTTP to llama.cpp/vLLM)
 
@@ -146,10 +159,10 @@ _LM_TIERS = {
 }
 # Resident footprint per tier (GB) = translator + ASR + KV/activation slack. Conservative-ish; tune via env.
 # HEADROOM = OS/browser slack kept free so a growing browser doesn't push the resident model into swap.
-_LM_TIER_NEED = {
+_LM_TIER_NEED = {   # resident GB (translator + ASR + KV). measured translator-only: 26B ~14 / e4b 5.9 / e2b 4.3
     "full": _clamp_float(os.environ.get("LCC_LM_NEED_FULL"), 18.0, 4.0, 512.0),
     "mid":  _clamp_float(os.environ.get("LCC_LM_NEED_MID"),   8.0, 2.0, 512.0),
-    "lite": _clamp_float(os.environ.get("LCC_LM_NEED_LITE"),  5.0, 1.0, 512.0),
+    "lite": _clamp_float(os.environ.get("LCC_LM_NEED_LITE"),  6.0, 1.0, 512.0),
 }
 _LM_TIER_HEADROOM_GB = _clamp_float(os.environ.get("LCC_LM_HEADROOM_GB"), 4.0, 0.0, 64.0)
 _LM_TIER_ORDER = ("full", "mid", "lite")
@@ -240,6 +253,7 @@ def _auto_tier():
 LM_TIER = _normalize_tier(os.environ.get("LCC_LM_TIER"))     # "" until resolved
 LM_MODEL = os.environ.get("LCC_LM_MODEL", "")               # "" -> derived from tier
 _LM_RESOLVED = False
+_LM_IS_VLM = False   # set True at load when the translator is a Gemma-4 nano (multimodal) loaded via mlx_vlm
 
 # mlx-audio audio-LLM ASR engines (granite/qwen3): native punctuation + multilingual, loaded via mlx_audio.
 MLXA_REPOS = {
@@ -368,7 +382,7 @@ def _ensure_asr_loaded(engine: str):
 
 
 def load_models(asr=True, lm=True, vad=True):
-    global ASR_ENGINE, lm_model, lm_tok, silero, _sampler, parakeet_asr
+    global ASR_ENGINE, lm_model, lm_tok, silero, _sampler, parakeet_asr, _LM_IS_VLM
     _finalize_model_config()   # size translator/ASR to available memory (lazy: not at import — tests import server)
     if BACKEND == "cuda":
         # Models live on the remote inference servers (llama.cpp / vLLM); the bridge only needs the endpoints
@@ -395,16 +409,16 @@ def load_models(asr=True, lm=True, vad=True):
             print(f"[bridge] loading translator ({LM_TIER}: {LM_MODEL})…", flush=True)
             try:
                 lm_model, lm_tok = lm_load(LM_MODEL)
+                _LM_IS_VLM = False
             except Exception as e:
-                # Gemma-4 nano (E4B/E2B) ships as a multimodal checkpoint (language_model.* prefix) that mlx_lm's
-                # text loader can't read; they DO load via mlx_vlm (verified). A vlm translate path for mid/lite
-                # is pending — until then full (26B-A4B, mlx_lm) is the working MLX tier.
-                if LM_TIER in ("mid", "lite") and "not in model" in str(e):
-                    raise RuntimeError(
-                        f"tier '{LM_TIER}' model {LM_MODEL} is a Gemma-4 nano (multimodal) checkpoint the mlx_lm "
-                        f"translator can't load yet (mlx_vlm loader pending). Set LCC_LM_TIER=full, or LCC_LM_MODEL "
-                        f"to an mlx_lm-loadable model.") from e
-                raise
+                # Gemma-4 nano (E4B/E2B, mid/lite) ships as a multimodal checkpoint (language_model.* prefix) the
+                # mlx_lm text loader can't read — but it loads via mlx_vlm. Auto-fall back so the small tiers work.
+                if "not in model" in str(e) and vlm_load is not None:
+                    print(f"[bridge] {LM_MODEL} is multimodal (Gemma-4 nano) -> loading via mlx_vlm", flush=True)
+                    lm_model, lm_tok = vlm_load(LM_MODEL)
+                    _LM_IS_VLM = True
+                else:
+                    raise
     if vad and silero is None:
         print("[bridge] loading Silero VAD…", flush=True)
         silero = load_silero_vad(onnx=True)
@@ -1217,6 +1231,23 @@ def _usable_tx_partial(s):
         return False
     return True
 
+def _vlm_generate_text(msgs, gen_max, on_update=None):
+    """mlx_vlm translation path for Gemma-4 nano tiers (mid/lite). Text-only chat -> mlx_vlm.generate. No
+    KV-reuse / token streaming (those are mlx_lm-specific) -> a single final update. lm_model is the vlm model,
+    lm_tok the processor. Same _translate_messages prompt as the mlx_lm path, so output is consistent."""
+    mx.set_default_device(mx.gpu)
+    proc = lm_tok
+    try:
+        prompt = proc.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
+    except Exception:
+        prompt = proc.tokenizer.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
+    res = vlm_generate(lm_model, proc, prompt, max_tokens=int(gen_max), verbose=False)
+    text = _clean(getattr(res, "text", None) or (res if isinstance(res, str) else str(res)))
+    if on_update is not None and text:
+        on_update(text)
+    return text
+
+
 def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str = "",
                    register: str = "casual", glossary_pairs=(), on_update=None, kv_reuse=None,
                    max_tokens=None, stream_every=None):
@@ -1226,8 +1257,10 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
     a growing clause (EN->KO reverses word order, so we re-translate the whole clause). Runs on _mlx_pool
     (single worker -> the module-level _tx_cache has no race)."""
     global _tx_cache, _tx_cache_ids, _TX_KV_WINDOW
-    mx.set_default_device(mx.gpu)
     msgs = _translate_messages(text, recent_pairs, target, hint, register, glossary_pairs)
+    if _LM_IS_VLM:
+        return _vlm_generate_text(msgs, max(1, int(max_tokens or _TX_GEN_MAX)), on_update)
+    mx.set_default_device(mx.gpu)
     try:
         prompt = lm_tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False)
     except TypeError:
@@ -1302,9 +1335,11 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
 
 
 def run_ask(mode: str, transcript_text: str, question: str = "", target: str = "Korean", on_partial=None):
-    """On-demand summary / Q&A over the running transcript, on the already-resident 26B (fresh KV cache)."""
-    mx.set_default_device(mx.gpu)
+    """On-demand summary / Q&A over the running transcript (already-resident translator, fresh KV cache)."""
     msgs, max_toks = _ask_messages(mode, transcript_text, question, target)
+    if _LM_IS_VLM:
+        return _vlm_generate_text(msgs, max_toks, on_partial)
+    mx.set_default_device(mx.gpu)
     try:
         prompt = lm_tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False)
     except TypeError:
