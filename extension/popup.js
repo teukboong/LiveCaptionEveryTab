@@ -443,7 +443,8 @@ document.getElementById("asrEngine").addEventListener("change", (e) => {
   saveSettings(true);
 });
 document.getElementById("contentType").addEventListener("change", (e) => {
-  settings.contentType = e.target.value;
+  settings.contentType = globalThis.lccCanonicalContentType(e.target.value);
+  e.target.value = settings.contentType;
   const p = LCC_PRESETS[settings.contentType] || LCC_PRESETS.general;   // bundle tone + latency for the content type
   settings.register = p.register;
   settings.latencyMode = p.latencyMode;
@@ -684,8 +685,16 @@ document.getElementById("modeSimple").onclick = () => { settings.uiMode = "simpl
 document.getElementById("modeAdv").onclick = () => { settings.uiMode = "advanced"; setMode("advanced"); saveSettings(); };
 
 // ---- advanced parameter controls (the raw knobs; ranges handled by the generic RANGES loop) ----
-document.getElementById("latencyMode").addEventListener("change", (e) => { settings.latencyMode = e.target.value; saveSettings(true); });
-document.getElementById("register").addEventListener("change", (e) => { settings.register = e.target.value; saveSettings(true, true); });
+document.getElementById("latencyMode").addEventListener("change", (e) => {
+  settings.latencyMode = globalThis.lccCanonicalLatencyMode(e.target.value);
+  e.target.value = settings.latencyMode;
+  saveSettings(true);
+});
+document.getElementById("register").addEventListener("change", (e) => {
+  settings.register = globalThis.lccCanonicalRegister(e.target.value);
+  e.target.value = settings.register;
+  saveSettings(true, true);
+});
 document.getElementById("accuracyMode").addEventListener("change", (e) => { settings.accuracyMode = e.target.checked; saveSettings(); });
 document.getElementById("autoPrime").addEventListener("change", (e) => { settings.autoPrime = e.target.checked; saveSettings(); });
 document.getElementById("pageTranslateStream").addEventListener("change", (e) => {
@@ -698,7 +707,11 @@ document.getElementById("pageVerify").addEventListener("change", (e) => { settin
 document.getElementById("debugSync").addEventListener("change", (e) => { settings.debugSync = e.target.checked; saveSettings(); });
 document.getElementById("contextHint").addEventListener("input", (e) => { settings.contextHint = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });
 document.getElementById("glossary").addEventListener("input", (e) => { settings.glossary = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });
-document.getElementById("pageRegister").addEventListener("change", (e) => { settings.pageRegister = e.target.value; saveSettings(true); });
+document.getElementById("pageRegister").addEventListener("change", (e) => {
+  settings.pageRegister = globalThis.lccCanonicalRegister(e.target.value);
+  e.target.value = settings.pageRegister;
+  saveSettings(true);
+});
 document.getElementById("pageContextHint").addEventListener("input", (e) => { settings.pageContextHint = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, false); });
 document.getElementById("pageGlossary").addEventListener("input", (e) => { settings.pageGlossary = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, false); });
 

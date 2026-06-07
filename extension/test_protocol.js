@@ -11,14 +11,35 @@ vm.runInNewContext(fs.readFileSync(path.join(__dirname, "protocol.js"), "utf8"),
 assert.ok(context.LCC_TARGET_LANGS.includes("Hindi"), "target list exposes Hindi");
 assert.equal(JSON.stringify(context.LCC_UI_LANGS.map((lang) => lang.value)), JSON.stringify(["ko", "en"]));
 assert.equal(JSON.stringify(context.LCC_ASR_ENGINES), JSON.stringify(["granite", "qwen3"]));
+assert.equal(JSON.stringify(context.LCC_CONTENT_TYPES), JSON.stringify(["general", "conference", "news", "streaming"]));
+assert.equal(JSON.stringify(context.LCC_LATENCY_MODES), JSON.stringify(["stable", "balanced", "aggressive"]));
 assert.equal(context.lccCanonicalTargetLang("hindi"), "Hindi");
 assert.equal(context.lccCanonicalUiLang("EN"), "en");
 assert.equal(context.lccCanonicalAsrEngine("QWEN3"), "qwen3");
 assert.equal(context.lccCanonicalAsrEngine("parakeet"), "granite");
+assert.equal(context.lccCanonicalContentType("NEWS"), "news");
+assert.equal(context.lccCanonicalContentType("documentary"), "general");
+assert.equal(context.lccCanonicalRegister("LECTURE"), "lecture");
+assert.equal(context.lccCanonicalRegister("formal"), "casual");
+assert.equal(context.lccCanonicalLatencyMode("BALANCED"), "balanced");
+assert.equal(context.lccCanonicalLatencyMode("fast"), "aggressive");
+assert.equal(context.lccCanonicalLatencyMode("low-latency"), "aggressive");
+assert.equal(context.lccCanonicalLatencyMode("low_latency"), "aggressive");
+assert.equal(context.lccCanonicalLatencyMode("safe"), "stable");
+assert.equal(context.lccCanonicalLatencyMode("turbo"), "aggressive");
 assert.equal(context.lccNormalizeSettings({ targetLang: "hindi" }).targetLang, "Hindi");
 assert.equal(context.lccNormalizeSettings({ uiLang: "EN" }).uiLang, "en");
 assert.equal(context.lccNormalizeSettings({ asrEngine: "QWEN3" }).asrEngine, "qwen3");
 assert.equal(context.lccNormalizeSettings({ asrEngine: "parakeet" }).asrEngine, "granite");
+assert.equal(context.lccNormalizeSettings({ contentType: "NEWS" }).contentType, "news");
+assert.equal(context.lccNormalizeSettings({ contentType: "documentary" }).contentType, "general");
+assert.equal(context.lccNormalizeSettings({ contentType: "conference" }).register, "lecture");
+assert.equal(context.lccNormalizeSettings({ contentType: "conference" }).latencyMode, "stable");
+assert.equal(context.lccNormalizeSettings({ register: "NEWS" }).register, "news");
+assert.equal(context.lccNormalizeSettings({ register: "formal" }).register, "casual");
+assert.equal(context.lccNormalizeSettings({ pageRegister: "CHAT" }).pageRegister, "chat");
+assert.equal(context.lccNormalizeSettings({ latencyMode: "BALANCED" }).latencyMode, "balanced");
+assert.equal(context.lccNormalizeSettings({ latencyMode: "fast" }).latencyMode, "aggressive");
 assert.equal(context.lccNormalizeSettings({ runMode: "page" }).runMode, "page");
 assert.equal(context.lccNormalizeSettings({ runMode: "bogus" }).runMode, "video");
 assert.equal(context.lccNormalizeSettings({ pageTranslateStream: "final" }).pageTranslateStream, "final");
@@ -35,6 +56,8 @@ assert.equal(context.lccBuildBridgeConfig({ targetLang: "Hindi" }, "").targetLan
 assert.equal(context.lccBuildBridgeConfig({ targetLang: "hindi" }, "").targetLang, "Hindi");
 assert.equal(context.lccBuildBridgeConfig({ asrEngine: "QWEN3" }, "").asrEngine, "qwen3");
 assert.equal(context.lccBuildBridgeConfig({ asrEngine: "parakeet" }, "").asrEngine, "granite");
+assert.equal(context.lccBuildBridgeConfig({ register: "NEWS" }, "").register, "news");
+assert.equal(context.lccBuildBridgeConfig({ latencyMode: "fast" }, "").latencyMode, "aggressive");
 assert.equal(Object.hasOwn(context.lccBuildBridgeConfig({ uiLang: "en" }, ""), "uiLang"), false);
 const pageCfg = context.lccBuildBridgeConfig({
   contextHint: "video terms",
@@ -47,6 +70,7 @@ assert.match(pageCfg.pageContextHint, /reddit thread/);
 assert.match(pageCfg.pageContextHint, /r\/SipsTea/);
 assert.equal(pageCfg.pageGlossary, "OP=원글쓴이");
 assert.equal(context.lccBuildBridgeConfig({ pageRegister: "bogus" }, "").pageRegister, "casual");
+assert.equal(context.lccBuildBridgeConfig({ pageRegister: "CHAT" }, "").pageRegister, "chat");
 
 const popupHtml = fs.readFileSync(path.join(root, "extension", "popup.html"), "utf8");
 const popupJs = fs.readFileSync(path.join(root, "extension", "popup.js"), "utf8");

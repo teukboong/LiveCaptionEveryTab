@@ -54,11 +54,18 @@ const LCC_CONTENT_PRESETS = Object.freeze({
   news: Object.freeze({ register: "news", latencyMode: "balanced" }),
   streaming: Object.freeze({ register: "chat", latencyMode: "aggressive" }),
 });
+const LCC_CONTENT_TYPES = Object.freeze(Object.keys(LCC_CONTENT_PRESETS));
 const LCC_UI_LANGS = Object.freeze([
   Object.freeze({ value: "ko", label: "한국어" }),
   Object.freeze({ value: "en", label: "English" }),
 ]);
 const LCC_ASR_ENGINES = Object.freeze(["granite", "qwen3"]);
+const LCC_LATENCY_MODES = Object.freeze(["stable", "balanced", "aggressive"]);
+
+function lccCanonicalLowerToken(value, allowed, fallback) {
+  const raw = String(value || fallback || "").trim().toLowerCase();
+  return allowed.includes(raw) ? raw : fallback;
+}
 
 function lccCanonicalTargetLang(value, fallback = "Korean") {
   const raw = String(value || fallback || "Korean").trim().toLowerCase();
@@ -70,16 +77,34 @@ globalThis.LCC_UI_LANGS = LCC_UI_LANGS;
 globalThis.LCC_DEFAULT_SETTINGS = LCC_DEFAULT_SETTINGS;
 globalThis.LCC_RUN_MODES = LCC_RUN_MODES;
 globalThis.LCC_CONTENT_PRESETS = LCC_CONTENT_PRESETS;
+globalThis.LCC_CONTENT_TYPES = LCC_CONTENT_TYPES;
 globalThis.LCC_REGISTERS = LCC_REGISTERS;
 globalThis.LCC_ASR_ENGINES = LCC_ASR_ENGINES;
+globalThis.LCC_LATENCY_MODES = LCC_LATENCY_MODES;
 globalThis.lccCanonicalTargetLang = lccCanonicalTargetLang;
 globalThis.lccCanonicalUiLang = function lccCanonicalUiLang(value, fallback = "ko") {
-  const raw = String(value || fallback || "ko").trim().toLowerCase();
-  return LCC_UI_LANGS.some((lang) => lang.value === raw) ? raw : fallback;
+  return lccCanonicalLowerToken(value, LCC_UI_LANGS.map((lang) => lang.value), fallback);
 };
 globalThis.lccCanonicalAsrEngine = function lccCanonicalAsrEngine(value, fallback = "granite") {
-  const raw = String(value || fallback || "granite").trim().toLowerCase();
-  return LCC_ASR_ENGINES.includes(raw) ? raw : fallback;
+  return lccCanonicalLowerToken(value, LCC_ASR_ENGINES, fallback);
+};
+globalThis.lccCanonicalContentType = function lccCanonicalContentType(value, fallback = "general") {
+  return lccCanonicalLowerToken(value, LCC_CONTENT_TYPES, fallback);
+};
+globalThis.lccCanonicalRegister = function lccCanonicalRegister(value, fallback = "casual") {
+  return lccCanonicalLowerToken(value, LCC_REGISTERS, fallback);
+};
+globalThis.lccCanonicalLatencyMode = function lccCanonicalLatencyMode(value, fallback = "aggressive") {
+  const aliases = {
+    fast: "aggressive",
+    low: "aggressive",
+    "low-latency": "aggressive",
+    low_latency: "aggressive",
+    safe: "stable",
+    quality: "stable",
+  };
+  const raw = String(value || fallback || "aggressive").trim().toLowerCase();
+  return lccCanonicalLowerToken(aliases[raw] || raw, LCC_LATENCY_MODES, fallback);
 };
 globalThis.lccBridgeHello = function lccBridgeHello(ws) {
   ws.send(JSON.stringify({ type: "hello", token: globalThis.LCC_WS_TOKEN }));
@@ -87,14 +112,16 @@ globalThis.lccBridgeHello = function lccBridgeHello(ws) {
 globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   const raw = settings || {};
   const out = { ...LCC_DEFAULT_SETTINGS, ...raw };
+  out.contentType = globalThis.lccCanonicalContentType(out.contentType);
   const preset = LCC_CONTENT_PRESETS[out.contentType] || LCC_CONTENT_PRESETS.general;
   if (raw.register == null) out.register = preset.register;
   if (raw.latencyMode == null) out.latencyMode = preset.latencyMode;
   out.targetLang = lccCanonicalTargetLang(out.targetLang);
   out.uiLang = globalThis.lccCanonicalUiLang(out.uiLang);
   out.asrEngine = globalThis.lccCanonicalAsrEngine(out.asrEngine);
-  out.register = LCC_REGISTERS.includes(out.register) ? out.register : LCC_DEFAULT_SETTINGS.register;
-  out.pageRegister = LCC_REGISTERS.includes(out.pageRegister) ? out.pageRegister : LCC_DEFAULT_SETTINGS.pageRegister;
+  out.register = globalThis.lccCanonicalRegister(out.register);
+  out.pageRegister = globalThis.lccCanonicalRegister(out.pageRegister, LCC_DEFAULT_SETTINGS.pageRegister);
+  out.latencyMode = globalThis.lccCanonicalLatencyMode(out.latencyMode);
   out.runMode = LCC_RUN_MODES[out.runMode] ? out.runMode : LCC_DEFAULT_SETTINGS.runMode;
   out.pageTranslateSelector = String(out.pageTranslateSelector || LCC_DEFAULT_SETTINGS.pageTranslateSelector).trim() || "body";
   out.pageTranslateMinChars = Math.max(1, Math.min(80, Number(out.pageTranslateMinChars) || LCC_DEFAULT_SETTINGS.pageTranslateMinChars));
@@ -121,13 +148,13 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
     vadLevel: s.vadLevel ?? 2,
     sentSilenceMs: s.sentSilenceMs ?? 1300,
     targetLang: lccCanonicalTargetLang(s.targetLang),
-    register: s.register || "casual",
-    latencyMode: s.latencyMode || "aggressive",
+    register: globalThis.lccCanonicalRegister(s.register),
+    latencyMode: globalThis.lccCanonicalLatencyMode(s.latencyMode),
     contextHint: hint,
     glossary: s.glossary || "",
     pageContextHint: pageHint,
     runMode: s.runMode || "video",                // content-only: lets the page translator pick the page vs both policy (it isn't a video tab)
-    pageRegister: s.pageRegister || "casual",
+    pageRegister: globalThis.lccCanonicalRegister(s.pageRegister),
     pageGlossary: s.pageGlossary || "",
     pageTranslateStream: (s.pageTranslateStream === "final") ? "final" : "partial",   // content+offscreen read it; bridge ignores
     pageBilingual: s.pageBilingual !== false,     // content-only: hover shows the original
