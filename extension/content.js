@@ -531,7 +531,7 @@ const LCC_PAGE_EXCLUDE_SELECTOR = [
   "script", "style", "noscript", "template", "svg", "canvas", "video", "audio",
   "input", "textarea", "select", "option", "pre", "code", "kbd", "samp",
   "[contenteditable='true']", "[contenteditable='']", "[aria-hidden='true']",
-  "#lcc-overlay",
+  "#lcc-overlay", "#lcc-bilingual-ghost",
 ].join(",");
 const LCC_PAGE_BATCH_POLICY = Object.freeze({
   page: Object.freeze({ batchSize: 8, batchChars: 3600, scanLimit: 150, maxInflight: 3, flushMs: 80 }),
@@ -560,6 +560,11 @@ const lccPageTranslateStats = {
   dropNoNode: 0, dropSource: 0, dropChanged: 0, dropEmpty: 0,
 };
 const LCC_PAGE_PARTIAL_MAX_CHARS = 420;      // speculative DOM streaming is only for short visible text
+// Bilingual ghost: keep each element's pre-translation text so hover/focus reveals the original.
+const lccBilingualOrig = new WeakMap();      // marked element -> its original (pre-translation) text
+let lccBilingualGhost = null;
+let lccBilingualOver = null, lccBilingualOut = null, lccBilingualHide = null;
+const LCC_PAGE_BILINGUAL_MAX_CHARS = 1500;   // don't snapshot huge containers
 // Time-sliced scan: a persistent TreeWalker advanced in idle chunks so a huge DOM never blocks the main
 // thread, plus a one-shot below-fold prefetch so scrolling lands on already-translated text.
 const LCC_PAGE_SCAN_SLICE_MS = 6;            // main-thread budget per scan chunk
@@ -932,6 +937,7 @@ function lccPageApplyPartialToNode(node, state, source, target, requestId, sourc
 function lccPageQueueNode(node) {
   if (!lccPageNodeAllowed(node)) return false;
   const state = lccPageStateFor(node);
+  lccPageBilingualCapture(node);   // snapshot the parent's original text before any partial/final mutates it
   const expectedFull = node.nodeValue;
   let sourceFull = expectedFull;
   if (state.translatedFull && expectedFull.startsWith(state.translatedFull)) {
@@ -1168,6 +1174,81 @@ function lccPageStopUrlWatch() {
     lccPageTranslateUrlTimer = null;
   }
 }
+function lccPageBilingualEnabled() {
+  return lccPageTranslateSettings.pageBilingual !== false;
+}
+function lccPageBilingualCapture(node) {
+  if (!lccPageBilingualEnabled()) return;
+  const parent = node.parentElement;
+  if (!parent || lccBilingualOrig.has(parent)) return;
+  try {
+    const orig = parent.textContent;
+    if (!orig || !orig.trim() || orig.length > LCC_PAGE_BILINGUAL_MAX_CHARS) return;
+    lccBilingualOrig.set(parent, orig);
+    parent.classList.add("lcc-bi-src");
+  } catch (_) {}
+}
+function lccPageBilingualEnsureGhost() {
+  if (lccBilingualGhost && lccBilingualGhost.isConnected) return lccBilingualGhost;
+  const g = document.createElement("div");
+  g.id = "lcc-bilingual-ghost";
+  g.setAttribute("aria-hidden", "true");
+  g.style.cssText = [
+    "position:fixed", "z-index:2147483647", "max-width:min(480px,90vw)", "padding:6px 9px",
+    "background:rgba(20,20,22,0.92)", "color:#f4f1ea", "font:13px/1.45 -apple-system,system-ui,sans-serif",
+    "border-radius:6px", "box-shadow:0 4px 18px rgba(0,0,0,0.35)", "pointer-events:none",
+    "white-space:pre-wrap", "overflow-wrap:anywhere", "display:none", "left:0", "top:0", "margin:0",
+  ].join(";");
+  (document.body || document.documentElement).appendChild(g);
+  lccBilingualGhost = g;
+  return g;
+}
+function lccPageBilingualShow(el) {
+  const orig = lccBilingualOrig.get(el);
+  if (!orig) return;
+  const g = lccPageBilingualEnsureGhost();
+  g.textContent = orig;
+  g.style.display = "block";
+  const rect = el.getBoundingClientRect();
+  const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  const gw = Math.min(g.offsetWidth || 300, vw - 8);
+  const gh = g.offsetHeight || 24;
+  let top = rect.bottom + 6;
+  if (top + gh > vh - 4) top = Math.max(4, rect.top - gh - 6);   // flip above near the bottom edge
+  g.style.left = Math.max(4, Math.min(rect.left, vw - gw - 4)) + "px";
+  g.style.top = top + "px";
+}
+function lccPageBilingualHideGhost() {
+  if (lccBilingualGhost) lccBilingualGhost.style.display = "none";
+}
+function lccPageBilingualOnOver(e) {
+  if (!lccPageBilingualEnabled()) return;
+  const t = e.target;
+  const el = t && t.closest ? t.closest(".lcc-bi-src") : null;
+  if (el && lccBilingualOrig.has(el)) lccPageBilingualShow(el);
+  else lccPageBilingualHideGhost();
+}
+function lccPageBilingualOnOut(e) {
+  const to = e.relatedTarget;
+  if (!to || !(to.closest && to.closest(".lcc-bi-src"))) lccPageBilingualHideGhost();
+}
+function lccPageBilingualStart() {
+  if (lccBilingualOver) return;
+  lccBilingualOver = lccPageBilingualOnOver;
+  lccBilingualOut = lccPageBilingualOnOut;
+  lccBilingualHide = () => lccPageBilingualHideGhost();
+  document.addEventListener("mouseover", lccBilingualOver, true);
+  document.addEventListener("mouseout", lccBilingualOut, true);
+  window.addEventListener("scroll", lccBilingualHide, { passive: true, capture: true });
+}
+function lccPageBilingualStop() {
+  if (lccBilingualOver) { document.removeEventListener("mouseover", lccBilingualOver, true); lccBilingualOver = null; }
+  if (lccBilingualOut) { document.removeEventListener("mouseout", lccBilingualOut, true); lccBilingualOut = null; }
+  if (lccBilingualHide) { window.removeEventListener("scroll", lccBilingualHide, true); lccBilingualHide = null; }
+  if (lccBilingualGhost) { try { lccBilingualGhost.remove(); } catch (_) {} lccBilingualGhost = null; }
+  try { for (const el of document.querySelectorAll(".lcc-bi-src")) el.classList.remove("lcc-bi-src"); } catch (_) {}
+}
 function lccPageTranslateStart(rawSettings) {
   if (!LCC_IS_TOP) return;
   const wasOn = lccPageTranslateOn;
@@ -1196,6 +1277,7 @@ function lccPageTranslateStart(rawSettings) {
     window.addEventListener("resize", lccPageTranslateScrollHandler, { passive: true });
   }
   lccPageStartUrlWatch();
+  lccPageBilingualStart();   // hover shows the original; capture happens at queue time
   lccPageLoadCache().finally(() => lccPageScheduleScan(0));
 }
 function lccPageTranslateConfig(rawSettings) {
@@ -1217,6 +1299,7 @@ function lccPageTranslateStop(restore) {
     lccPageTranslateScrollHandler = null;
   }
   lccPageStopUrlWatch();
+  lccPageBilingualStop();
   lccPageClearTransient(restore);
 }
 function lccPageTranslatePartial(msg) {

@@ -75,6 +75,7 @@ const UI_TEXT = Object.freeze({
     labelPageStream: "페이지 출력",
     pageStreamPartial: "라이브 partial",
     pageStreamFinal: "확정만",
+    pageBilingual: "원문 보기 (번역 위에 마우스)",
     labelSyncOffset: "싱크 보정",
     debugSync: "싱크 디버그 표시",
     labelContextHint: "용어 힌트",
@@ -193,6 +194,7 @@ const UI_TEXT = Object.freeze({
     labelPageStream: "Page output",
     pageStreamPartial: "Live partial",
     pageStreamFinal: "Final only",
+    pageBilingual: "Show original (hover translation)",
     labelSyncOffset: "Sync offset",
     debugSync: "Show sync debug",
     labelContextHint: "Term hint",
@@ -362,6 +364,7 @@ async function loadSettings() {
   document.getElementById("accuracyMode").checked = settings.accuracyMode;
   document.getElementById("autoPrime").checked = settings.autoPrime;
   document.getElementById("pageTranslateStream").value = settings.pageTranslateStream;
+  document.getElementById("pageBilingual").checked = settings.pageBilingual !== false;
   document.getElementById("debugSync").checked = settings.debugSync;
   document.getElementById("contextHint").value = settings.contextHint;
   document.getElementById("glossary").value = settings.glossary;
@@ -661,6 +664,7 @@ document.getElementById("pageTranslateStream").addEventListener("change", (e) =>
   e.target.value = settings.pageTranslateStream;
   saveSettings(true);
 });
+document.getElementById("pageBilingual").addEventListener("change", (e) => { settings.pageBilingual = e.target.checked; saveSettings(true); });
 document.getElementById("debugSync").addEventListener("change", (e) => { settings.debugSync = e.target.checked; saveSettings(); });
 document.getElementById("contextHint").addEventListener("input", (e) => { settings.contextHint = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });
 document.getElementById("glossary").addEventListener("input", (e) => { settings.glossary = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });

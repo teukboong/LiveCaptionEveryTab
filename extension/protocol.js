@@ -35,6 +35,7 @@ const LCC_DEFAULT_SETTINGS = Object.freeze({
   pageTranslateMinChars: 2,
   pageTranslateMaxChars: 4000,
   pageTranslateStream: "partial",
+  pageBilingual: true,
   syncOffsetMs: 0,
   debugSync: false,
   uiMode: "simple",
@@ -91,6 +92,7 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   out.pageTranslateMinChars = Math.max(1, Math.min(80, Number(out.pageTranslateMinChars) || LCC_DEFAULT_SETTINGS.pageTranslateMinChars));
   out.pageTranslateMaxChars = Math.max(80, Math.min(8000, Number(out.pageTranslateMaxChars) || LCC_DEFAULT_SETTINGS.pageTranslateMaxChars));
   out.pageTranslateStream = (out.pageTranslateStream === "final") ? "final" : "partial";
+  out.pageBilingual = out.pageBilingual !== false;
   return out;
 };
 globalThis.lccRunModeIncludesPage = function lccRunModeIncludesPage(mode) {
@@ -119,6 +121,7 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
     pageRegister: s.pageRegister || "casual",
     pageGlossary: s.pageGlossary || "",
     pageTranslateStream: (s.pageTranslateStream === "final") ? "final" : "partial",   // content+offscreen read it; bridge ignores
+    pageBilingual: s.pageBilingual !== false,     // content-only: hover shows the original
 
     accuracyMode: s.accuracyMode ?? false,
     autoPrime: s.autoPrime ?? true,

@@ -18,6 +18,8 @@ assert.equal(context.lccNormalizeSettings({ runMode: "page" }).runMode, "page");
 assert.equal(context.lccNormalizeSettings({ runMode: "bogus" }).runMode, "video");
 assert.equal(context.lccNormalizeSettings({ pageTranslateStream: "final" }).pageTranslateStream, "final");
 assert.equal(context.lccNormalizeSettings({ pageTranslateStream: "bogus" }).pageTranslateStream, "partial");
+assert.equal(context.lccNormalizeSettings({ pageBilingual: false }).pageBilingual, false);
+assert.equal(context.lccNormalizeSettings({}).pageBilingual, true);
 assert.equal(context.lccRunModeIncludesPage("page"), true);
 assert.equal(context.lccRunModeIncludesCaption("page"), false);
 assert.equal(context.lccRunModeIncludesPage("both"), true);
@@ -45,5 +47,6 @@ assert.match(popupHtml, /id="captionTranslate"/, "popup exposes the video transl
 assert.match(popupHtml, /id="pageContextHint"/, "popup exposes a page-only hint");
 assert.match(popupHtml, /id="pageGlossary"/, "popup exposes a page-only glossary");
 assert.match(popupHtml, /id="pageTranslateStream"/, "popup exposes page streaming mode");
+assert.match(popupHtml, /id="pageBilingual"/, "popup exposes bilingual ghost toggle");
 
 console.log("test_protocol: OK (target/UI language settings stay canonical through protocol.js)");
