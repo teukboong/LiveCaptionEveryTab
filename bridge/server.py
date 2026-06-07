@@ -2541,9 +2541,13 @@ async def handle(ws):
                         authed = True
                         await send_json({"type": "hello", "ok": True})
                         print(f"[bridge] client authed origin={origin!r} peer={peer!r}", flush=True)
-                        if _active_ws is not None and _active_ws is not ws:   # single-client is the intended model
-                            print("[bridge] WARN: a 2nd client connected while one is active — they share ONE MLX "
-                                  "device + translator KV cache; expect degraded latency.", flush=True)
+                        if _active_ws is not None and _active_ws is not ws:   # single-client model: evict the prior
+                            # A reload/multi-tab/zombie leaves a stale ws; ping_interval is off (heavy inference
+                            # starves keepalive), so it would otherwise linger ~244s sharing the ONE MLX device +
+                            # KV cache (degraded latency). Close it now so the new client runs alone.
+                            print("[bridge] superseding prior client — single MLX device; closing the stale connection.", flush=True)
+                            _stale_ws = _active_ws
+                            asyncio.create_task(_stale_ws.close(code=1001, reason="superseded by a new client"))
                         _active_ws = ws
                     elif not authed:
                         await ws.close(code=1008, reason="hello required")
@@ -2930,6 +2934,16 @@ async def handle(ws):
                 _active_ws = None
 
 
+def _port_in_use(host: str, port: int) -> bool:
+    """True if something already accepts on host:port — i.e. another bridge is running. Probed BEFORE
+    load_models so a duplicate launch exits without loading models (the 2-bridge smell: two 26B copies
+    share the GPU/RAM + port -> degraded latency + flickering captions)."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.3)
+        return s.connect_ex((host, port)) == 0
+
+
 async def main():
     # ping_interval=None: heavy inference can starve the loop and trip keepalive -> drop. Disable it.
     async with websockets.serve(handle, HOST, PORT, max_size=MAX_WS_MSG_BYTES, ping_interval=None):
@@ -2938,6 +2952,10 @@ async def main():
 
 
 if __name__ == "__main__":
+    if _port_in_use(HOST, PORT):
+        print(f"[bridge] {HOST}:{PORT} already in use — another bridge is running; refusing to start a "
+              f"second (they would share the MLX device → slow + flickering). Exiting.", flush=True)
+        raise SystemExit(1)
     load_models(asr=True, lm=True, vad=True)
     if BACKEND == "cuda":
         print(f"[bridge] ready (CUDA HTTP backend + 26B translate, latency={LATENCY_MODE_DEFAULT})", flush=True)
