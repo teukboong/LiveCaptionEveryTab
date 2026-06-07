@@ -71,9 +71,10 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-async function runPopupClearTranscript(reply) {
+async function loadPopup({ runtimeReplies = {}, settings = {}, activeTab = { id: 123 } } = {}) {
   const document = makeDocument();
   const runtimeMessages = [];
+  const streamRequests = [];
   const sessionRemoved = [];
   const nativeMessages = [];
 
@@ -86,7 +87,7 @@ async function runPopupClearTranscript(reply) {
           cb({ capturing: false, captioning: false, pageTranslating: false, wsOpen: false });
           return undefined;
         }
-        if (msg && msg.type === "popup-clear-transcript") return Promise.resolve(reply);
+        if (msg && Object.hasOwn(runtimeReplies, msg.type)) return Promise.resolve(runtimeReplies[msg.type]);
         if (msg && msg.type === "popup-config-update") return Promise.resolve({ ok: true });
         return Promise.resolve({ ok: true });
       },
@@ -100,7 +101,7 @@ async function runPopupClearTranscript(reply) {
     storage: {
       local: {
         get(keys) {
-          if (keys === "lcc-settings") return Promise.resolve({ "lcc-settings": {} });
+          if (keys === "lcc-settings") return Promise.resolve({ "lcc-settings": settings });
           if (Array.isArray(keys)) return Promise.resolve({ "lcc-transcript": [], "lcc-session": null });
           return Promise.resolve({});
         },
@@ -119,11 +120,14 @@ async function runPopupClearTranscript(reply) {
       },
     },
     tabs: {
-      query() { return Promise.resolve([{ id: 123 }]); },
+      query() { return Promise.resolve(activeTab ? [activeTab] : []); },
       sendMessage() { return Promise.resolve({ context: "" }); },
     },
     tabCapture: {
-      getMediaStreamId() { return Promise.resolve("stream-id"); },
+      getMediaStreamId(request) {
+        streamRequests.push(request);
+        return Promise.resolve("stream-id");
+      },
     },
   };
 
@@ -153,15 +157,28 @@ async function runPopupClearTranscript(reply) {
   await flushMicrotasks();
   await flushMicrotasks();
 
-  const hist = document.getElementById("hist");
-  const aiResult = document.getElementById("aiResult");
+  return { chrome, document, nativeMessages, runtimeMessages, sessionRemoved, streamRequests };
+}
+
+async function runPopupClearTranscript(reply) {
+  const popup = await loadPopup({ runtimeReplies: { "popup-clear-transcript": reply } });
+
+  const hist = popup.document.getElementById("hist");
+  const aiResult = popup.document.getElementById("aiResult");
   hist.innerHTML = "old transcript";
   aiResult.textContent = "old answer";
 
-  await document.getElementById("clearTr").onclick();
+  await popup.document.getElementById("clearTr").onclick();
   await flushMicrotasks();
 
-  return { aiResult, hist, nativeMessages, runtimeMessages, sessionRemoved };
+  return { ...popup, aiResult, hist };
+}
+
+async function runPopupStartWithCleanup(reply) {
+  const popup = await loadPopup({ runtimeReplies: { "popup-cleanup": reply } });
+  await popup.document.getElementById("btn").onclick();
+  await flushMicrotasks();
+  return popup;
 }
 
 async function runBackgroundClearTranscript({ failLocalRemove = false } = {}) {
@@ -258,6 +275,16 @@ async function runBackgroundClearTranscript({ failLocalRemove = false } = {}) {
   assert.equal(popupFailure.hist.innerHTML, "old transcript");
   assert.equal(popupFailure.aiResult.textContent, "실패: clear failed");
 
+  const startCleanupFailure = await runPopupStartWithCleanup({ ok: false, error: "cleanup failed" });
+  const startMessagesAfterCleanupFailure = startCleanupFailure.runtimeMessages
+    .filter((msg) => msg && msg.type && msg.type !== "popup-status");
+  assert.deepEqual(
+    plain(startMessagesAfterCleanupFailure),
+    [{ type: "popup-cleanup" }],
+  );
+  assert.deepEqual(plain(startCleanupFailure.streamRequests), []);
+  assert.equal(startCleanupFailure.document.getElementById("status").textContent, "실패: cleanup failed");
+
   const backgroundSuccess = await runBackgroundClearTranscript();
   assert.deepEqual(plain(backgroundSuccess.localRemoved), [["lcc-transcript", "lcc-session"]]);
   assert.deepEqual(plain(backgroundSuccess.sessionRemoved), ["lcc-answer"]);
@@ -272,7 +299,7 @@ async function runBackgroundClearTranscript({ failLocalRemove = false } = {}) {
   assert.deepEqual(plain(backgroundFailure.sessionRemoved), []);
   assert.deepEqual(plain(backgroundFailure.tabMessages), []);
 
-  console.log("test_extension_actions: OK (popup/background transcript clear success and failure paths pass)");
+  console.log("test_extension_actions: OK (popup start cleanup + transcript clear success/failure paths pass)");
 })().catch((e) => {
   console.error(e);
   process.exit(1);
