@@ -254,7 +254,7 @@ function pollBridgeUntilUp(maxSec) {
 bridgeBtn.onclick = async () => {
   setBridgeUI("starting", "시작 요청…");
   const r = await nmSend({ cmd: "start", asrEngine: settings.asrEngine || "granite" });
-  if (r.noHost) { setBridgeUI("nohost", "호스트 미설치 — install-host.sh 실행"); return; }
+  if (r.noHost) { setBridgeUI("nohost", "호스트 미설치 — 터미널에서 ./setup.sh 1회"); return; }
   if (!r.ok) { setBridgeUI("off", "" + (r.error || "실패")); return; }
   if (r.already || r.running) { setBridgeUI("on", "이미 켜짐"); return; }
   pollBridgeUntilUp(70);
@@ -319,7 +319,7 @@ async function startInstall(tier) {
   setInstBusy(true);
   setInstStatus("" + TIER_LABEL[tier] + " 설치 요청…", "#666");
   const r = await nmSend({ cmd: "install", tier });
-  if (r.noHost) { setInstBusy(false); setInstStatus("호스트 미설치 — install-host.sh 실행", "#dc2626"); return; }
+  if (r.noHost) { setInstBusy(false); setInstStatus("호스트 미설치 — 터미널에서 ./setup.sh 1회", "#dc2626"); return; }
   if (!r.ok) { setInstBusy(false); setInstStatus("" + (r.error || "실패"), "#dc2626"); return; }
   pollInstall();
 }

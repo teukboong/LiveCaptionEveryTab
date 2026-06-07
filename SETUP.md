@@ -111,16 +111,17 @@ bash bridge/run_bridge.sh
 
 ---
 
-## 6.5. (선택) 팝업에서 브릿지 켜기 — 터미널 없이
+## 6.5. 팝업에서 브릿지 켜기 · 모델 설치 — 터미널 없이
 
-매번 터미널에서 `run_bridge.sh`를 치기 싫으면, 팝업의 **`🚀 브릿지 켜기`** 버튼으로 켜고/끌 수 있다. 브라우저는 보안상 로컬 프로그램을 직접 못 띄우므로 **네이티브 메시징 호스트**를 1회 설치한다(터미널 한 줄):
+`./setup.sh`가 **네이티브 메시징 호스트**까지 자동 설치한다. 그래서 그 뒤엔 팝업의 **`브릿지 켜기`** 버튼으로 브릿지를 켜고/끄고, **Full/Mid/Lite** 버튼으로 모델을 받아 배선할 수 있다 — 터미널 추가로 필요 없음.
 
-```bash
-bash extension/native-host/install-host.sh
-```
-- 설치 후 `chrome://extensions`에서 확장을 **↻ 새로고침**(확장 ID가 고정 ID로 바뀜).
-- 이제 팝업 상단의 **`🚀 브릿지 켜기`** → 모델 로드(~40초) 후 **🟢 켜짐**. 옆 **⏹** 로 종료.
-- 이렇게 띄운 브릿지는 **detached** 라 브라우저를 닫아도 계속 돈다(끄려면 팝업 ⏹ 또는 `bash extension/native-host/install-host.sh uninstall` 후 수동).
+> ⚠ 호스트 설치는 브라우저 샌드박스가 직접 못 하는 **유일한 부트스트랩 단계**라 `setup.sh`(터미널)에서 1회 처리한다. setup 때 브라우저가 아직 없었다면, 브라우저 설치 후 직접:
+> ```bash
+> bash extension/native-host/install-host.sh
+> ```
+- 설치 후 `chrome://extensions`에서 확장을 **↻ 새로고침**(확장 ID가 고정 ID로 고정됨).
+- 팝업의 **`브릿지 켜기`** → 모델 로드(~40초) 후 **켜짐**. 옆 **끄기** 로 종료.
+- 이렇게 띄운 브릿지는 **detached** 라 브라우저를 닫아도 계속 돈다.
 - 제거: `bash extension/native-host/install-host.sh uninstall`
 
 ---

@@ -33,6 +33,17 @@ echo "[setup] creating .venv with $PYBIN  (extra: $EXTRA)"
 .venv/bin/pip install -U pip
 .venv/bin/pip install ".[$EXTRA]"
 
+# Native-messaging host: lets the popup start/stop the bridge and install model tiers without a terminal.
+# Chrome's sandbox can't install this itself (it's the bootstrap), so it's the one filesystem step done here.
+# Non-fatal: if no Chromium browser is installed yet, install it and re-run setup (or run install-host.sh later).
+if [ "$(uname -s)" = "Darwin" ]; then
+  echo "[setup] installing native-messaging host (enables the popup's bridge/model buttons)…"
+  bash extension/native-host/install-host.sh || echo "[setup] host install skipped — install Chrome/Edge/Brave, then re-run ./setup.sh"
+elif [ "$EXTRA" = "cuda" ] && [ -f extension/native-host/install-host-windows-wsl.sh ]; then
+  echo "[setup] installing native-messaging host (WSL)…"
+  bash extension/native-host/install-host-windows-wsl.sh || echo "[setup] host install skipped (see SETUP-windows.md)"
+fi
+
 if [ "$MODELS" = "1" ]; then
   echo "[setup] prefetching default models (~20GB, resumable)…"
   .venv/bin/python - <<'PY'
@@ -46,7 +57,8 @@ PY
 fi
 
 echo
-echo "[setup] done. next:"
-echo "  1) bash bridge/run_bridge.sh                 # start the bridge (first load ~40s)"
-echo "  2) chrome://extensions -> Developer mode -> Load unpacked -> select extension/"
-echo "  3) (optional) cp .env.example .env           # pin tier / tweak knobs"
+echo "[setup] done. next (no more terminal needed):"
+echo "  1) chrome://extensions -> Developer mode -> Load unpacked -> select extension/   (then reload it)"
+echo "  2) open the popup -> '브릿지 켜기' to start the bridge, and Full/Mid/Lite to fetch models"
+echo "     (terminal alternative: bash bridge/run_bridge.sh)"
+echo "  3) (optional) cp .env.example .env   # pin a tier / tweak knobs"

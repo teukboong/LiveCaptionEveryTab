@@ -59,7 +59,7 @@ bash bridge/run_bridge.sh
 # "[bridge] ready  ws://127.0.0.1:8765" 뜨면 준비 완료 (첫 로드 ~40s)
 ```
 - 항상 켜두려면(옵트인, 크래시 자동재시작): `bash bridge/autostart.sh install` — ⚠ ~26GB RAM 상주. 끄기: `… uninstall`
-- 터미널 없이 **팝업 버튼**으로 켜고/끄려면(`🚀 브릿지 켜기`): `bash extension/native-host/install-host.sh` 1회 실행 후 확장 새로고침 (네이티브 메시징 호스트 — SETUP 6.5). detached로 떠서 브라우저 닫아도 유지
+- 터미널 없이 **팝업 버튼**(`브릿지 켜기` · 모델 `Full/Mid/Lite`)으로 다 하려면 네이티브 메시징 호스트가 필요한데, **`./setup.sh`가 이미 설치**한다(브라우저 샌드박스가 직접 못 하는 1회 부트스트랩). 이후 확장 새로고침. detached로 떠서 브라우저 닫아도 유지 (SETUP 6.5)
 - 브릿지가 재시작/끊겨도 확장이 **자동 재연결**(백오프)하고 최근 오디오를 최대 6초 버퍼링함. 그보다 긴 장애 동안의 발화는 유실될 수 있음
 ### 2) 확장 로드 (Chrome)
 1. `chrome://extensions` → 우측 상단 **개발자 모드** 켜기
