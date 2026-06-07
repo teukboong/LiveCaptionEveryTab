@@ -128,6 +128,7 @@ const UI_TEXT = Object.freeze({
     stopping: "종료 중…",
     stopFailed: "종료 실패",
     downloadingDefault: "다운로드 중",
+    installIdle: "설치 진행 없음 — 다시 선택하세요",
     installComplete: "{tier} 설치 완료 — 브릿지 (재)시작 시 적용",
     installFailed: "실패: {error} (~/.lcc-install.log 확인)",
     downloading: "{name}  ({index}/{total})",
@@ -249,6 +250,7 @@ const UI_TEXT = Object.freeze({
     stopping: "Stopping…",
     stopFailed: "Stop failed",
     downloadingDefault: "Downloading",
+    installIdle: "No install in progress — choose a tier again",
     installComplete: "{tier} installed — applies after bridge restart",
     installFailed: "Failed: {error} (check ~/.lcc-install.log)",
     downloading: "{name}  ({index}/{total})",
@@ -721,7 +723,11 @@ function pollInstall() {
     try {
       const r = await nmSend({ cmd: "install_status" });
       if (r.noHost) { clearInterval(instPoll); instPoll = null; setInstBusy(false); setInstStatus(tr("noHost"), "#dc2626"); return; }
-      if (r.idle) return;
+      if (r.idle) {
+        clearInterval(instPoll); instPoll = null; setInstBusy(false);
+        setInstStatus(tr("installIdle"), "#999");
+        return;
+      }
       if (r.done) {
         clearInterval(instPoll); instPoll = null; setInstBusy(false);
         if (r.ok) setInstStatus(tr("installComplete", { tier: TIER_LABEL[r.tier] || r.tier || "" }), "#16a34a");

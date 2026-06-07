@@ -42,6 +42,7 @@ assert.equal(pageCfg.pageGlossary, "OP=원글쓴이");
 assert.equal(context.lccBuildBridgeConfig({ pageRegister: "bogus" }, "").pageRegister, "casual");
 
 const popupHtml = fs.readFileSync(path.join(root, "extension", "popup.html"), "utf8");
+const popupJs = fs.readFileSync(path.join(root, "extension", "popup.js"), "utf8");
 assert.match(popupHtml, /<select id="targetLang"><\/select>/, "popup target select is populated from protocol.js");
 assert.match(popupHtml, /<select id="uiLang"><\/select>/, "popup UI-language select is populated from protocol.js");
 assert.match(popupHtml, /id="pageTranslate"/, "popup exposes the page translation toggle");
@@ -51,5 +52,10 @@ assert.match(popupHtml, /id="pageGlossary"/, "popup exposes a page-only glossary
 assert.match(popupHtml, /id="pageTranslateStream"/, "popup exposes page streaming mode");
 assert.match(popupHtml, /id="pageBilingual"/, "popup exposes bilingual ghost toggle");
 assert.match(popupHtml, /id="pageVerify"/, "popup exposes cache-then-verify toggle");
+assert.match(
+  popupJs,
+  /if \(r\.idle\) \{[\s\S]*clearInterval\(instPoll\);[\s\S]*instPoll = null;[\s\S]*setInstBusy\(false\);/,
+  "popup install polling unlocks buttons if native status goes idle",
+);
 
 console.log("test_protocol: OK (target/UI language settings stay canonical through protocol.js)");
