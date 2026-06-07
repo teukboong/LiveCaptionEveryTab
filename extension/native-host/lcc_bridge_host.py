@@ -22,6 +22,10 @@ CUDA_STACK_CMD = os.environ.get("LCC_CUDA_STACK_CMD", "").strip()
 PORT = 8765
 LOG = os.path.join(os.path.expanduser("~"), ".lcc-bridge.log")
 HOST_LOG = os.path.join(os.path.expanduser("~"), ".lcc-bridge-host.log")
+ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))                     # repo root
+INSTALLER = os.path.join(ROOT, "bridge", "install_models.py")
+INSTALL_STATUS = os.path.join(os.path.expanduser("~"), ".lcc-install.json")
+INSTALL_LOG = os.path.join(os.path.expanduser("~"), ".lcc-install.log")
 
 
 def hlog(msg):
@@ -209,6 +213,67 @@ def do_stop():
     return {"ok": not port_open(), "running": port_open(), "msg": "종료 시도 완료"}
 
 
+def _venv_python():
+    """Same interpreter run_bridge.sh uses: LCC_PYTHON override, else <root>/.venv/bin/python."""
+    return os.environ.get("LCC_PYTHON") or os.path.join(ROOT, ".venv", "bin", "python")
+
+
+def _install_running():
+    """The live install status dict if a download is in progress (pid alive, not done), else None."""
+    try:
+        with open(INSTALL_STATUS) as f:
+            st = json.load(f)
+    except Exception:
+        return None
+    if st.get("done"):
+        return None
+    pid = st.get("pid")
+    if pid:
+        try:
+            os.kill(int(pid), 0)
+        except Exception:
+            return None
+    return st
+
+
+def do_install(msg=None):
+    """Spawn the tier model downloader DETACHED (full/mid/lite). Returns immediately; popup polls
+    install_status. Sets LCC_LM_TIER in .env on success (handled by install_models.py)."""
+    tier = str((msg or {}).get("tier") or "").strip().lower()
+    if tier not in ("full", "mid", "lite"):
+        return {"ok": False, "error": f"unknown tier: {tier}"}
+    if _install_running():
+        return {"ok": True, "started": False, "already": True, "msg": "이미 설치 중"}
+    py = _venv_python()
+    if not os.path.exists(py):
+        return {"ok": False, "error": f"venv 없음: {py} — 먼저 setup.sh 를 실행하세요"}
+    if not os.path.exists(INSTALLER):
+        return {"ok": False, "error": f"install_models.py 없음: {INSTALLER}"}
+    try:                                            # seed status so the poller sees progress instantly
+        with open(INSTALL_STATUS, "w") as f:
+            json.dump({"tier": tier, "done": False, "ok": True, "current": "시작 중…",
+                       "index": 0, "total": 0, "ts": int(time.time())}, f)
+    except Exception:
+        pass
+    env = _start_env(msg or {})
+    try:
+        logf = open(INSTALL_LOG, "ab")
+        subprocess.Popen([py, INSTALLER, tier], stdin=subprocess.DEVNULL,
+                         stdout=logf, stderr=logf, start_new_session=True, env=env)
+    except Exception as e:
+        hlog(f"install spawn err: {e}")
+        return {"ok": False, "error": f"설치 시작 실패: {e}"}
+    return {"ok": True, "started": True, "tier": tier, "msg": "설치 시작 — 모델 다운로드(수 GB)"}
+
+
+def do_install_status():
+    try:
+        with open(INSTALL_STATUS) as f:
+            return {"ok": True, **json.load(f)}
+    except Exception:
+        return {"ok": True, "idle": True}
+
+
 def main():
     try:
         msg = read_message()
@@ -228,6 +293,10 @@ def main():
         elif cmd == "restart":
             do_stop()
             reply = do_start(msg)
+        elif cmd == "install":
+            reply = do_install(msg)
+        elif cmd == "install_status":
+            reply = do_install_status()
         elif cmd == "status" and CUDA_STACK_CMD:
             data = _cuda_stack(["status", _asr_engine(msg)], timeout=20) or {}
             reply = {

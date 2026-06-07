@@ -24,11 +24,16 @@ Realtime captioning/translation tools mostly split into two camps, and the combi
 
 Everything is **local and free**. The trade-off is a hardware floor (see requirements in [SETUP.md](SETUP.md)). On lighter machines the translation model auto-tiers to fit memory (full/mid/lite).
 
-**Platform (backend):** the same bridge·same extension run on two runtimes, selected with `LCC_BACKEND`.
-- **`mlx`** (default, Apple Silicon): in-process MLX — Granite/Qwen3 ASR, 26B-A4B translation. → [SETUP.md](SETUP.md)
-- **`cuda`** (Windows+NVIDIA, WSL2): OpenAI-compatible **HTTP** — llama.cpp translation (26B GGUF), **the same granite/qwen3 ASR as on Mac** (transformers, `cuda/asr_server.py`). The popup's **transcription-engine** toggle (English=granite / multilingual=qwen3) still applies (routed via the `model` field), and each engine can point at a different server. No whisper. → [SETUP-windows.md](SETUP-windows.md)
+## Platform — two runtimes (equally supported)
 
-VAD·sentence assembly·scheduler·number-guard·prompt builder are **shared across platforms** (pure functions). Only the 3 GPU functions (transcribe/translate/summarize) change per runtime, and that boundary is `bridge/backend_cuda.py` (HTTP) and the "Backend seam" in server.py.
+The same bridge·same extension run on both backends. Pick the one for your machine with `LCC_BACKEND`.
+
+| Backend | Environment | Transcription (ASR) | Translation | Guide |
+|---|---|---|---|---|
+| **MLX** (`LCC_BACKEND=mlx`) | Apple Silicon | Granite/Qwen3 (mlx-audio, in-process) | Gemma-4 · full/mid/lite (mlx-lm) | [SETUP.md](SETUP.md) |
+| **CUDA** (`LCC_BACKEND=cuda`) | Windows + NVIDIA (WSL2) | Granite/Qwen3 (transformers, `cuda/asr_server.py`) | llama.cpp · GGUF · full/mid/lite (OpenAI-compatible HTTP) | [SETUP-windows.md](SETUP-windows.md) |
+
+The transcription-engine choice (English=granite / multilingual=qwen3) is identical on both (routed via the `model` field) — no whisper. VAD·sentence assembly·scheduler·number-guard·prompt builder are **shared across both backends** (pure functions); only the 3 GPU functions (transcribe/translate/summarize) change per runtime, and that boundary is `bridge/backend_cuda.py` (HTTP) and the "Backend seam" in server.py. (The code default is `mlx`.)
 
 ## Architecture
 ```
@@ -36,12 +41,12 @@ VAD·sentence assembly·scheduler·number-guard·prompt builder are **shared acr
                                                         VAD + soft-cut ASR atom
                                                         → Granite / Qwen3-ASR transcription (punctuation·multilingual)
                                                         → unit assembler
-                                                        → 26B-A4B MoE Korean translation
+                                                        → Gemma-4 (tier) Korean translation
    [content.js 2-line overlay] ◀──WS(JSON caption)──────┘
 ```
-- ASR picks between **two mlx-audio engines** in the popup (▸ Transcription engine). **Granite Speech 4.1 2B** (`ibm-granite/granite-speech-4.1-2b` · faithful English, ~0% WER) and **Qwen3-ASR 1.7B** (`Qwen/Qwen3-ASR-1.7B` · 52 languages incl. Japanese/Korean, auto language ID). Both emit punctuation·truecasing natively so sentence chunking just works. Shares the Apple GPU with the 26B (serialized). ⚠ granite needs the **conv fix on mlx-audio main** (see SETUP).
+- ASR picks between **two mlx-audio engines** in the popup (▸ Transcription engine). **Granite Speech 4.1 2B** (`ibm-granite/granite-speech-4.1-2b` · faithful English, ~0% WER) and **Qwen3-ASR 1.7B** (`Qwen/Qwen3-ASR-1.7B` · 52 languages incl. Japanese/Korean, auto language ID). Both emit punctuation·truecasing natively so sentence chunking just works. Shares the Apple GPU with the translator (serialized). ⚠ granite needs the **conv fix on mlx-audio main** (see SETUP).
 - A low-latency English-only Parakeet is a power-user escape hatch via `LCC_ASR_ENGINE=parakeet` only (CPU, parallel to translation; model `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`, `sherpa-onnx==1.13.2`). The popup selector only exposes granite/qwen3.
-- Translation: `mlx-community/gemma-4-26b-a4b-it-4bit` (mlx-lm) — default **quality prompt** (expert interpreter·by-meaning·no-translationese + 3 few-shots, cost amortized by KV-cache → natural spoken Korean rather than stiff written style). Low latency via `LCC_TX_PROFILE=fast`. **Target language is selectable** (KO/EN/JA/ZH/ES/FR/DE), source auto-detected, skipped when target=source.
+- Translation: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — default **quality prompt** (expert interpreter·by-meaning·no-translationese + 3 few-shots, cost amortized by KV-cache → natural spoken Korean rather than stiff written style). Low latency via `LCC_TX_PROFILE=fast`. **Target language is selectable** (KO/EN/JA/ZH/ES/FR/DE), source auto-detected, skipped when target=source.
 - RAM ~26GB (weights) + a little KV per chunk. Latency ~2.9–3.4s per utterance chunk (ASR ~0.7s + translation ~1.4s + audio prefill + clause-boundary wait).
 - MTP is pointless on this hardware, so unused (verified across MoE·dense·E4B).
 - ⚠️ Needs genuine Chrome/Edge/Brave — some Chromium forks (e.g. ChatGPT Atlas) don't implement `chrome.tabCapture`.
@@ -74,7 +79,7 @@ bash bridge/run_bridge.sh
 - **Sync debug**: when enabled in the popup, it shows `kind/unit/start/end/due/now/lag/delay/offset/q` below the caption and in the console to verify output isn't earlier than due time.
 - **Translation cache/priority**: if preview and final share the same source, re-translation is avoided, and final is processed before preview.
 - **Caption log**: 📜 (bottom-right) → scrollback panel / bilingual `.md` export.
-- **Summary·Q&A**: the panel's ✨Summary · question box — the local 26B summarizes/answers over past captions (streaming).
+- **Summary·Q&A**: the panel's ✨Summary · question box — the local Gemma summarizes/answers over past captions (streaming).
 
 ## Troubleshooting
 - "Bridge disconnected" on the overlay → check `run_bridge.sh` is running and port 8765.

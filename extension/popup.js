@@ -7,7 +7,8 @@ const DEFAULTS = globalThis.LCC_DEFAULT_SETTINGS;
 const BRIDGE_SETTING_KEYS = new Set(["targetLang", "asrEngine"]);
 // 영상 종류 프리셋: 한 번 고르면 말투(register)+지연(latencyMode)을 콘텐츠에 맞춰 묶어 세팅 (개별 노출 X).
 const LCC_PRESETS = globalThis.LCC_CONTENT_PRESETS;
-const RANGES = { fontSize: "fontSize", bottomPct: "bottomPct", leftPct: "leftPct", delaySec: "delaySec" };
+const RANGES = { fontSize: "fontSize", bottomPct: "bottomPct", leftPct: "leftPct", delaySec: "delaySec",
+                 sentSilenceMs: "sentSilenceMs", vadLevel: "vadLevel", syncOffsetMs: "syncOffsetMs" };
 
 function formatRangeValue(key, value) {
   if (key === "syncOffsetMs") {
@@ -38,6 +39,14 @@ async function loadSettings() {
   document.getElementById("targetLang").value = settings.targetLang;
   document.getElementById("asrEngine").value = settings.asrEngine;
   document.getElementById("contentType").value = settings.contentType;
+  document.getElementById("latencyMode").value = settings.latencyMode;
+  document.getElementById("register").value = settings.register;
+  document.getElementById("accuracyMode").checked = settings.accuracyMode;
+  document.getElementById("autoPrime").checked = settings.autoPrime;
+  document.getElementById("debugSync").checked = settings.debugSync;
+  document.getElementById("contextHint").value = settings.contextHint;
+  document.getElementById("glossary").value = settings.glossary;
+  setMode(settings.uiMode || "simple");
 }
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -258,3 +267,68 @@ bridgeStopBtn.onclick = async () => {
   setBridgeUI(r.running ? "on" : "off", r.running ? "❌ 종료 실패" : "꺼짐");
 };
 refreshBridge();
+
+// ---- Simple / Advanced mode ----
+function setMode(mode) {
+  const adv = mode === "advanced";
+  document.getElementById("adv").hidden = !adv;
+  document.getElementById("modeAdv").classList.toggle("active", adv);
+  document.getElementById("modeSimple").classList.toggle("active", !adv);
+}
+document.getElementById("modeSimple").onclick = () => { settings.uiMode = "simple"; setMode("simple"); saveSettings(); };
+document.getElementById("modeAdv").onclick = () => { settings.uiMode = "advanced"; setMode("advanced"); saveSettings(); };
+
+// ---- advanced parameter controls (the raw knobs; ranges handled by the generic RANGES loop) ----
+document.getElementById("latencyMode").addEventListener("change", (e) => { settings.latencyMode = e.target.value; saveSettings(true); });
+document.getElementById("register").addEventListener("change", (e) => { settings.register = e.target.value; saveSettings(true); });
+document.getElementById("accuracyMode").addEventListener("change", (e) => { settings.accuracyMode = e.target.checked; saveSettings(); });
+document.getElementById("autoPrime").addEventListener("change", (e) => { settings.autoPrime = e.target.checked; saveSettings(); });
+document.getElementById("debugSync").addEventListener("change", (e) => { settings.debugSync = e.target.checked; saveSettings(); });
+document.getElementById("contextHint").addEventListener("input", (e) => { settings.contextHint = e.target.value; saveSettings(); pushBridgeConfigDebounced(); });
+document.getElementById("glossary").addEventListener("input", (e) => { settings.glossary = e.target.value; saveSettings(); pushBridgeConfigDebounced(); });
+
+// ---- model install (full/mid/lite): native host spawns the downloader; poll progress ----
+const TIER_LABEL = { full: "Full", mid: "Mid", lite: "Lite" };
+let instPoll = null;
+function setInstStatus(text, color) {
+  const el = document.getElementById("instStatus");
+  el.textContent = text;
+  el.style.color = color || "#999";
+}
+function setInstBusy(busy) {
+  for (const id of ["instFull", "instMid", "instLite"]) document.getElementById(id).disabled = busy;
+}
+function pollInstall() {
+  if (instPoll) clearInterval(instPoll);
+  setInstBusy(true);
+  instPoll = setInterval(async () => {
+    const r = await nmSend({ cmd: "install_status" });
+    if (r.noHost) { clearInterval(instPoll); instPoll = null; setInstBusy(false); setInstStatus("❌ 호스트 미설치", "#dc2626"); return; }
+    if (r.idle) return;
+    if (r.done) {
+      clearInterval(instPoll); instPoll = null; setInstBusy(false);
+      if (r.ok) setInstStatus("✅ " + (TIER_LABEL[r.tier] || r.tier || "") + " 설치 완료 — 브릿지 (재)시작 시 적용", "#16a34a");
+      else setInstStatus("❌ 실패: " + (r.error || "") + " (~/.lcc-install.log 확인)", "#dc2626");
+      return;
+    }
+    const n = (r.index || 0) + 1, t = r.total || "?";
+    setInstStatus("⏳ " + (r.current || "다운로드 중") + "  (" + n + "/" + t + ")", "#666");
+  }, 2000);
+}
+async function startInstall(tier) {
+  setInstBusy(true);
+  setInstStatus("⏳ " + TIER_LABEL[tier] + " 설치 요청…", "#666");
+  const r = await nmSend({ cmd: "install", tier });
+  if (r.noHost) { setInstBusy(false); setInstStatus("❌ 호스트 미설치 — install-host.sh 실행", "#dc2626"); return; }
+  if (!r.ok) { setInstBusy(false); setInstStatus("❌ " + (r.error || "실패"), "#dc2626"); return; }
+  pollInstall();
+}
+document.getElementById("instFull").onclick = () => startInstall("full");
+document.getElementById("instMid").onclick = () => startInstall("mid");
+document.getElementById("instLite").onclick = () => startInstall("lite");
+// reflect any in-progress / last install when the popup opens
+nmSend({ cmd: "install_status" }).then((r) => {
+  if (!r || r.idle || r.noHost) return;
+  if (!r.done) pollInstall();
+  else if (r.ok && r.current === "완료") setInstStatus("✅ " + (TIER_LABEL[r.tier] || r.tier || "") + " 설치됨", "#16a34a");
+});

@@ -24,11 +24,16 @@ Las herramientas de subtitulado/traducción en tiempo real se dividen en dos gru
 
 Todo es **local y gratuito**. A cambio hay un mínimo de hardware (ver requisitos en [SETUP.md](SETUP.md)). En máquinas más modestas el modelo de traducción ajusta su nivel automáticamente a la memoria (full/mid/lite).
 
-**Plataforma (backend):** el mismo bridge·la misma extensión corren en dos runtimes, elegidos con `LCC_BACKEND`.
-- **`mlx`** (por defecto, Apple Silicon): MLX en proceso — ASR Granite/Qwen3, traducción 26B-A4B. → [SETUP.md](SETUP.md)
-- **`cuda`** (Windows+NVIDIA, WSL2): **HTTP** compatible con OpenAI — traducción llama.cpp (26B GGUF), **el mismo ASR granite/qwen3 que en Mac** (transformers, `cuda/asr_server.py`). El conmutador de **motor de transcripción** del popup (inglés=granite / multilingüe=qwen3) sigue funcionando (ruteado por el campo `model`), y cada motor puede apuntar a un servidor distinto. Sin whisper. → [SETUP-windows.md](SETUP-windows.md)
+## Plataforma — dos runtimes (con soporte equivalente)
 
-VAD·ensamblado de frases·planificador·number-guard·constructor de prompts son **compartidos entre plataformas** (funciones puras). Solo cambian las 3 funciones de GPU (transcribir/traducir/resumir) por runtime, y esa frontera es `bridge/backend_cuda.py` (HTTP) y el "Backend seam" en server.py.
+El mismo bridge·la misma extensión corren en ambos backends. Elige el de tu equipo con `LCC_BACKEND`.
+
+| Backend | Entorno | Transcripción (ASR) | Traducción | Guía |
+|---|---|---|---|---|
+| **MLX** (`LCC_BACKEND=mlx`) | Apple Silicon | Granite/Qwen3 (mlx-audio, en proceso) | Gemma-4 · full/mid/lite (mlx-lm) | [SETUP.md](SETUP.md) |
+| **CUDA** (`LCC_BACKEND=cuda`) | Windows + NVIDIA (WSL2) | Granite/Qwen3 (transformers, `cuda/asr_server.py`) | llama.cpp · GGUF · full/mid/lite (HTTP compatible con OpenAI) | [SETUP-windows.md](SETUP-windows.md) |
+
+La elección del motor de transcripción (inglés=granite / multilingüe=qwen3) es idéntica en ambos (ruteada por el campo `model`) — sin whisper. VAD·ensamblado de frases·planificador·number-guard·constructor de prompts son **compartidos por ambos backends** (funciones puras); solo cambian las 3 funciones de GPU (transcribir/traducir/resumir) por runtime, y esa frontera es `bridge/backend_cuda.py` (HTTP) y el "Backend seam" en server.py. (El valor por defecto del código es `mlx`.)
 
 ## Arquitectura
 ```
@@ -36,12 +41,12 @@ VAD·ensamblado de frases·planificador·number-guard·constructor de prompts so
                                                         VAD + soft-cut ASR atom
                                                         → transcripción Granite / Qwen3-ASR (puntuación·multilingüe)
                                                         → unit assembler
-                                                        → traducción al coreano 26B-A4B MoE
+                                                        → traducción al coreano Gemma-4 (tier)
    [overlay de 2 líneas content.js] ◀──WS(JSON caption)──┘
 ```
-- El ASR elige entre **dos motores mlx-audio** en el popup (▸ Motor de transcripción). **Granite Speech 4.1 2B** (`ibm-granite/granite-speech-4.1-2b` · fiel en inglés, WER ~0%) y **Qwen3-ASR 1.7B** (`Qwen/Qwen3-ASR-1.7B` · 52 idiomas incl. japonés/coreano, ID de idioma automático). Ambos generan puntuación·truecasing de forma nativa, así que el troceado por frases funciona tal cual. Comparte la GPU de Apple con el 26B (serializado). ⚠ granite necesita el **arreglo de conv en mlx-audio main** (ver SETUP).
+- El ASR elige entre **dos motores mlx-audio** en el popup (▸ Motor de transcripción). **Granite Speech 4.1 2B** (`ibm-granite/granite-speech-4.1-2b` · fiel en inglés, WER ~0%) y **Qwen3-ASR 1.7B** (`Qwen/Qwen3-ASR-1.7B` · 52 idiomas incl. japonés/coreano, ID de idioma automático). Ambos generan puntuación·truecasing de forma nativa, así que el troceado por frases funciona tal cual. Comparte la GPU de Apple con el traductor (serializado). ⚠ granite necesita el **arreglo de conv en mlx-audio main** (ver SETUP).
 - Un Parakeet de baja latencia solo para inglés es una vía para usuarios avanzados, solo con `LCC_ASR_ENGINE=parakeet` (CPU, en paralelo a la traducción; modelo `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`, `sherpa-onnx==1.13.2`). El selector del popup solo muestra granite/qwen3.
-- Traducción: `mlx-community/gemma-4-26b-a4b-it-4bit` (mlx-lm) — **prompt de calidad** por defecto (expert interpreter·by-meaning·no-translationese + 3 few-shots, coste amortizado por KV-cache → coreano hablado natural en vez de un estilo escrito rígido). Baja latencia con `LCC_TX_PROFILE=fast`. **Idioma destino seleccionable** (KO/EN/JA/ZH/ES/FR/DE), origen autodetectado, se omite cuando destino=origen.
+- Traducción: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — **prompt de calidad** por defecto (expert interpreter·by-meaning·no-translationese + 3 few-shots, coste amortizado por KV-cache → coreano hablado natural en vez de un estilo escrito rígido). Baja latencia con `LCC_TX_PROFILE=fast`. **Idioma destino seleccionable** (KO/EN/JA/ZH/ES/FR/DE), origen autodetectado, se omite cuando destino=origen.
 - RAM ~26GB (pesos) + un poco de KV por chunk. Latencia ~2.9–3.4s por chunk de habla (ASR ~0.7s + traducción ~1.4s + prefill de audio + espera de límite de cláusula).
 - MTP no aporta nada en este hardware, así que no se usa (verificado en MoE·dense·E4B).
 - ⚠️ Requiere Chrome/Edge/Brave genuinos — algunos forks de Chromium (p. ej. ChatGPT Atlas) no implementan `chrome.tabCapture`.
@@ -74,7 +79,7 @@ bash bridge/run_bridge.sh
 - **Depuración de sincronía**: al activarla en el popup, muestra `kind/unit/start/end/due/now/lag/delay/offset/q` bajo el subtítulo y en la consola para verificar que la salida no llega antes del due time.
 - **Caché/prioridad de traducción**: si la vista previa y la final comparten origen, se evita re-traducir, y la final se procesa antes que la vista previa.
 - **Registro de subtítulos**: 📜 (abajo a la derecha) → panel de scrollback / exportación bilingüe `.md`.
-- **Resumen·Preguntas**: el ✨Resumen · cuadro de preguntas del panel — el 26B local resume/responde sobre los subtítulos pasados (en streaming).
+- **Resumen·Preguntas**: el ✨Resumen · cuadro de preguntas del panel — el Gemma local resume/responde sobre los subtítulos pasados (en streaming).
 
 ## Solución de problemas
 - "Bridge desconectado" en el overlay → comprueba que `run_bridge.sh` está corriendo y el puerto 8765.

@@ -24,11 +24,16 @@
 
 全部**本地·免费**。代价是有硬件门槛（要求见下方 [SETUP.md](SETUP.md)）。配置较弱时，翻译模型会按内存自动分级（full/mid/lite）。
 
-**平台（backend）：** 同一套 bridge·同一个扩展运行在两种 runtime 上，用 `LCC_BACKEND` 选择。
-- **`mlx`**（默认，Apple Silicon）：进程内 MLX——转写 Granite/Qwen3，翻译 26B-A4B。→ [SETUP.md](SETUP.md)
-- **`cuda`**（Windows+NVIDIA，WSL2）：OpenAI 兼容 **HTTP**——翻译 llama.cpp（26B GGUF），转写**与 Mac 相同的 granite/qwen3**（transformers，`cuda/asr_server.py`）。弹窗的**转写引擎**切换（英语=granite / 多语种=qwen3）照常生效（按 `model` 字段路由），各引擎还可指向不同服务器。不用 whisper。→ [SETUP-windows.md](SETUP-windows.md)
+## 平台 — 两种 runtime（同等支持）
 
-VAD·句子组装·调度器·number-guard·prompt 构建器为**跨平台共享**（纯函数）。随 runtime 改变的只有 3 个 GPU 函数（转写/翻译/摘要），其边界就是 `bridge/backend_cuda.py`（HTTP）与 server.py 中的 “Backend seam”。
+同一套 bridge·同一个扩展在两种 backend 上都能运行。用 `LCC_BACKEND` 选择适合你机器的那一种。
+
+| Backend | 环境 | 转写(ASR) | 翻译 | 指南 |
+|---|---|---|---|---|
+| **MLX** (`LCC_BACKEND=mlx`) | Apple Silicon | Granite/Qwen3（mlx-audio，进程内） | Gemma-4 · full/mid/lite（mlx-lm） | [SETUP.md](SETUP.md) |
+| **CUDA** (`LCC_BACKEND=cuda`) | Windows + NVIDIA（WSL2） | Granite/Qwen3（transformers，`cuda/asr_server.py`） | llama.cpp · GGUF · full/mid/lite（OpenAI 兼容 HTTP） | [SETUP-windows.md](SETUP-windows.md) |
+
+转写引擎的选择（英语=granite / 多语种=qwen3）两端完全一致（按 `model` 字段路由）——不用 whisper。VAD·句子组装·调度器·number-guard·prompt 构建器为**两种 backend 共享**（纯函数）；随 runtime 改变的只有 3 个 GPU 函数（转写/翻译/摘要），其边界就是 `bridge/backend_cuda.py`（HTTP）与 server.py 中的 “Backend seam”。（代码默认值为 `mlx`。）
 
 ## 架构
 ```
@@ -36,12 +41,12 @@ VAD·句子组装·调度器·number-guard·prompt 构建器为**跨平台共享
                                                         VAD + soft-cut ASR atom
                                                         → Granite / Qwen3-ASR 转写（标点·多语种）
                                                         → unit assembler
-                                                        → 26B-A4B MoE 韩语翻译
+                                                        → Gemma-4 (tier) 韩语翻译
    [content.js 两行覆盖层] ◀──WS(JSON caption)──────────┘
 ```
-- ASR 在弹窗中从**两个 mlx-audio 引擎**里选（▸ 转写引擎）。**Granite Speech 4.1 2B**（`ibm-granite/granite-speech-4.1-2b`·英语忠实，WER 接近 0%）与 **Qwen3-ASR 1.7B**（`Qwen/Qwen3-ASR-1.7B`·含日语/韩语共 52 种语言，自动语种识别）。两者都原生输出标点·truecasing，所以句子切分可直接进行。与 26B 共享同一块 Apple GPU（串行）。⚠ granite 需要 mlx-audio **main 上的 conv 修复**（见 SETUP）。
+- ASR 在弹窗中从**两个 mlx-audio 引擎**里选（▸ 转写引擎）。**Granite Speech 4.1 2B**（`ibm-granite/granite-speech-4.1-2b`·英语忠实，WER 接近 0%）与 **Qwen3-ASR 1.7B**（`Qwen/Qwen3-ASR-1.7B`·含日语/韩语共 52 种语言，自动语种识别）。两者都原生输出标点·truecasing，所以句子切分可直接进行。与翻译模型共享同一块 Apple GPU（串行）。⚠ granite 需要 mlx-audio **main 上的 conv 修复**（见 SETUP）。
 - 仅英语的低延迟 Parakeet 是给高级用户的出口，仅通过 `LCC_ASR_ENGINE=parakeet` 启用（CPU，与翻译并行；模型 `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`，`sherpa-onnx==1.13.2`）。弹窗选择器只暴露 granite/qwen3。
-- 翻译：`mlx-community/gemma-4-26b-a4b-it-4bit`（mlx-lm）——默认 **quality 提示词**（expert interpreter·by-meaning·no-translationese + 3 个 few-shot，靠 KV-cache 摊销开销 → 比书面语更自然的口语）。低延迟用 `LCC_TX_PROFILE=fast`。**目标语言可选**（韩/英/日/中/西/法/德），源语言自动检测，目标=源时跳过。
+- 翻译：`Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)`（mlx-lm）——默认 **quality 提示词**（expert interpreter·by-meaning·no-translationese + 3 个 few-shot，靠 KV-cache 摊销开销 → 比书面语更自然的口语）。低延迟用 `LCC_TX_PROFILE=fast`。**目标语言可选**（韩/英/日/中/西/法/德），源语言自动检测，目标=源时跳过。
 - RAM ~26GB（权重）+ 每个 chunk 少量 KV。延迟 ~2.9–3.4s/语音 chunk（ASR ~0.7s + 翻译 ~1.4s + 音频 prefill + 等待小句边界）。
 - MTP 在此硬件上无意义，故未使用（MoE·dense·E4B 均已验证）。
 - ⚠️ 需正版 Chrome/Edge/Brave——部分 Chromium 分支（如 ChatGPT Atlas）未实现 `chrome.tabCapture`。
@@ -74,7 +79,7 @@ bash bridge/run_bridge.sh
 - **同步调试**：在弹窗开启后，会在字幕下方与控制台显示 `kind/unit/start/end/due/now/lag/delay/offset/q`，用于确认输出是否早于 due time。
 - **翻译缓存/优先级**：若预览与 final 的源相同则避免重复翻译，且 final 翻译先于预览处理。
 - **字幕记录**：右下角 📜 → 回滚面板 / 双语 `.md` 导出。
-- **摘要·提问**：面板的 ✨摘要 · 提问框——本地 26B 对过往字幕进行摘要/问答（流式）。
+- **摘要·提问**：面板的 ✨摘要 · 提问框——本地 Gemma 对过往字幕进行摘要/问答（流式）。
 
 ## 排错
 - 覆盖层显示“bridge 连接断开” → 检查 `run_bridge.sh` 是否在运行、端口 8765。

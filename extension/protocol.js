@@ -22,6 +22,7 @@ const LCC_DEFAULT_SETTINGS = Object.freeze({
   glossary: "",
   syncOffsetMs: 0,
   debugSync: false,
+  uiMode: "simple",
 });
 const LCC_CONTENT_PRESETS = Object.freeze({
   general: Object.freeze({ register: "casual", latencyMode: "aggressive" }),
