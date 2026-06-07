@@ -100,18 +100,31 @@ batch_msgs = s._translate_page_batch_messages([
     {"id": "a", "text": "Share"},
     {"id": "b", "text": "r/SipsTea"},
 ], target="Korean", hint="Reddit")
-ok("page.batch_prompt_json", "valid JSON array" in batch_msgs[0]["content"])
-ok("page.batch_prompt_target_field", "'target'" in batch_msgs[0]["content"])
+ok("page.batch_prompt_markers", "@@n@@" in batch_msgs[0]["content"])
+ok("page.batch_prompt_dom", "DOM replacement" in batch_msgs[0]["content"])
+ok("page.batch_input_marked", batch_msgs[-1]["content"].startswith("@@1@@"))
 ok("page.batch_long_token_cap", s._page_batch_max_tokens([{"id": "long", "text": "x" * 1200}]) > 512)
 check("page.batch_parse", s._parse_page_batch_result(
-    '```json\n[{"id":"a","target":"공유"},{"id":"b","target":"r/SipsTea"}]\n```',
+    "@@1@@\n공유\n\n@@2@@\nr/SipsTea",
+    [{"id": "a", "text": "Share"}, {"id": "b", "text": "r/SipsTea"}],
+), {"a": "공유", "b": "r/SipsTea"})
+check("page.batch_parse_fenced", s._parse_page_batch_result(
+    "```text\n@@1@@\n공유\n\n@@2@@\nr/SipsTea\n```",
     [{"id": "a", "text": "Share"}, {"id": "b", "text": "r/SipsTea"}],
 ), {"a": "공유", "b": "r/SipsTea"})
 try:
-    s._parse_page_batch_result('[{"id":"a","target":"공유"}]', [{"id": "a", "text": "Share"}, {"id": "b", "text": "Log in"}])
-    ok("page.batch_missing_id_rejected", False)
+    s._parse_page_batch_result("@@1@@\n공유", [{"id": "a", "text": "Share"}, {"id": "b", "text": "Log in"}])
+    ok("page.batch_missing_segment_rejected", False)
 except ValueError:
-    ok("page.batch_missing_id_rejected", True)
+    ok("page.batch_missing_segment_rejected", True)
+
+# --- page marker streaming: a segment emits once its NEXT marker appears; the last waits for the flush ---
+seg_items = [{"id": "a", "text": "Share"}, {"id": "b", "text": "Log in"}, {"id": "c", "text": "Reply"}]
+emitted_now, got = set(), []
+s._emit_page_markers("@@1@@\n공유\n\n@@2@@\n로그", seg_items, emitted_now, lambda i, src, tgt: got.append((i, tgt)))
+check("page.stream_first_complete", got, [("a", "공유")])      # segment 2 still growing -> held back
+s._emit_page_markers("@@1@@\n공유\n\n@@2@@\n로그인\n\n@@3@@\n답글", seg_items, emitted_now, lambda i, src, tgt: got.append((i, tgt)))
+check("page.stream_second_complete", got, [("a", "공유"), ("b", "로그인")])   # seg 1 not re-emitted; seg 3 still growing
 
 # --- DOM translation batch normalization: untrusted page items stay bounded before model use ---
 dom_items = s._dom_translate_items({
@@ -176,7 +189,7 @@ def _fake_lm_stream(_model, _tok, feed, max_tokens=None, sampler=None, prompt_ca
     if prompt_cache:
         for layer in prompt_cache:
             layer.offset += len(feed) + 1
-    yield types.SimpleNamespace(text='[{"id":"a","target":"번역"}]')
+    yield types.SimpleNamespace(text="@@1@@\n번역")
 
 try:
     s._reset_page_tx_cache()

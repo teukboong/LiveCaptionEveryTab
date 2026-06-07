@@ -1248,8 +1248,16 @@ def _translate_messages(text, recent_pairs=(), target="Korean", hint="", registe
     return msgs
 
 
-def _page_batch_json(items):
-    return json.dumps([{"id": str(it["id"]), "text": str(it["text"])} for it in items], ensure_ascii=False)
+# Page DOM microbatch wire format: numbered @@n@@ markers, not JSON. A marker costs ~3 tokens vs a JSON
+# object's id-echo + punctuation, and — unlike a JSON array, which only parses once fully closed — markers
+# let the bridge stream each segment back the instant the *next* marker appears (the content script paints
+# it immediately). Re-alignable by number, so a dropped/merged line degrades to a per-segment miss (caller
+# falls back to per-item) instead of corrupting the whole batch.
+_PAGE_MARKER_RE = re.compile(r"@@\s*(\d+)\s*@@")
+
+
+def _page_marker_input(items):
+    return "\n\n".join(f"@@{i + 1}@@\n{str(it['text'])}" for i, it in enumerate(items))
 
 
 def _page_batch_max_tokens(items):
@@ -1259,80 +1267,85 @@ def _page_batch_max_tokens(items):
     return max(PAGE_TX_BATCH_MIN_TOKENS, min(PAGE_TX_BATCH_MAX_TOKENS, estimate))
 
 
-def _page_batch_system(target: str, hint: str = "", glossary_pairs=(), recent_pairs=()) -> str:
+def _page_marker_system(target: str, hint: str = "", glossary_pairs=(), recent_pairs=()) -> str:
     s = (
-        f"Translate visible web-page text into {target} for direct DOM replacement. Input is JSON array "
-        "objects with 'id' and 'text'. Return ONLY a valid JSON array, same order, one object per input, "
-        "with exactly 'id' copied unchanged and 'target' as replacement text. Preserve handles, subreddit/"
-        "community names, URLs, code, IDs, numbers, timestamps, emoji, product names, and already-target "
-        "language text unchanged. Use short native wording for UI labels. No markdown, comments, quotes, "
-        "explanations, or extra keys. "
+        f"Translate visible web-page text into {target} for direct DOM replacement. The input has numbered "
+        "segments — each a marker like @@1@@ on its own line followed by that segment's text. Output the SAME "
+        "@@n@@ markers in the SAME order, each on its own line, immediately followed by ONLY that segment's "
+        f"{target} replacement text. Keep every @@n@@ marker exactly; translate every segment; never merge, "
+        "drop, reorder, or add segments. Preserve handles, subreddit/community names, URLs, code, IDs, numbers, "
+        "timestamps, emoji, product names, and already-target-language text unchanged. Use short native wording "
+        "for UI labels. Output only the @@n@@ markers and their translations — no JSON, markdown, comments, "
+        "quotes, or explanations. "
     )
     s += _glossary_clause(glossary_pairs)
     if hint:
         s += f"Page context/terms: {hint}. "
     if recent_pairs:
-        recent = [{"source": src, "target": tgt} for src, tgt in list(recent_pairs)[-4:]]
-        s += "Recent page renderings for consistency only: " + json.dumps(recent, ensure_ascii=False) + ". "
+        recent = "; ".join(f"'{src}'->'{tgt}'" for src, tgt in list(recent_pairs)[-4:])
+        s += "Recent page renderings for consistency only: " + recent + ". "
     return s
 
 
 def _translate_page_batch_messages(items, recent_pairs=(), target="Korean", hint="", register="casual",
                                    glossary_pairs=()):
-    """Prompt for page DOM microbatch translation. The output is strict JSON so the content script can map
-    every replacement back to its original text node; invalid/missing ids fall back to per-item translation."""
-    msgs = [{"role": "system", "content": _page_batch_system(target, hint, glossary_pairs, recent_pairs)}]
+    """Prompt for page DOM microbatch translation. Output is @@n@@-marked segments so the content script can
+    map every replacement back to its text node and the bridge can stream segments as they complete; a missing
+    marker falls back to per-item translation."""
+    msgs = [{"role": "system", "content": _page_marker_system(target, hint, glossary_pairs, recent_pairs)}]
     src_lang = _src_lang(" ".join(str(it.get("text", "")) for it in items))
     few = _fewshot(target, register, src_lang, "page")[:min(PAGE_TX_FEWSHOT_MAX, 4)]
     if few:
-        ex_in = [{"id": f"ex{i+1}", "text": src} for i, (src, _) in enumerate(few)]
-        ex_out = [{"id": f"ex{i+1}", "target": tgt} for i, (_, tgt) in enumerate(few)]
-        msgs += [
-            {"role": "user", "content": json.dumps(ex_in, ensure_ascii=False)},
-            {"role": "assistant", "content": json.dumps(ex_out, ensure_ascii=False)},
-        ]
-    msgs.append({"role": "user", "content": _page_batch_json(items)})
+        ex_in = _page_marker_input([{"text": src} for src, _ in few])
+        ex_out = "\n\n".join(f"@@{i + 1}@@\n{tgt}" for i, (_, tgt) in enumerate(few))
+        msgs += [{"role": "user", "content": ex_in}, {"role": "assistant", "content": ex_out}]
+    msgs.append({"role": "user", "content": _page_marker_input(items)})
     return msgs
 
 
-def _extract_json_array(text: str):
-    raw = _clean(text or "").strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.I).strip()
-        raw = re.sub(r"\s*```$", "", raw).strip()
-    try:
-        return json.loads(raw)
-    except Exception:
-        pass
-    start, end = raw.find("["), raw.rfind("]")
-    if start >= 0 and end > start:
-        return json.loads(raw[start:end + 1])
-    raise ValueError("page batch response did not contain a JSON array")
+def _page_marker_map(text: str):
+    """1-based segment index -> raw segment text, parsed from a marker-formatted model response."""
+    raw = text or ""
+    marks = list(_PAGE_MARKER_RE.finditer(raw))
+    out = {}
+    for j, m in enumerate(marks):
+        idx = int(m.group(1))
+        if idx in out:                     # first occurrence wins; ignore accidental repeats
+            continue
+        end = marks[j + 1].start() if j + 1 < len(marks) else len(raw)
+        out[idx] = raw[m.end():end]
+    return out
+
+
+def _emit_page_markers(text: str, items, emitted: set, on_segment):
+    """Stream helper: emit each COMPLETE segment (one whose following marker has already appeared) exactly
+    once. The last marker's segment is still being generated, so it is left for the final flush."""
+    marks = list(_PAGE_MARKER_RE.finditer(text or ""))
+    for j in range(len(marks) - 1):
+        idx = int(marks[j].group(1))
+        if idx in emitted or not (1 <= idx <= len(items)):
+            continue
+        seg = _clean((text or "")[marks[j].end():marks[j + 1].start()])
+        emitted.add(idx)
+        it = items[idx - 1]
+        on_segment(str(it["id"]), str(it["text"]), seg)
 
 
 def _parse_page_batch_result(text: str, items):
-    expected = [str(it["id"]) for it in items]
-    expected_set = set(expected)
-    data = _extract_json_array(text)
-    if isinstance(data, dict) and isinstance(data.get("items"), list):
-        data = data["items"]
-    if not isinstance(data, list):
-        raise ValueError("page batch response root was not a list")
-    out = {}
-    for row in data:
-        if not isinstance(row, dict):
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json|text)?\s*", "", raw, flags=re.I).strip()
+        raw = re.sub(r"\s*```$", "", raw).strip()
+    seg = _page_marker_map(raw)
+    out, missing = {}, []
+    for i, it in enumerate(items):
+        t = seg.get(i + 1)
+        if t is None:
+            missing.append(str(it["id"]))
             continue
-        item_id = str(row.get("id", ""))[:80]
-        target = row.get("target")
-        if target is None:
-            target = row.get("translation")
-        if target is None:
-            target = row.get("text")
-        if item_id in expected_set and isinstance(target, str):
-            out[item_id] = _clean(target)
-    missing = [item_id for item_id in expected if item_id not in out]
+        out[str(it["id"])] = _clean(t)
     if missing:
-        raise ValueError(f"page batch response missing ids: {', '.join(missing[:4])}")
+        raise ValueError(f"page batch response missing segments: {', '.join(missing[:4])}")
     return out
 
 
@@ -1547,10 +1560,12 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
 
 
 def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hint: str = "",
-                              register: str = "casual", glossary_pairs=(), max_tokens=None, kv_reuse=None):
+                              register: str = "casual", glossary_pairs=(), max_tokens=None, kv_reuse=None,
+                              on_segment=None):
     """Translate a DOM batch in one model call. Uses a page-only prefix KV cache so page DOM work never
-    disturbs the live-caption translator cache. Raises on invalid JSON so callers can fall back to per-item
-    translation."""
+    disturbs the live-caption translator cache. Output is @@n@@-marked; when on_segment is given each segment
+    is streamed back the instant its following marker appears. Returns {id: target}; raises on a missing
+    segment so callers can fall back to per-item translation."""
     global _page_tx_cache, _page_tx_cache_ids, _TX_KV_WINDOW
     clean_items = [
         {"id": str(it.get("id", ""))[:80], "text": str(it.get("text", "")).strip()}
@@ -1561,9 +1576,20 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
         return {}
     msgs = _translate_page_batch_messages(clean_items, recent_pairs, target, hint, register, glossary_pairs)
     gen_max = max(1, int(max_tokens or _page_batch_max_tokens(clean_items)))
+    emitted = set()
+
+    def _finish(full_text):
+        result = _parse_page_batch_result(full_text, clean_items)   # raises on a missing segment
+        if on_segment is not None:
+            for i, it in enumerate(clean_items):                    # deliver the trailing/last segment too
+                if (i + 1) not in emitted and str(it["id"]) in result:
+                    emitted.add(i + 1)
+                    on_segment(str(it["id"]), str(it["text"]), result[str(it["id"])])
+        return result
+
     if _LM_IS_VLM:
         raw = _vlm_generate_text(msgs, gen_max, None)
-        return _parse_page_batch_result(raw, clean_items)
+        return _finish(raw)
     mx.set_default_device(mx.gpu)
     try:
         prompt = lm_tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False)
@@ -1595,13 +1621,21 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
         cache = make_prompt_cache(lm_model, max_kv_size=max(2048, min(_TX_KV_MAX, len(prompt) + gen_max + _TX_WINDOW_MARGIN)))
         feed = prompt
     out = []
+    since = 0
     try:
         for r in lm_stream(lm_model, lm_tok, feed, max_tokens=gen_max, sampler=_sampler, prompt_cache=cache):
             out.append(r.text)
+            if on_segment is not None:
+                since += 1
+                if since >= 6:                                  # stream completed segments without per-token regex cost
+                    since = 0
+                    _emit_page_markers("".join(out), clean_items, emitted, on_segment)
     except Exception:
         if reuse:
             _reset_page_tx_cache()
         raise
+    if on_segment is not None:
+        _emit_page_markers("".join(out), clean_items, emitted, on_segment)
     if reuse and _page_tx_cache is not None:
         actual = _tx_cache_offset(_page_tx_cache)
         if actual is None:
@@ -1610,14 +1644,15 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
             _reset_page_tx_cache()
             print(f"[pagekv] invariant breach: offset {actual} < prompt {len(prompt)} -> fresh retry", flush=True)
             return translate_page_batch_once(
-                clean_items, recent_pairs, target, hint, register, glossary_pairs, max_tokens=max_tokens, kv_reuse=False,
+                clean_items, recent_pairs, target, hint, register, glossary_pairs,
+                max_tokens=max_tokens, kv_reuse=False, on_segment=on_segment,
             )
         elif actual > len(prompt):
             if _page_tx_trim_or_reset(actual - len(prompt), len(prompt)):
                 _page_tx_cache_ids = list(prompt)
         else:
             _page_tx_cache_ids = list(prompt)
-    return _parse_page_batch_result("".join(out), clean_items)
+    return _finish("".join(out))
 
 
 def run_ask(mode: str, transcript_text: str, question: str = "", target: str = "Korean", on_partial=None):
@@ -2443,51 +2478,76 @@ async def handle(ws):
                         if not items:
                             await send_json({"type": "dom_translate_done", "request_id": request_id, "count": 0})
                             continue
-                        sent = 0
                         page_glossary = page_glossary_pairs if page_glossary_pairs is not None else glossary_pairs
                         page_hint = page_context_hint or context_hint
                         print(f"[dom-tx] request={request_id} items={len(items)}", flush=True)
-                        batch_done = False
+                        sent = [0]
+                        sent_ids = set()
                         deferred = False
+
+                        async def _send_seg(item_id, source, target):
+                            out = _clean(target)
+                            if out and out != source:
+                                dom_recent_pairs.append((source[:160], out[:160]))
+                            sent[0] += 1
+                            await send_json({
+                                "type": "dom_translate_result", "request_id": request_id,
+                                "item_id": item_id, "source": source, "target": out,
+                            })
+
                         if len(items) > 1:
                             if not await wait_aux_translation_slot(1200):
                                 await send_json({"type": "dom_translate_busy", "request_id": request_id, "retry_ms": 1800})
                                 print("[dom-tx defer] live caption backlog has priority", flush=True)
                                 deferred = True
                             else:
-                                try:
-                                    batch_t0 = time.perf_counter()
-                                    page_batch_tx = functools.partial(
-                                        translate_page_batch_once,
-                                        [dict(item) for item in items],
-                                        list(dom_recent_pairs),
-                                        target=target_lang,
-                                        hint=page_hint,
-                                        register=page_register,
-                                        glossary_pairs=list(page_glossary),
-                                    )
-                                    async with mlx_lock:
-                                        batch_out = await loop.run_in_executor(_mlx_pool, page_batch_tx)
-                                    for item in items:
-                                        source = item["text"]
-                                        out = _clean(batch_out.get(item["id"], ""))
-                                        sent += 1
-                                        if out and out != source:
-                                            dom_recent_pairs.append((source[:160], out[:160]))
-                                        await send_json({
-                                            "type": "dom_translate_result",
-                                            "request_id": request_id,
-                                            "item_id": item["id"],
-                                            "source": source,
-                                            "target": out,
-                                        })
-                                    batch_done = True
-                                    batch_ms = int((time.perf_counter() - batch_t0) * 1000)
-                                    print(f"[dom-tx batch ok] request={request_id} items={len(items)} ms={batch_ms}", flush=True)
-                                except Exception as e:
-                                    print(f"[dom-tx batch fallback] {e}", flush=True)
-                        if not batch_done and not deferred:
-                            for item in items:
+                                seg_q = asyncio.Queue()
+                                _SEG_DONE = object()
+
+                                def _on_segment(item_id, source, target, _q=seg_q):
+                                    loop.call_soon_threadsafe(_q.put_nowait, (item_id, source, target))
+
+                                def _worker(_q=seg_q, _done=_SEG_DONE):
+                                    try:
+                                        return translate_page_batch_once(
+                                            [dict(item) for item in items],
+                                            list(dom_recent_pairs),
+                                            target=target_lang, hint=page_hint, register=page_register,
+                                            glossary_pairs=list(page_glossary), on_segment=_on_segment,
+                                        )
+                                    finally:
+                                        loop.call_soon_threadsafe(_q.put_nowait, _done)
+
+                                batch_t0 = time.perf_counter()
+                                batch_out = {}
+                                async with mlx_lock:                 # GPU busy for the whole batch; segments stream out as they land
+                                    fut = loop.run_in_executor(_mlx_pool, _worker)
+                                    while True:
+                                        seg = await seg_q.get()
+                                        if seg is _SEG_DONE:
+                                            break
+                                        seg_id, seg_src, seg_tgt = seg
+                                        if seg_id in sent_ids:
+                                            continue
+                                        sent_ids.add(seg_id)
+                                        await _send_seg(seg_id, seg_src, seg_tgt)
+                                    try:
+                                        batch_out = await fut
+                                        print(f"[dom-tx batch ok] request={request_id} items={len(items)} "
+                                              f"sent={len(sent_ids)} ms={int((time.perf_counter() - batch_t0) * 1000)}", flush=True)
+                                    except Exception as e:
+                                        batch_out = {}
+                                        print(f"[dom-tx batch fallback] {e}", flush=True)
+                                for item in items:                   # parsed but not streamed (VLM dict / partial stream)
+                                    if item["id"] in sent_ids:
+                                        continue
+                                    if item["id"] in batch_out:
+                                        sent_ids.add(item["id"])
+                                        await _send_seg(item["id"], item["text"], batch_out[item["id"]])
+                        if not deferred:
+                            for item in items:                       # per-item fallback: single item, or batch misses
+                                if item["id"] in sent_ids:
+                                    continue
                                 if not await wait_aux_translation_slot(1200):
                                     await send_json({"type": "dom_translate_busy", "request_id": request_id, "retry_ms": 1800})
                                     print("[dom-tx defer] live caption backlog has priority", flush=True)
@@ -2495,39 +2555,21 @@ async def handle(ws):
                                 source = item["text"]
                                 try:
                                     page_tx = functools.partial(
-                                        translate_once,
-                                        source,
-                                        list(dom_recent_pairs),
-                                        target=target_lang,
-                                        hint=page_hint,
-                                        register=page_register,
-                                        glossary_pairs=list(page_glossary),
-                                        kv_reuse=False,
-                                        profile="page",
+                                        translate_once, source, list(dom_recent_pairs),
+                                        target=target_lang, hint=page_hint, register=page_register,
+                                        glossary_pairs=list(page_glossary), kv_reuse=False, profile="page",
                                     )
                                     async with mlx_lock:
                                         out = await loop.run_in_executor(_mlx_pool, page_tx)
-                                    out = _clean(out)
-                                    sent += 1
-                                    if out and out != source:
-                                        dom_recent_pairs.append((source[:160], out[:160]))
-                                    await send_json({
-                                        "type": "dom_translate_result",
-                                        "request_id": request_id,
-                                        "item_id": item["id"],
-                                        "source": source,
-                                        "target": out,
-                                    })
+                                    sent_ids.add(item["id"])
+                                    await _send_seg(item["id"], source, out)
                                 except Exception as e:
                                     print(f"[dom-tx err] {e}", flush=True)
                                     await send_json({
-                                        "type": "dom_translate_err",
-                                        "request_id": request_id,
-                                        "item_id": item["id"],
-                                        "source": source,
-                                        "text": str(e)[:240],
+                                        "type": "dom_translate_err", "request_id": request_id,
+                                        "item_id": item["id"], "source": source, "text": str(e)[:240],
                                     })
-                        await send_json({"type": "dom_translate_done", "request_id": request_id, "count": sent})
+                        await send_json({"type": "dom_translate_done", "request_id": request_id, "count": sent[0]})
                     elif d.get("type") == "warm":          # on-demand model warm-up (popup button)
                         t0 = time.perf_counter()
                         if not await wait_aux_translation_slot(1200):

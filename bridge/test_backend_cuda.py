@@ -110,8 +110,8 @@ captured = {}
 def _fake_chat(messages, max_tokens, stream_every=4, on_update=None, extra_body=None):
     captured["messages"] = messages
     captured["max_tokens"] = max_tokens
-    if "valid JSON array" in messages[0]["content"]:
-        return '[{"id":"a","target":"공유"},{"id":"b","target":"r/SipsTea"}]'
+    if "@@n@@" in messages[0]["content"]:
+        return "@@1@@\n공유\n\n@@2@@\nr/SipsTea"
     if on_update is not None:
         on_update("부분")
     return "최종"

@@ -196,9 +196,10 @@ def translate_once(text, recent_pairs=(), target="Korean", hint="", register="ca
 
 
 def translate_page_batch_once(items, recent_pairs=(), target="Korean", hint="", register="casual",
-                              glossary_pairs=(), max_tokens=None, kv_reuse=None):
-    """DOM page microbatch translation. Same strict JSON prompt/parser as the MLX path. kv_reuse is ignored:
-    remote CUDA text servers handle prefix caching on their side."""
+                              glossary_pairs=(), max_tokens=None, kv_reuse=None, on_segment=None):
+    """DOM page microbatch translation. Same @@n@@-marker prompt/parser as the MLX path. kv_reuse is ignored
+    (remote CUDA text servers handle prefix caching). When on_segment is given, segments stream back via the
+    chat stream's incremental marker parse just like the MLX path."""
     del kv_reuse
     import server as _srv
     clean_items = [
@@ -209,8 +210,19 @@ def translate_page_batch_once(items, recent_pairs=(), target="Korean", hint="", 
     if not clean_items:
         return {}
     msgs = _srv._translate_page_batch_messages(clean_items, recent_pairs, target, hint, register, glossary_pairs)
-    raw = _chat(msgs, int(max_tokens or _srv._page_batch_max_tokens(clean_items)), 4, None)
-    return _srv._parse_page_batch_result(raw, clean_items)
+    emitted = set()
+    on_update = None
+    if on_segment is not None:
+        def on_update(partial):
+            _srv._emit_page_markers(partial, clean_items, emitted, on_segment)
+    raw = _chat(msgs, int(max_tokens or _srv._page_batch_max_tokens(clean_items)), 6, on_update)
+    result = _srv._parse_page_batch_result(raw, clean_items)
+    if on_segment is not None:
+        for i, it in enumerate(clean_items):
+            if (i + 1) not in emitted and str(it["id"]) in result:
+                emitted.add(i + 1)
+                on_segment(str(it["id"]), str(it["text"]), result[str(it["id"])])
+    return result
 
 
 def run_ask(mode, transcript_text, question="", target="Korean", on_partial=None):

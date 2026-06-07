@@ -455,7 +455,7 @@ function lccHandleBridgeMessage(msg) {
   } else if (msg.type === "dom_translate_busy") {
     lccPageTranslateRetry(msg);
   } else if (msg.type === "dom_translate_err") {
-    lccPageTranslateDone(msg);
+    lccPageTranslateDrop(msg);
   }
 }
 
@@ -541,14 +541,16 @@ let lccPageTranslateObserver = null;
 let lccPageTranslateScrollHandler = null;
 let lccPageTranslateFlushTimer = null;
 let lccPageTranslateScanTimer = null;
-let lccPageTranslateNodeSeq = 0;
 let lccPageTranslateReqSeq = 0;
-const lccPageTranslateQueue = [];
-const lccPageTranslateQueuedIds = new Set();
-const lccPageTranslateNodes = new Set();
-const lccPageTranslateById = new Map();
-const lccPageTranslateState = new WeakMap();
-const lccPageTranslateRequests = new Map();
+// Work is keyed by normalized source text, not by node: identical strings (the hundreds of repeated
+// "Reply"/"Share"/"5h ago" on a real page) collapse to ONE model call and fan out to every node sharing
+// the text. Two queues give viewport-first ordering — visible nodes translate before off-screen ones.
+const lccPageHotQueue = [];                  // sourceKeys whose nodes are in the viewport now (drained first, reading order)
+const lccPageColdQueue = [];                 // sourceKeys allowed but off-screen (drained only when hot is empty)
+const lccPageWork = new Map();               // sourceKey -> { text, nodes:Set<node>, status:"queued"|"pending", hot:boolean }
+const lccPageTranslateNodes = new Set();     // every node we hold state for (restore on stop)
+const lccPageTranslateState = new WeakMap(); // node -> per-node DOM state
+const lccPageTranslateRequests = new Map();  // requestId -> { keys:[sourceKey], timer }
 const lccPageTranslateStats = { resultSeen: 0, applied: 0, dropNoNode: 0, dropSource: 0, dropChanged: 0, dropEmpty: 0 };
 const LCC_PAGE_CACHE_KEY = "lcc-page-translation-cache-v1";
 const LCC_PAGE_CACHE_MAX_PAGES = 12;
@@ -675,6 +677,35 @@ function lccPageNodeVisible(parent) {
   const rect = parent.getBoundingClientRect();
   return rect.width > 0 && rect.height > 0 && rect.bottom >= -200 && rect.top <= window.innerHeight + 600;
 }
+function lccPageInViewport(parent) {
+  if (!parent) return false;
+  const rect = parent.getBoundingClientRect();
+  const h = window.innerHeight || document.documentElement.clientHeight || 0;
+  return rect.bottom >= 0 && rect.top <= h && rect.width > 0 && rect.height > 0;
+}
+// Distinctive-script targets let us skip nodes already written in the target language without a model
+// round-trip. Latin-script targets (English/Spanish/French/...) can't be told apart by script alone, so
+// they map to null and fall through to the model (which returns already-target text unchanged).
+const LCC_PAGE_TARGET_SCRIPT = Object.freeze({
+  Korean: /[가-힣ᄀ-ᇿ㄰-㆏]/g,
+  Japanese: /[぀-ヿ一-鿿]/g,
+  Chinese: /[一-鿿]/g,
+  Russian: /[Ѐ-ӿ]/g, Ukrainian: /[Ѐ-ӿ]/g, Bulgarian: /[Ѐ-ӿ]/g, Serbian: /[Ѐ-ӿ]/g,
+  Greek: /[Ͱ-Ͽ]/g,
+  Arabic: /[؀-ۿ]/g, Persian: /[؀-ۿ]/g, Urdu: /[؀-ۿ]/g,
+  Hebrew: /[֐-׿]/g,
+  Thai: /[฀-๿]/g,
+  Hindi: /[ऀ-ॿ]/g, Bengali: /[ঀ-৿]/g, Tamil: /[஀-௿]/g, Telugu: /[ఀ-౿]/g,
+});
+function lccPageAlreadyTarget(core) {
+  const re = LCC_PAGE_TARGET_SCRIPT[lccPageTranslateSettings.targetLang];
+  if (!re) return false;
+  let letters;
+  try { letters = (core.match(/\p{L}/gu) || []).length; }
+  catch (_) { letters = (core.match(/[A-Za-zÀ-]/g) || []).length; }
+  if (!letters) return false;
+  return (core.match(re) || []).length / letters >= 0.6;
+}
 function lccPageNodeAllowed(node) {
   if (!lccPageTranslateOn || !LCC_IS_TOP || !node || node.nodeType !== Node.TEXT_NODE) return false;
   const parent = node.parentElement;
@@ -688,17 +719,25 @@ function lccPageNodeAllowed(node) {
   if (core.length < minChars || core.length > maxChars) return false;
   if (!lccPageHasLetters(core)) return false;
   if (/^[\d\s.,:%()+\-–—/\\]+$/.test(core)) return false;
+  if (lccPageAlreadyTarget(core)) return false;     // already in a distinctive-script target -> no round-trip
   return true;
 }
 function lccPageStateFor(node) {
   let state = lccPageTranslateState.get(node);
   if (!state) {
-    state = { id: "pt" + (++lccPageTranslateNodeSeq), pending: false, source: "", originalFull: "" };
+    state = { pending: false, source: "", originalFull: "" };
     lccPageTranslateState.set(node, state);
-    lccPageTranslateById.set(state.id, node);
     lccPageTranslateNodes.add(node);
   }
   return state;
+}
+function lccPagePruneWork(work) {
+  // Keep only nodes still in the DOM holding the exact source we queued (untranslated, unchanged).
+  for (const n of [...work.nodes]) {
+    const st = lccPageTranslateState.get(n);
+    if (!n.isConnected || !st || n.nodeValue !== st.expectedFull) work.nodes.delete(n);
+  }
+  return work.nodes.size > 0;
 }
 function lccPageApplyToNode(node, state, source, target, expectedFull, pre, post, originalFull) {
   state.source = source;
@@ -726,16 +765,26 @@ function lccPageQueueNode(node) {
     lccPageTranslateStats.applied += 1;
     return false;
   }
-  if (state.pending && state.source === parts.core) return false;
-  if (lccPageTranslateQueuedIds.has(state.id) && state.source === parts.core) return false;
   state.source = parts.core;
   state.pre = parts.pre;
   state.post = parts.post;
   state.expectedFull = expectedFull;
   state.originalFull = sourceFull;
   state.pending = false;
-  lccPageTranslateQueuedIds.add(state.id);
-  lccPageTranslateQueue.push({ id: state.id, text: parts.core });
+  const key = lccPageSourceKey(parts.core);
+  const hot = lccPageInViewport(node.parentElement);
+  let work = lccPageWork.get(key);
+  if (work) {
+    work.nodes.add(node);                 // another node with the same text -> rides the one in-flight call
+    if (hot && !work.hot && work.status === "queued") {   // scrolled into view -> jump to the hot queue
+      work.hot = true;
+      lccPageHotQueue.push(key);
+    }
+    return false;
+  }
+  work = { text: parts.core, nodes: new Set([node]), status: "queued", hot };
+  lccPageWork.set(key, work);
+  (hot ? lccPageHotQueue : lccPageColdQueue).push(key);
   lccPageScheduleFlush();
   return true;
 }
@@ -774,41 +823,46 @@ function lccPageScheduleFlush(ms) {
 }
 function lccPageFlush() {
   lccPageTranslateFlushTimer = null;
-  if (!lccPageTranslateOn || !lccPageTranslateQueue.length) return;
+  if (!lccPageTranslateOn) return;
   const policy = lccPageTranslatePolicy();
   if (lccPageTranslateRequests.size >= policy.maxInflight) return;
   const items = [];
   let chars = 0;
-  while (lccPageTranslateQueue.length && items.length < policy.batchSize) {
-    const item = lccPageTranslateQueue.shift();
-    lccPageTranslateQueuedIds.delete(item.id);
-    const node = lccPageTranslateById.get(item.id);
-    const state = node && lccPageTranslateState.get(node);
-    if (!node || !state || !node.isConnected) continue;
-    if (node.nodeValue !== state.expectedFull || (state.translatedFull && node.nodeValue === state.translatedFull)) continue;
-    if (chars + item.text.length > policy.batchChars && items.length) {
-      lccPageTranslateQueue.unshift(item);
-      lccPageTranslateQueuedIds.add(item.id);
-      break;
+  // Drain hot (in-viewport, reading order) before cold. Both arrays may hold stale keys (already batched, or
+  // promoted hot->cold dupes) — those are skipped lazily. Returns false when the char budget stops the batch.
+  const pull = (queue, wantHot) => {
+    while (queue.length && items.length < policy.batchSize) {
+      const key = queue[0];
+      const work = lccPageWork.get(key);
+      if (!work || work.status !== "queued" || work.hot !== wantHot) { queue.shift(); continue; }
+      if (!lccPagePruneWork(work)) { queue.shift(); lccPageWork.delete(key); continue; }
+      if (chars + work.text.length > policy.batchChars && items.length) return false;
+      queue.shift();
+      work.status = "pending";
+      for (const n of work.nodes) { const st = lccPageTranslateState.get(n); if (st) st.pending = true; }
+      items.push({ id: key, text: work.text });
+      chars += work.text.length;
     }
-    state.pending = true;
-    state.source = item.text;
-    items.push(item);
-    chars += item.text.length;
-  }
+    return true;
+  };
+  if (pull(lccPageHotQueue, true)) pull(lccPageColdQueue, false);
   if (items.length) {
     const requestId = "ptr" + (++lccPageTranslateReqSeq);
+    const keys = items.map((it) => it.id);
     const timer = setTimeout(() => lccPageTranslateRetry({ request_id: requestId, retry_ms: 500 }), 30000);
-    lccPageTranslateRequests.set(requestId, { items, timer });
+    lccPageTranslateRequests.set(requestId, { keys, timer });
     try { chrome.runtime.sendMessage({ type: "page-translate-batch", requestId, items }); } catch (_) {}
   }
-  if (lccPageTranslateQueue.length && lccPageTranslateRequests.size < policy.maxInflight) lccPageScheduleFlush(Math.max(160, policy.flushMs * 2));
+  if ((lccPageHotQueue.length || lccPageColdQueue.length) && lccPageTranslateRequests.size < policy.maxInflight) {
+    lccPageScheduleFlush(Math.max(160, policy.flushMs * 2));
+  }
 }
 function lccPageClearTransient(restore) {
   if (lccPageTranslateFlushTimer) { clearTimeout(lccPageTranslateFlushTimer); lccPageTranslateFlushTimer = null; }
   if (lccPageTranslateScanTimer) { clearTimeout(lccPageTranslateScanTimer); lccPageTranslateScanTimer = null; }
-  lccPageTranslateQueue.length = 0;
-  lccPageTranslateQueuedIds.clear();
+  lccPageHotQueue.length = 0;
+  lccPageColdQueue.length = 0;
+  lccPageWork.clear();
   for (const req of lccPageTranslateRequests.values()) {
     if (req && req.timer) clearTimeout(req.timer);
   }
@@ -825,8 +879,6 @@ function lccPageClearTransient(restore) {
     for (const node of lccPageTranslateNodes) lccPageTranslateState.delete(node);
   }
   lccPageTranslateNodes.clear();
-  lccPageTranslateById.clear();
-  lccPageTranslateNodeSeq = 0;
   lccPageTranslateReqSeq = 0;
 }
 function lccPageNotifyReady() {
@@ -908,51 +960,62 @@ function lccPageTranslateStop(restore) {
 function lccPageTranslateApply(msg) {
   if (!lccPageTranslateOn) return;
   lccPageTranslateStats.resultSeen += 1;
-  const node = lccPageTranslateById.get(String(msg.item_id || ""));
-  const state = node && lccPageTranslateState.get(node);
-  if (!node || !state || !node.isConnected) { lccPageTranslateStats.dropNoNode += 1; return; }
+  const key = String(msg.item_id || "");
   const source = String(msg.source || "");
   const target = String(msg.target || "").trim();
-  state.pending = false;
-  if (!target) { lccPageTranslateStats.dropEmpty += 1; return; }
-  if (source !== state.source) { lccPageTranslateStats.dropSource += 1; return; }
-  const currentParts = lccPageTextParts(node.nodeValue);
-  if (node.nodeValue !== state.expectedFull && currentParts.core !== source) {
-    lccPageTranslateStats.dropChanged += 1;
+  const work = lccPageWork.get(key);
+  const nodes = work ? work.nodes : null;
+  if (!nodes || !nodes.size) { lccPageTranslateStats.dropNoNode += 1; if (work) lccPageWork.delete(key); return; }
+  if (!target) {
+    lccPageTranslateStats.dropEmpty += 1;
+    for (const n of nodes) { const st = lccPageTranslateState.get(n); if (st) st.pending = false; }
+    lccPageWork.delete(key);
     return;
   }
-  const pre = node.nodeValue === state.expectedFull ? (state.pre || "") : currentParts.pre;
-  const post = node.nodeValue === state.expectedFull ? (state.post || "") : currentParts.post;
-  lccPageApplyToNode(node, state, source, target, node.nodeValue, pre, post);
+  let applied = 0;
+  for (const node of nodes) {                     // one result paints every node that shared the source text
+    const state = lccPageTranslateState.get(node);
+    if (!node || !state || !node.isConnected) { lccPageTranslateStats.dropNoNode += 1; continue; }
+    if (state.source !== source) { lccPageTranslateStats.dropSource += 1; continue; }
+    const currentParts = lccPageTextParts(node.nodeValue);
+    if (node.nodeValue !== state.expectedFull && currentParts.core !== source) { lccPageTranslateStats.dropChanged += 1; continue; }
+    const pre = node.nodeValue === state.expectedFull ? (state.pre || "") : currentParts.pre;
+    const post = node.nodeValue === state.expectedFull ? (state.post || "") : currentParts.post;
+    lccPageApplyToNode(node, state, source, target, node.nodeValue, pre, post);
+    applied += 1;
+  }
   lccPageRememberCache(source, target);
-  lccPageTranslateStats.applied += 1;
+  lccPageTranslateStats.applied += applied;
+  lccPageWork.delete(key);
 }
-function lccPageTranslateDone(msg) {
+function lccPageTranslateDrop(msg) {            // dom_translate_err for one item -> give up on it (no requeue)
+  const key = String(msg.item_id || "");
+  const work = lccPageWork.get(key);
+  if (!work) return;
+  for (const n of work.nodes) { const st = lccPageTranslateState.get(n); if (st) st.pending = false; }
+  lccPageWork.delete(key);
+}
+function lccPageRequeueKey(key) {
+  const work = lccPageWork.get(key);
+  if (!work || work.status !== "pending") return;
+  if (!lccPagePruneWork(work)) { lccPageWork.delete(key); return; }
+  work.status = "queued";
+  (work.hot ? lccPageHotQueue : lccPageColdQueue).push(key);
+}
+function lccPageTranslateDone(msg) {            // batch finished; any still-pending key got no result -> requeue
   const requestId = String(msg.request_id || "");
   const req = lccPageTranslateRequests.get(requestId);
-  const items = req && req.items || [];
   if (req && req.timer) clearTimeout(req.timer);
-  for (const item of items) {
-    const node = lccPageTranslateById.get(item.id);
-    const state = node && lccPageTranslateState.get(node);
-    if (state && state.source === item.text) state.pending = false;
-  }
+  if (req) for (const key of req.keys) lccPageRequeueKey(key);
   lccPageTranslateRequests.delete(requestId);
-  if (lccPageTranslateQueue.length) lccPageScheduleFlush(120);
+  if (lccPageHotQueue.length || lccPageColdQueue.length) lccPageScheduleFlush(120);
 }
-function lccPageTranslateRetry(msg) {
+function lccPageTranslateRetry(msg) {           // busy/timeout -> requeue the whole request with backoff
   const requestId = String(msg.request_id || "");
   const req = lccPageTranslateRequests.get(requestId);
-  const items = req && req.items || [];
   if (req && req.timer) clearTimeout(req.timer);
   lccPageTranslateRequests.delete(requestId);
-  for (const item of items) {
-    const node = lccPageTranslateById.get(item.id);
-    const state = node && lccPageTranslateState.get(node);
-    if (!node || !state) continue;
-    state.pending = false;
-    if (node.nodeValue === state.expectedFull) lccPageQueueNode(node);
-  }
+  if (req) for (const key of req.keys) lccPageRequeueKey(key);
   lccPageScheduleFlush(Math.max(500, Math.min(5000, Number(msg.retry_ms) || 1600)));
 }
 
