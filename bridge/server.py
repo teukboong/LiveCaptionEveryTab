@@ -487,6 +487,9 @@ _active_ws = None
 _TX_KVREUSE = os.environ.get("LCC_TX_KVREUSE", "1") != "0"   # reuse the translator static-prefix KV across calls
 _tx_cache = None            # persistent prompt cache for translate_once (single _mlx_pool worker -> no race)
 _tx_cache_ids = []          # token ids currently resident in _tx_cache
+_PAGE_TX_KVREUSE = os.environ.get("LCC_PAGE_TX_KVREUSE", "1") != "0"   # separate page-DOM prefix KV; never shares caption cache
+_page_tx_cache = None       # persistent prompt cache for translate_page_batch_once (same single _mlx_pool worker)
+_page_tx_cache_ids = []     # token ids currently resident in _page_tx_cache
 _TX_KV_MAX = int(os.environ.get("LCC_TX_KV_MAX_TOKENS", "4096"))   # cap reuse to a bounded prompt window
 _TX_KV_WINDOW = None        # min RotatingKVCache sliding window (Gemma 4); reuse must stay inside it (lazy)
 _TX_GEN_MAX = max(1, int(os.environ.get("LCC_TX_GEN_MAX_TOKENS", "64")))   # caption translation cap; ask/summary uses its own chat cap
@@ -1353,6 +1356,10 @@ def _reset_tx_cache():
     global _tx_cache, _tx_cache_ids
     _tx_cache, _tx_cache_ids = None, []
 
+def _reset_page_tx_cache():
+    global _page_tx_cache, _page_tx_cache_ids
+    _page_tx_cache, _page_tx_cache_ids = None, []
+
 def _tx_cache_offset(cache):
     """Logical token length the prompt cache is at (all layers agree), or None if unreadable. For sliding
     layers (RotatingKVCache) this is the logical position, NOT resident size; trimmability is separate
@@ -1405,21 +1412,27 @@ def _ensure_ids(prompt):
         prompt = prompt.tolist()
     return [int(x) for x in prompt]
 
-def _tx_trim_or_reset(n, expected_after):
+def _trim_cache_or_reset(cache, reset_fn, n, expected_after):
     """Trim exactly n tokens and VERIFY (count + post-offset). Reset the persistent cache and return False
     on any failure — Gemma 4 sliding layers (RotatingKVCache) go non-trimmable once offset >= sliding_window
     and trim_prompt_cache then silently returns 0, which would desync _tx_cache_ids from the real cache."""
     if n <= 0:
         return True
-    if _tx_cache is None or not can_trim_prompt_cache(_tx_cache):
-        _reset_tx_cache(); return False
+    if cache is None or not can_trim_prompt_cache(cache):
+        reset_fn(); return False
     try:
-        got = trim_prompt_cache(_tx_cache, n)
+        got = trim_prompt_cache(cache, n)
     except Exception:
-        _reset_tx_cache(); return False
-    if got != n or _tx_cache_offset(_tx_cache) != expected_after:
-        _reset_tx_cache(); return False
+        reset_fn(); return False
+    if got != n or _tx_cache_offset(cache) != expected_after:
+        reset_fn(); return False
     return True
+
+def _tx_trim_or_reset(n, expected_after):
+    return _trim_cache_or_reset(_tx_cache, _reset_tx_cache, n, expected_after)
+
+def _page_tx_trim_or_reset(n, expected_after):
+    return _trim_cache_or_reset(_page_tx_cache, _reset_page_tx_cache, n, expected_after)
 
 def _usable_tx_partial(s):
     # a streamed KO partial good enough to commit as a degraded caption (vs falling back to the source line)
@@ -1534,9 +1547,11 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
 
 
 def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hint: str = "",
-                              register: str = "casual", glossary_pairs=(), max_tokens=None):
-    """Translate a DOM batch in one model call. No KV reuse: page DOM work must not disturb live-caption
-    translator cache state. Raises on invalid JSON so callers can fall back to per-item translation."""
+                              register: str = "casual", glossary_pairs=(), max_tokens=None, kv_reuse=None):
+    """Translate a DOM batch in one model call. Uses a page-only prefix KV cache so page DOM work never
+    disturbs the live-caption translator cache. Raises on invalid JSON so callers can fall back to per-item
+    translation."""
+    global _page_tx_cache, _page_tx_cache_ids, _TX_KV_WINDOW
     clean_items = [
         {"id": str(it.get("id", ""))[:80], "text": str(it.get("text", "")).strip()}
         for it in (items or [])
@@ -1555,10 +1570,53 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
     except TypeError:
         prompt = lm_tok.apply_chat_template(msgs, add_generation_prompt=True)
     prompt = _ensure_ids(prompt)
-    cache = make_prompt_cache(lm_model, max_kv_size=2048)
+    if _TX_KV_WINDOW is None:
+        _TX_KV_WINDOW = _learn_tx_window(_page_tx_cache if _page_tx_cache is not None else make_prompt_cache(lm_model))
+    use_reuse = _PAGE_TX_KVREUSE if kv_reuse is None else kv_reuse
+    reuse = use_reuse and (len(prompt) + gen_max + _TX_WINDOW_MARGIN) <= min(_TX_KV_MAX, _TX_KV_WINDOW)
+    if reuse:
+        if _page_tx_cache is not None:
+            pre = _tx_cache_offset(_page_tx_cache)
+            if pre is None or pre != len(_page_tx_cache_ids):
+                _reset_page_tx_cache()
+        if _page_tx_cache is None:
+            _page_tx_cache, _page_tx_cache_ids = make_prompt_cache(lm_model), []
+        common = _lcp_words(_page_tx_cache_ids, prompt)
+        if len(_page_tx_cache_ids) - common > 0 and not _page_tx_trim_or_reset(len(_page_tx_cache_ids) - common, common):
+            _page_tx_cache, _page_tx_cache_ids, common = make_prompt_cache(lm_model), [], 0
+        feed = prompt[common:]
+        if not feed:
+            if common <= 0 or not _page_tx_trim_or_reset(1, len(prompt) - 1):
+                _page_tx_cache, _page_tx_cache_ids, common, feed = make_prompt_cache(lm_model), [], 0, prompt
+            else:
+                common -= 1; feed = prompt[common:]
+        cache = _page_tx_cache
+    else:
+        cache = make_prompt_cache(lm_model, max_kv_size=max(2048, min(_TX_KV_MAX, len(prompt) + gen_max + _TX_WINDOW_MARGIN)))
+        feed = prompt
     out = []
-    for r in lm_stream(lm_model, lm_tok, prompt, max_tokens=gen_max, sampler=_sampler, prompt_cache=cache):
-        out.append(r.text)
+    try:
+        for r in lm_stream(lm_model, lm_tok, feed, max_tokens=gen_max, sampler=_sampler, prompt_cache=cache):
+            out.append(r.text)
+    except Exception:
+        if reuse:
+            _reset_page_tx_cache()
+        raise
+    if reuse and _page_tx_cache is not None:
+        actual = _tx_cache_offset(_page_tx_cache)
+        if actual is None:
+            _reset_page_tx_cache()
+        elif actual < len(prompt):
+            _reset_page_tx_cache()
+            print(f"[pagekv] invariant breach: offset {actual} < prompt {len(prompt)} -> fresh retry", flush=True)
+            return translate_page_batch_once(
+                clean_items, recent_pairs, target, hint, register, glossary_pairs, max_tokens=max_tokens, kv_reuse=False,
+            )
+        elif actual > len(prompt):
+            if _page_tx_trim_or_reset(actual - len(prompt), len(prompt)):
+                _page_tx_cache_ids = list(prompt)
+        else:
+            _page_tx_cache_ids = list(prompt)
     return _parse_page_batch_result("".join(out), clean_items)
 
 
@@ -2583,6 +2641,7 @@ if __name__ == "__main__":
         warm_mlx_selected(True, True)
         if BACKEND == "mlx":
             _reset_tx_cache()                         # real translation rebuilds it on the _mlx_pool worker thread
+            _reset_page_tx_cache()
             if mx is not None:
                 try: mx.clear_cache()
                 except Exception: pass
@@ -2590,5 +2649,6 @@ if __name__ == "__main__":
     except Exception as e:
         if BACKEND == "mlx":
             _reset_tx_cache()
+            _reset_page_tx_cache()
         print("[bridge] warm skip:", e, flush=True)
     asyncio.run(main())

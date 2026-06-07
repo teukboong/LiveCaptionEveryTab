@@ -196,8 +196,10 @@ def translate_once(text, recent_pairs=(), target="Korean", hint="", register="ca
 
 
 def translate_page_batch_once(items, recent_pairs=(), target="Korean", hint="", register="casual",
-                              glossary_pairs=(), max_tokens=None):
-    """DOM page microbatch translation. Same strict JSON prompt/parser as the MLX path."""
+                              glossary_pairs=(), max_tokens=None, kv_reuse=None):
+    """DOM page microbatch translation. Same strict JSON prompt/parser as the MLX path. kv_reuse is ignored:
+    remote CUDA text servers handle prefix caching on their side."""
+    del kv_reuse
     import server as _srv
     clean_items = [
         {"id": str(it.get("id", ""))[:80], "text": str(it.get("text", "")).strip()}
