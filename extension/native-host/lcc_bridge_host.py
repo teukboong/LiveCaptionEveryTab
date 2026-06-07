@@ -242,6 +242,11 @@ def do_install(msg=None):
     tier = str((msg or {}).get("tier") or "").strip().lower()
     if tier not in ("full", "mid", "lite"):
         return {"ok": False, "error": f"unknown tier: {tier}"}
+    if CUDA_STACK_CMD:
+        # CUDA: translation/ASR models are GGUF, fetched at setup (install_cuda_wsl.sh) and served by the stack.
+        # The popup downloader is MLX-only, so don't pull unused MLX weights here — just say so.
+        return {"ok": True, "cuda": True, "started": False,
+                "msg": "CUDA: 모델은 setup(install_cuda_wsl.sh)이 받아 서버가 GGUF로 서빙합니다 — 팝업 설치는 Mac(MLX) 전용"}
     if _install_running():
         return {"ok": True, "started": False, "already": True, "msg": "이미 설치 중"}
     py = _venv_python()
