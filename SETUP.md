@@ -151,6 +151,7 @@ bash bridge/run_bridge.sh
 | "Cannot capture a tab with an active stream" | `chrome://extensions`에서 확장 **↻ 새로고침** 후 다시 |
 | 자막이 안 뜸 | ① 브릿지 `ready` 확인 ② 유튜브 탭 **F5** 후 다시 시작 ③ 실제 *발화* 구간인지(음악/무음은 자막 안 뜸=정상) |
 | 오버레이에 "브릿지 연결 끊김" | 브릿지(터미널)가 실행 중인지, 포트 8765 |
+| 포트 8765 점유 | 팝업 `브릿지 중지` 또는 `python3 extension/native-host/lcc_bridge_host.py stop`. 외부 PID면 `lsof -nP -iTCP:8765 -sTCP:LISTEN`으로 소유자 확인 |
 | `run_bridge.sh: Python venv를 못 찾음` | 3번 venv 경로 확인. 다르면 `LCC_PYTHON=경로/bin/python bash bridge/run_bridge.sh` |
 | 너무 느림 / RAM 부족 | 아래 "메모리 줄이기" |
 

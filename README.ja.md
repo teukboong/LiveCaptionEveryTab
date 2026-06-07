@@ -98,7 +98,7 @@ bash bridge/run_bridge.sh
 - オーバーレイに「ブリッジ接続が切れた」 → `run_bridge.sh` が実行中か、ポート 8765 を確認。
 - 字幕が出ない → 動画に実際の発話があるか（非発話は `[no speech]` でスキップ）、タブから音が出ているか。
 - 音が出ない → タブキャプチャが再生を横取りする場合。offscreen が `source→destination` の再生接続を維持するので通常は問題なし。
-- ポート使用中エラー → まずポップアップの `Bridge Stop`。まだ listener が残る場合は `lsof -ti tcp:8765 -sTCP:LISTEN | xargs kill`。
+- ポート使用中エラー → まずポップアップの `Bridge Stop`。まだ listener が残る場合は `python3 extension/native-host/lcc_bridge_host.py stop` でこの checkout の bridge だけを停止。外部 PID と表示されたら `lsof -nP -iTCP:8765 -sTCP:LISTEN` で所有者を確認。
 
 ## チューニングレバー
 - 遅延を下げる：翻訳は既定で quality プロンプト（KV-cache でコスト償却）。さらに下げるには `LCC_TX_PROFILE=fast` で compact プロンプトを使い、`SEG_SILENCE_MS`/`SOFT_MAX_SEC` を下げます。長い精度モードで切れが見えたら `LCC_ASR_MAX_TOKENS=96` だけ上げます。

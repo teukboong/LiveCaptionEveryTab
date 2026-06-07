@@ -98,7 +98,7 @@ bash bridge/run_bridge.sh
 - "Bridge desconectado" en el overlay → comprueba que `run_bridge.sh` está corriendo y el puerto 8765.
 - No aparecen subtítulos → comprueba que el vídeo tiene habla real (lo no hablado se omite como `[no speech]`) y que la pestaña emite sonido.
 - No hay sonido → la captura de pestaña intercepta la reproducción; offscreen mantiene la conexión de reproducción `source→destination`, así que suele estar bien.
-- Error de puerto ocupado → primero usa `Bridge Stop` en el popup; si queda un listener, ejecuta `lsof -ti tcp:8765 -sTCP:LISTEN | xargs kill`.
+- Error de puerto ocupado → primero usa `Bridge Stop` en el popup; si queda un listener, ejecuta `python3 extension/native-host/lcc_bridge_host.py stop` para detener solo el bridge de este checkout. Si informa un PID externo, revisa el dueño con `lsof -nP -iTCP:8765 -sTCP:LISTEN`.
 
 ## Palancas de ajuste
 - Reducir latencia: la traducción usa el prompt de calidad por defecto (coste amortizado por KV-cache). Para reducir más, usa `LCC_TX_PROFILE=fast` para un prompt compacto y baja `SEG_SILENCE_MS`/`SOFT_MAX_SEC`. Si ves truncamiento en el modo precisión largo, sube solo `LCC_ASR_MAX_TOKENS=96`.

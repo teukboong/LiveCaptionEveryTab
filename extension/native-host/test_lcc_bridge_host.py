@@ -146,6 +146,22 @@ check("asr.qwen3", host._asr_engine({"asrEngine": "qwen3"}), "qwen3")
 check("asr.parakeet", host._asr_engine({"asrEngine": "parakeet"}), "parakeet")
 check("asr.invalid", host._asr_engine({"asrEngine": "whisper"}), "granite")
 
+check("cli.status", host._cli_msg(["status"]), {"cmd": "status"})
+check("cli.stop", host._cli_msg(["stop"]), {"cmd": "stop"})
+check("cli.start_asr", host._cli_msg(["start", "--asr", "parakeet"]), {"cmd": "start", "asrEngine": "parakeet"})
+try:
+    host._cli_msg(["install", "--tier", "full"])
+except ValueError:
+    check("cli.install_not_exposed", True, True)
+else:
+    check("cli.install_not_exposed", False, True)
+try:
+    host._cli_msg(["status", "--tier"])
+except ValueError:
+    check("cli.reject_unknown_arg", True, True)
+else:
+    check("cli.reject_unknown_arg", False, True)
+
 env = host._start_env({"asrEngine": "parakeet"})
 check("start_env.parakeet", env.get("LCC_ASR_ENGINE"), "parakeet")
 ok("start_env.path_has_common_bins", "/opt/homebrew/bin" in env.get("PATH", ""))

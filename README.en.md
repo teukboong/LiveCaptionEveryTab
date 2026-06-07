@@ -98,7 +98,7 @@ bash bridge/run_bridge.sh
 - "Bridge disconnected" on the overlay → check `run_bridge.sh` is running and port 8765.
 - No captions → check the video has actual speech (non-speech is skipped as `[no speech]`) and the tab is making sound.
 - No sound → tab capture intercepting playback; offscreen keeps the `source→destination` playback connection, so it's usually fine.
-- Port-in-use error → use the popup's `Bridge Stop` first; if a listener remains, run `lsof -ti tcp:8765 -sTCP:LISTEN | xargs kill`.
+- Port-in-use error → use the popup's `Bridge Stop` first; if a listener remains, run `python3 extension/native-host/lcc_bridge_host.py stop` to stop only this checkout's bridge. If it reports a foreign PID, inspect the owner with `lsof -nP -iTCP:8765 -sTCP:LISTEN`.
 
 ## Tuning levers
 - Reduce latency: translation uses the quality prompt by default (cost amortized by KV-cache). To reduce further, use `LCC_TX_PROFILE=fast` for a compact prompt and lower `SEG_SILENCE_MS`/`SOFT_MAX_SEC`. If you see truncation in long accuracy mode, raise only `LCC_ASR_MAX_TOKENS=96`.

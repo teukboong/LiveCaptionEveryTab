@@ -98,7 +98,7 @@ bash bridge/run_bridge.sh
 - 覆盖层显示“bridge 连接断开” → 检查 `run_bridge.sh` 是否在运行、端口 8765。
 - 没有字幕 → 检查视频是否有真实人声（非人声会作为 `[no speech]` 跳过）、标签页是否有声音。
 - 没有声音 → 标签页捕获拦截了播放；offscreen 会保持 `source→destination` 的播放连接，通常正常。
-- 端口被占用错误 → 先用弹窗里的 `Bridge Stop`；如果仍有 listener，再运行 `lsof -ti tcp:8765 -sTCP:LISTEN | xargs kill`。
+- 端口被占用错误 → 先用弹窗里的 `Bridge Stop`；如果仍有 listener，再运行 `python3 extension/native-host/lcc_bridge_host.py stop`，只停止这个 checkout 的 bridge。如果它报告外部 PID，用 `lsof -nP -iTCP:8765 -sTCP:LISTEN` 确认占用者。
 
 ## 调优杠杆
 - 降低延迟：翻译默认用 quality 提示词（靠 KV-cache 摊销开销）。想再降，用 `LCC_TX_PROFILE=fast` 切换到 compact 提示词，并调低 `SEG_SILENCE_MS`/`SOFT_MAX_SEC`。若在长精度模式下出现截断，只调高 `LCC_ASR_MAX_TOKENS=96`。

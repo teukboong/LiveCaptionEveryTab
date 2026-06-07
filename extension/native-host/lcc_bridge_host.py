@@ -379,6 +379,62 @@ def do_install_status():
         return {"ok": True, "idle": True}
 
 
+def handle_message(msg):
+    cmd = (msg.get("cmd") or "status").lower()
+    hlog(f"cmd={cmd}")
+    if cmd == "start":
+        return do_start(msg)
+    if cmd == "stop":
+        return do_stop()
+    if cmd == "restart":
+        return do_restart(msg)
+    if cmd == "install":
+        return do_install(msg)
+    if cmd == "install_status":
+        return do_install_status()
+    if cmd == "status" and CUDA_STACK_CMD:
+        data = _cuda_stack(["status", _asr_engine(msg)], timeout=20) or {}
+        return {
+            "ok": bool(data.get("ok", True)),
+            "running": bool(data.get("running") or data.get("bridge")),
+            "pid": data.get("pid"),
+            "detail": data,
+        }
+    return do_status()
+
+
+def _cli_msg(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        raise ValueError("usage: lcc_bridge_host.py status|start|stop|restart|install_status [--asr granite|qwen3|parakeet]")
+    cmd = argv[0].strip().lower()
+    if cmd not in ("status", "start", "stop", "restart", "install_status"):
+        raise ValueError(f"unknown command: {argv[0]}")
+    msg = {"cmd": cmd}
+    i = 1
+    while i < len(argv):
+        if argv[i] == "--asr" and i + 1 < len(argv):
+            msg["asrEngine"] = argv[i + 1]
+            i += 2
+            continue
+        raise ValueError(f"unknown arg: {argv[i]}")
+    return msg
+
+
+def run_cli(argv):
+    try:
+        msg = _cli_msg(argv)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    try:
+        reply = handle_message(msg)
+    except Exception as e:
+        hlog(f"cli err: {e}")
+        reply = {"ok": False, "error": str(e)}
+    print(json.dumps(reply, ensure_ascii=False, sort_keys=True))
+    return 0 if reply.get("ok") and not reply.get("blocked") else 1
+
+
 def main():
     try:
         msg = read_message()
@@ -388,29 +444,8 @@ def main():
         return
     if not msg:
         return
-    cmd = (msg.get("cmd") or "status").lower()
-    hlog(f"cmd={cmd}")
     try:
-        if cmd == "start":
-            reply = do_start(msg)
-        elif cmd == "stop":
-            reply = do_stop()
-        elif cmd == "restart":
-            reply = do_restart(msg)
-        elif cmd == "install":
-            reply = do_install(msg)
-        elif cmd == "install_status":
-            reply = do_install_status()
-        elif cmd == "status" and CUDA_STACK_CMD:
-            data = _cuda_stack(["status", _asr_engine(msg)], timeout=20) or {}
-            reply = {
-                "ok": bool(data.get("ok", True)),
-                "running": bool(data.get("running") or data.get("bridge")),
-                "pid": data.get("pid"),
-                "detail": data,
-            }
-        else:
-            reply = do_status()
+        reply = handle_message(msg)
     except Exception as e:
         hlog(f"handler err: {e}")
         reply = {"ok": False, "error": str(e)}
@@ -418,4 +453,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        raise SystemExit(run_cli(sys.argv[1:]))
     main()

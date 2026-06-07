@@ -98,7 +98,7 @@ bash bridge/run_bridge.sh
 - 오버레이에 "브릿지 연결 끊김" → `run_bridge.sh` 실행 중인지, 포트 8765 확인
 - 자막이 안 뜸 → 영상에 실제 발화가 있는지(비음성은 `[no speech]`로 스킵됨), 탭에서 소리가 나는지
 - 소리가 안 들림 → 탭 캡처가 재생을 가로채는 경우. offscreen이 `source→destination` 재생 연결을 유지하므로 보통 정상
-- 포트 점유 에러 → 먼저 팝업의 `브릿지 중지`, 그래도 남으면 `lsof -ti tcp:8765 -sTCP:LISTEN | xargs kill`
+- 포트 점유 에러 → 먼저 팝업의 `브릿지 중지`, 그래도 남으면 `python3 extension/native-host/lcc_bridge_host.py stop`으로 이 checkout의 브릿지만 정리. 외부 PID라고 나오면 `lsof -nP -iTCP:8765 -sTCP:LISTEN`으로 소유자를 확인
 
 ## 튜닝 레버
 - 지연 줄이기: 번역은 기본 quality 프롬프트(KV-cache로 비용 amortize). 더 줄이려면 `LCC_TX_PROFILE=fast`로 compact 프롬프트를 쓰고 `SEG_SILENCE_MS`/`SOFT_MAX_SEC`를 낮춘다. 긴 정확도 모드에서 잘림이 보이면 `LCC_ASR_MAX_TOKENS=96`만 올린다.
