@@ -79,6 +79,17 @@ const UI_TEXT = Object.freeze({
     labelGlossary: "용어집",
     glossaryPlaceholder: "이름=번역 (줄마다 하나)\n예: Blackwell=블랙웰",
     advancedApplyHint: "용어집·용어 힌트는 다음 발화부터 / 정확도·음성 감지는 자막 다시 시작 시 적용",
+    sectionPageAdvanced: "페이지 번역",
+    labelPageRegister: "페이지 말투",
+    pageRegisterCasual: "짧은 UI · 일반",
+    pageRegisterLecture: "문서 · 격식",
+    pageRegisterNews: "뉴스 · 보도",
+    pageRegisterChat: "댓글 · 대화",
+    labelPageContextHint: "페이지 힌트",
+    pageContextPlaceholder: "비우면 영상 용어 힌트 상속",
+    labelPageGlossary: "페이지 용어집",
+    pageGlossaryPlaceholder: "비우면 영상 용어집 상속\n예: subreddit=서브레딧",
+    pageAdvancedApplyHint: "페이지 설정은 DOM 번역에만 적용됩니다. 페이지 용어집을 비우면 위 용어집을 상속합니다.",
     connConnected: "브릿지 연결됨",
     connReconnecting: "브릿지 재연결 중…",
     stopped: "중지됨",
@@ -183,6 +194,17 @@ const UI_TEXT = Object.freeze({
     labelGlossary: "Glossary",
     glossaryPlaceholder: "Name=translation (one per line)\nExample: Blackwell=Blackwell",
     advancedApplyHint: "Glossary and hints apply from the next utterance. Accuracy/VAD applies after restarting captions.",
+    sectionPageAdvanced: "Page translation",
+    labelPageRegister: "Page tone",
+    pageRegisterCasual: "Short UI · general",
+    pageRegisterLecture: "Docs · formal",
+    pageRegisterNews: "News · report",
+    pageRegisterChat: "Comments · chat",
+    labelPageContextHint: "Page hint",
+    pageContextPlaceholder: "Blank inherits the video term hint",
+    labelPageGlossary: "Page glossary",
+    pageGlossaryPlaceholder: "Blank inherits the video glossary\nExample: subreddit=subreddit",
+    pageAdvancedApplyHint: "Page settings apply only to DOM translation. Blank page glossary inherits the glossary above.",
     connConnected: "Bridge connected",
     connReconnecting: "Bridge reconnecting…",
     stopped: "Stopped",
@@ -330,11 +352,14 @@ async function loadSettings() {
   document.getElementById("contentType").value = settings.contentType;
   document.getElementById("latencyMode").value = settings.latencyMode;
   document.getElementById("register").value = settings.register;
+  document.getElementById("pageRegister").value = settings.pageRegister;
   document.getElementById("accuracyMode").checked = settings.accuracyMode;
   document.getElementById("autoPrime").checked = settings.autoPrime;
   document.getElementById("debugSync").checked = settings.debugSync;
   document.getElementById("contextHint").value = settings.contextHint;
   document.getElementById("glossary").value = settings.glossary;
+  document.getElementById("pageContextHint").value = settings.pageContextHint;
+  document.getElementById("pageGlossary").value = settings.pageGlossary;
   setMode(settings.uiMode || "simple");
   applyUiLanguage();
 }
@@ -627,6 +652,9 @@ document.getElementById("autoPrime").addEventListener("change", (e) => { setting
 document.getElementById("debugSync").addEventListener("change", (e) => { settings.debugSync = e.target.checked; saveSettings(); });
 document.getElementById("contextHint").addEventListener("input", (e) => { settings.contextHint = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });
 document.getElementById("glossary").addEventListener("input", (e) => { settings.glossary = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });
+document.getElementById("pageRegister").addEventListener("change", (e) => { settings.pageRegister = e.target.value; saveSettings(true); });
+document.getElementById("pageContextHint").addEventListener("input", (e) => { settings.pageContextHint = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, false); });
+document.getElementById("pageGlossary").addEventListener("input", (e) => { settings.pageGlossary = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, false); });
 
 // ---- model install (full/mid/lite): native host spawns the downloader; poll progress ----
 const TIER_LABEL = { full: "Full", mid: "Mid", lite: "Lite" };

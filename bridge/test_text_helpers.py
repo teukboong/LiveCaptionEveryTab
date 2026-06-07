@@ -87,6 +87,13 @@ ok("target.prompt_hindi", "Hindi" in hindi_msgs[0]["content"])
 ok("target.prompt_not_korean_target", "Korean translation" not in hindi_msgs[0]["content"])
 ok("target.context_signature_changes", s._translation_context_signature("Korean", "casual", "", [])
    != s._translation_context_signature("Hindi", "casual", "", []))
+page_msgs = s._translate_messages("Share", target="Korean", register="casual", profile="page")
+ok("page.prompt_dom_replacement", "direct DOM replacement" in page_msgs[0]["content"])
+ok("page.prompt_not_live_speech", "live speech" not in page_msgs[0]["content"])
+ok("page.fewshot_ui_label", {"role": "assistant", "content": "공유"} in page_msgs)
+ok("page.fewshot_preserves_subreddit", {"role": "assistant", "content": "r/SipsTea"} in page_msgs)
+caption_msgs = s._translate_messages("Share", target="Korean", register="casual", profile="caption")
+ok("caption.prompt_live_speech", "live speech" in caption_msgs[0]["content"] or "live interpreter" in caption_msgs[0]["content"])
 
 # --- DOM translation batch normalization: untrusted page items stay bounded before model use ---
 dom_items = s._dom_translate_items({

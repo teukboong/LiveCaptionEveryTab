@@ -27,6 +27,9 @@ const LCC_DEFAULT_SETTINGS = Object.freeze({
   autoPrime: true,
   contextHint: "",
   glossary: "",
+  pageContextHint: "",
+  pageRegister: "casual",
+  pageGlossary: "",
   runMode: "video",
   pageTranslateSelector: "body",
   pageTranslateMinChars: 2,
@@ -36,6 +39,7 @@ const LCC_DEFAULT_SETTINGS = Object.freeze({
   uiMode: "simple",
   uiLang: "ko",
 });
+const LCC_REGISTERS = Object.freeze(["casual", "lecture", "news", "chat"]);
 const LCC_RUN_MODES = Object.freeze({
   video: Object.freeze({ page: false, caption: true }),
   page: Object.freeze({ page: true, caption: false }),
@@ -62,6 +66,7 @@ globalThis.LCC_UI_LANGS = LCC_UI_LANGS;
 globalThis.LCC_DEFAULT_SETTINGS = LCC_DEFAULT_SETTINGS;
 globalThis.LCC_RUN_MODES = LCC_RUN_MODES;
 globalThis.LCC_CONTENT_PRESETS = LCC_CONTENT_PRESETS;
+globalThis.LCC_REGISTERS = LCC_REGISTERS;
 globalThis.lccCanonicalTargetLang = lccCanonicalTargetLang;
 globalThis.lccCanonicalUiLang = function lccCanonicalUiLang(value, fallback = "ko") {
   const raw = String(value || fallback || "ko").trim().toLowerCase();
@@ -78,6 +83,8 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   if (raw.latencyMode == null) out.latencyMode = preset.latencyMode;
   out.targetLang = lccCanonicalTargetLang(out.targetLang);
   out.uiLang = globalThis.lccCanonicalUiLang(out.uiLang);
+  out.register = LCC_REGISTERS.includes(out.register) ? out.register : LCC_DEFAULT_SETTINGS.register;
+  out.pageRegister = LCC_REGISTERS.includes(out.pageRegister) ? out.pageRegister : LCC_DEFAULT_SETTINGS.pageRegister;
   out.runMode = LCC_RUN_MODES[out.runMode] ? out.runMode : LCC_DEFAULT_SETTINGS.runMode;
   out.pageTranslateSelector = String(out.pageTranslateSelector || LCC_DEFAULT_SETTINGS.pageTranslateSelector).trim() || "body";
   out.pageTranslateMinChars = Math.max(1, Math.min(80, Number(out.pageTranslateMinChars) || LCC_DEFAULT_SETTINGS.pageTranslateMinChars));
@@ -94,6 +101,7 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
   const s = globalThis.lccNormalizeSettings(settings);
   const auto = (s.autoPrime ?? true) ? (pageContext || "") : "";
   const hint = [s.contextHint || "", auto].filter(Boolean).join("; ").slice(0, 200);
+  const pageHint = [s.pageContextHint || s.contextHint || "", auto].filter(Boolean).join("; ").slice(0, 240);
   return {
     type: "config",
     asrEngine: s.asrEngine || "granite",
@@ -104,6 +112,9 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
     latencyMode: s.latencyMode || "aggressive",
     contextHint: hint,
     glossary: s.glossary || "",
+    pageContextHint: pageHint,
+    pageRegister: s.pageRegister || "casual",
+    pageGlossary: s.pageGlossary || "",
     accuracyMode: s.accuracyMode ?? false,
     autoPrime: s.autoPrime ?? true,
   };

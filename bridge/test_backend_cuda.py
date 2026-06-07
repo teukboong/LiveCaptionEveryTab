@@ -126,6 +126,9 @@ check("tx_max_tokens_passthrough", captured["max_tokens"] == 48)
 check("tx_prompt_parity",
       captured["messages"] == srv._translate_messages("Hello there, everyone.", [("prev en", "이전 한국어")],
                                                        "Korean", "GPU", "lecture", [("Blackwell", "블랙웰")]))
+bc.translate_once("Share", [], "Korean", "Reddit page", "casual", [], max_tokens=24, profile="page")
+check("tx_page_profile_prompt_parity",
+      captured["messages"] == srv._translate_messages("Share", [], "Korean", "Reddit page", "casual", [], "page"))
 
 want_msgs, want_max = srv._ask_messages("qa", "the transcript", "what was said?", "Korean")
 bc.run_ask("qa", "the transcript", "what was said?", "Korean")

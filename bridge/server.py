@@ -15,7 +15,7 @@ Per completed sentence: Gemma-4-26B-A4B MoE -> natural Korean (Korean source ski
 mlx on a single dedicated worker thread (_mlx_pool) — inline-in-loop hangs; set_default_device(gpu)
 restores the stream. (asyncio.to_thread's default pool could hop threads between calls.)
 """
-import asyncio, json, collections, difflib, os, re, time
+import asyncio, json, collections, difflib, functools, os, re, time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import numpy as np
@@ -491,6 +491,7 @@ _TX_GEN_MAX = max(1, int(os.environ.get("LCC_TX_GEN_MAX_TOKENS", "64")))   # cap
 _TX_WINDOW_MARGIN = max(0, int(os.environ.get("LCC_TX_WINDOW_MARGIN", "8")))   # keep reuse a few tokens clear of the window edge
 TX_PROFILE = os.environ.get("LCC_TX_PROFILE", "quality").strip().lower()
 TX_FEWSHOT_MAX = max(0, int(os.environ.get("LCC_TX_FEWSHOT_MAX", "0" if TX_PROFILE in ("fast", "compact", "latency") else "3")))
+PAGE_TX_FEWSHOT_MAX = max(0, int(os.environ.get("LCC_PAGE_TX_FEWSHOT_MAX", "8")))
 TX_COMPACT_PROMPT = TX_PROFILE in ("fast", "compact", "latency")
 LATENCY_MODE_DEFAULT = _normalize_latency_mode(os.environ.get("LCC_LATENCY_MODE"), "aggressive")
 AGG_SOFT_MAX_SEC = max(MIN_SEC, float(os.environ.get("LCC_AGG_SOFT_MAX_SEC", "4.0")))
@@ -1052,6 +1053,48 @@ _TX_FEWSHOT = {
     },
 }
 
+_PAGE_TX_FEWSHOT = {
+    "Korean": {
+        "English": [
+            ("Share", "공유"),
+            ("Log in", "로그인"),
+            ("View more comments", "댓글 더 보기"),
+            ("11 hours ago", "11시간 전"),
+            ("r/SipsTea", "r/SipsTea"),
+            ("Infamous_Question430", "Infamous_Question430"),
+            ("People taking zero accountability is an epidemic these days.", "요즘은 책임을 전혀 지지 않는 사람이 너무 많다."),
+            ("Woman saves her dogs from another dog in the street", "길거리에서 다른 개로부터 자기 강아지들을 구해낸 여자"),
+        ],
+        "Japanese": [
+            ("コメントをもっと見る", "댓글 더 보기"),
+            ("シェア", "공유"),
+        ],
+    },
+    "Japanese": {
+        "English": [
+            ("Share", "共有"),
+            ("Log in", "ログイン"),
+            ("View more comments", "コメントをさらに表示"),
+            ("11 hours ago", "11時間前"),
+            ("r/SipsTea", "r/SipsTea"),
+            ("Infamous_Question430", "Infamous_Question430"),
+        ],
+    },
+    "English": {
+        "Korean": [
+            ("공유", "Share"),
+            ("로그인", "Log in"),
+            ("댓글 더 보기", "View more comments"),
+            ("11시간 전", "11 hours ago"),
+        ],
+        "Japanese": [
+            ("共有", "Share"),
+            ("ログイン", "Log in"),
+            ("コメントをさらに表示", "View more comments"),
+        ],
+    },
+}
+
 # Per-register tone instruction, appended to the system prompt (target-specific).
 _REGISTER_TONE = {
     "Korean": {
@@ -1088,7 +1131,10 @@ def _src_lang(text: str) -> str:
     return "English"
 
 
-def _fewshot(target: str, register: str, src_lang: str):
+def _fewshot(target: str, register: str, src_lang: str, profile: str = "caption"):
+    if profile == "page":
+        by_src = _PAGE_TX_FEWSHOT.get(target, {})
+        return by_src.get(src_lang) or by_src.get("English") or []
     by_reg = _TX_FEWSHOT.get(target, {})
     by_src = by_reg.get(register) or by_reg.get("casual") or {}
     return by_src.get(src_lang) or by_src.get("English") or []
@@ -1134,7 +1180,33 @@ _FAST_REGISTER_TONE = {
 }
 
 
-def _tx_system(target: str, register: str = "casual", hint: str = "", glossary_pairs=()) -> str:
+def _page_tx_system(target: str, hint: str = "", glossary_pairs=()) -> str:
+    if TX_COMPACT_PROMPT:
+        s = (f"Translate visible web page text into concise {target}. Replace the same DOM node only. "
+             "Keep handles, subreddit names, URLs, code, numbers, timestamps, emoji, and already-target-language text unchanged. "
+             "Use label-like wording for UI text. ")
+        s += _glossary_clause(glossary_pairs)
+        if hint:
+            s += f"Page context / terms: {hint}. "
+        return s + f"Output only the replacement text in {target}, or the unchanged source."
+    s = (f"You translate visible web page text into {target} for direct DOM replacement. Each user message is the "
+         "complete text of one page node or short UI fragment. Output exactly the replacement text for that same "
+         "node, with no explanations, prefixes, quotes, markdown, or extra alternatives. Preserve formatting intent, "
+         "line breaks when useful, numbers, timestamps, currencies, emoji, handles, subreddit/community names, URLs, "
+         "code, IDs, product names, and proper nouns. If the text is already in {target}, a username/handle, a "
+         "subreddit/community name, code, a URL, or not meaningful to translate, return it unchanged. For buttons, "
+         "menus, labels, counts, and navigation text, use short native UI wording instead of conversational sentences. "
+         "Do not add politeness, commentary, inferred context, or sentence endings that are not present in the source. ")
+    s += _glossary_clause(glossary_pairs)
+    if hint:
+        s += f"Use this page context only to disambiguate names/terms: {hint}. "
+    return s + f"Output ONLY the {target} replacement text, nothing else."
+
+
+def _tx_system(target: str, register: str = "casual", hint: str = "", glossary_pairs=(),
+               profile: str = "caption") -> str:
+    if profile == "page":
+        return _page_tx_system(target, hint, glossary_pairs)
     if TX_COMPACT_PROMPT:
         s = (f"Translate live speech into natural {target}. Preserve meaning, tone, and names. "
              f"If the line is incomplete, translate only what is present. ")
@@ -1155,13 +1227,15 @@ def _tx_system(target: str, register: str = "casual", hint: str = "", glossary_p
     return s + f"Output ONLY the {target} translation, nothing else."
 
 
-def _translate_messages(text, recent_pairs=(), target="Korean", hint="", register="casual", glossary_pairs=()):
+def _translate_messages(text, recent_pairs=(), target="Korean", hint="", register="casual", glossary_pairs=(),
+                        profile: str = "caption"):
     """The chat-message list for one clause translation: register-aware system instruction + source-language-
     matched few-shot anchors + the model's recent (source->target) renderings (consistency) + the line itself.
     Shared by the MLX and CUDA backends so both produce byte-identical prompts (same translation regardless of
     runtime). Each backend applies its own chat template (MLX: apply_chat_template; CUDA: server-side)."""
-    msgs = [{"role": "system", "content": _tx_system(target, register, hint, glossary_pairs)}]
-    for ex_src, ex_tgt in _fewshot(target, register, _src_lang(text))[:TX_FEWSHOT_MAX]:   # source-lang-matched style anchors
+    msgs = [{"role": "system", "content": _tx_system(target, register, hint, glossary_pairs, profile)}]
+    fewshot_max = PAGE_TX_FEWSHOT_MAX if profile == "page" else TX_FEWSHOT_MAX
+    for ex_src, ex_tgt in _fewshot(target, register, _src_lang(text), profile)[:fewshot_max]:   # source-lang-matched style anchors
         msgs += [{"role": "user", "content": ex_src}, {"role": "assistant", "content": ex_tgt}]
     for s, t in recent_pairs:                                   # the model's own recent renderings -> consistency
         msgs += [{"role": "user", "content": s}, {"role": "assistant", "content": t}]
@@ -1285,14 +1359,14 @@ def _vlm_generate_text(msgs, gen_max, on_update=None):
 
 def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str = "",
                    register: str = "casual", glossary_pairs=(), on_update=None, kv_reuse=None,
-                   max_tokens=None, stream_every=None):
+                   max_tokens=None, stream_every=None, profile: str = "caption"):
     """Stateless per-clause translation, primed for quality: a strong register-aware instruction,
     source-language-matched few-shot anchors, a pinned glossary, and the last few (source -> target)
     pairs as conversation context so terminology/tone stay consistent across the stream. Re-callable on
     a growing clause (EN->KO reverses word order, so we re-translate the whole clause). Runs on _mlx_pool
     (single worker -> the module-level _tx_cache has no race)."""
     global _tx_cache, _tx_cache_ids, _TX_KV_WINDOW
-    msgs = _translate_messages(text, recent_pairs, target, hint, register, glossary_pairs)
+    msgs = _translate_messages(text, recent_pairs, target, hint, register, glossary_pairs, profile)
     if _LM_IS_VLM:
         return _vlm_generate_text(msgs, max(1, int(max_tokens or _TX_GEN_MAX)), on_update)
     mx.set_default_device(mx.gpu)
@@ -1358,7 +1432,7 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
             print(f"[txkv] invariant breach: offset {actual} < prompt {len(prompt)} -> fresh retry", flush=True)
             return translate_once(
                 text, recent_pairs, target, hint, register, glossary_pairs, None, kv_reuse=False,
-                max_tokens=max_tokens, stream_every=stream_every,
+                max_tokens=max_tokens, stream_every=stream_every, profile=profile,
             )
         elif actual > len(prompt):
             if _tx_trim_or_reset(actual - len(prompt), len(prompt)):   # drop generated suffix -> prompt-only
@@ -1460,6 +1534,9 @@ async def handle(ws):
     evs_level = 0               # EVS controller pressure (0 nominal / 1 pressured under backlog); see _evs_step
     register = "casual"         # tone preset (casual/lecture/news/chat) -> few-shot + tone instruction
     glossary_pairs = []         # [(source_term, target_rendering)] pinned for consistent translation + ASR biasing
+    page_register = "casual"    # page DOM translation has its own concise UI/text replacement prompt profile
+    page_context_hint = ""      # if unset, page translation falls back to context_hint + page title auto-prime
+    page_glossary_pairs = None  # None = inherit glossary_pairs; [] = intentionally no page-specific glossary
     asr_hint = ""               # context_hint + glossary source terms, fed to the ASR prompt (recomputed on config)
     accuracy_mode = False       # 2-pass: re-transcribe the whole sentence's audio at commit (cleaner finals, +~0.7s)
     translation_epoch = 0        # bumps when target/register/hints change so old-language jobs cannot render later
@@ -2075,6 +2152,9 @@ async def handle(ws):
                         break
                     elif d.get("type") == "config":
                         prev_tx_sig = _translation_context_signature(target_lang, register, context_hint, glossary_pairs)
+                        prev_page_glossary = page_glossary_pairs if page_glossary_pairs is not None else glossary_pairs
+                        prev_page_sig = _translation_context_signature(
+                            target_lang, page_register, page_context_hint or context_hint, prev_page_glossary)
                         if d.get("latencyMode") is not None:
                             latency_mode = _normalize_latency_mode(d.get("latencyMode"), latency_mode)
                             sent_sil_windows = sent_windows_for(sent_silence_cfg_ms)
@@ -2109,12 +2189,22 @@ async def handle(ws):
                             register = str(d["register"]) if str(d["register"]) in _REGISTERS else "casual"
                         if d.get("glossary") is not None:
                             glossary_pairs = _parse_glossary(str(d["glossary"]))
+                        if d.get("pageContextHint") is not None:
+                            page_context_hint = str(d["pageContextHint"])[:240]
+                        if d.get("pageRegister"):
+                            page_register = str(d["pageRegister"]) if str(d["pageRegister"]) in _REGISTERS else "casual"
+                        if "pageGlossary" in d:
+                            raw_page_glossary = str(d.get("pageGlossary") or "")
+                            page_glossary_pairs = _parse_glossary(raw_page_glossary) if raw_page_glossary.strip() else None
                         if d.get("accuracyMode") is not None:
                             accuracy_mode = _config_bool(d.get("accuracyMode"), accuracy_mode)
                         # ASR biasing hint = free-text context + glossary source terms (helps the model spell names)
                         _gloss_terms = ", ".join(s for s, _ in glossary_pairs)
                         asr_hint = "; ".join(x for x in (context_hint, _gloss_terms) if x)[:240]
                         new_tx_sig = _translation_context_signature(target_lang, register, context_hint, glossary_pairs)
+                        new_page_glossary = page_glossary_pairs if page_glossary_pairs is not None else glossary_pairs
+                        new_page_sig = _translation_context_signature(
+                            target_lang, page_register, page_context_hint or context_hint, new_page_glossary)
                         if new_tx_sig != prev_tx_sig:
                             translation_epoch += 1
                             recent_pairs.clear()
@@ -2123,9 +2213,12 @@ async def handle(ws):
                             pending_preview_jobs.clear()
                             pending_final_jobs.clear()
                             print(f"[cfg] translation context reset epoch={translation_epoch} target={target_lang}", flush=True)
+                        if new_page_sig != prev_page_sig:
+                            dom_recent_pairs.clear()
+                            print(f"[cfg] page translation context reset target={target_lang}", flush=True)
                         print(f"[cfg] vad={d.get('vadLevel')} sentSil={sent_silence_cfg_ms}/{effective_sent_silence_ms(sent_silence_cfg_ms)} target={target_lang} "
                               f"reg={register} asr={asr_engine} latency={latency_mode} acc={accuracy_mode} gloss={len(glossary_pairs)} "
-                              f"hint={asr_hint[:30]!r}", flush=True)
+                              f"pageReg={page_register} pageGloss={len(new_page_glossary)} hint={asr_hint[:30]!r}", flush=True)
                     elif d.get("type") == "eos":
                         if in_speech and voiced:
                             await enqueue_work(("clause", bytes(voiced), speech_start_ms, audio_ms, False))
@@ -2181,11 +2274,20 @@ async def handle(ws):
                                 break
                             source = item["text"]
                             try:
+                                page_glossary = page_glossary_pairs if page_glossary_pairs is not None else glossary_pairs
+                                page_tx = functools.partial(
+                                    translate_once,
+                                    source,
+                                    list(dom_recent_pairs),
+                                    target=target_lang,
+                                    hint=page_context_hint or context_hint,
+                                    register=page_register,
+                                    glossary_pairs=list(page_glossary),
+                                    kv_reuse=False,
+                                    profile="page",
+                                )
                                 async with mlx_lock:
-                                    out = await loop.run_in_executor(
-                                        _mlx_pool, translate_once, source, list(dom_recent_pairs),
-                                        target_lang, context_hint, register, glossary_pairs
-                                    )
+                                    out = await loop.run_in_executor(_mlx_pool, page_tx)
                                 out = _clean(out)
                                 sent += 1
                                 if out and out != source:

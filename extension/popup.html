@@ -180,6 +180,16 @@
     <div class="row"><label data-i18n="labelContextHint">용어 힌트</label><input type="text" id="contextHint" placeholder="자유 텍스트 바이어싱" data-i18n-placeholder="contextPlaceholder" /></div>
     <div class="row" style="align-items:flex-start;"><label data-i18n="labelGlossary">용어집</label><textarea id="glossary" rows="3" placeholder="이름=번역 (줄마다 하나)&#10;예: Blackwell=블랙웰" data-i18n-placeholder="glossaryPlaceholder"></textarea></div>
     <div class="hint" data-i18n="advancedApplyHint">용어집·용어 힌트는 다음 발화부터 / 정확도·음성 감지는 자막 다시 시작 시 적용</div>
+    <h4 data-i18n="sectionPageAdvanced">페이지 번역</h4>
+    <div class="row"><label data-i18n="labelPageRegister">페이지 말투</label><select id="pageRegister">
+      <option value="casual" data-i18n="pageRegisterCasual">짧은 UI · 일반</option>
+      <option value="lecture" data-i18n="pageRegisterLecture">문서 · 격식</option>
+      <option value="news" data-i18n="pageRegisterNews">뉴스 · 보도</option>
+      <option value="chat" data-i18n="pageRegisterChat">댓글 · 대화</option>
+    </select></div>
+    <div class="row"><label data-i18n="labelPageContextHint">페이지 힌트</label><input type="text" id="pageContextHint" placeholder="비우면 영상 용어 힌트 상속" data-i18n-placeholder="pageContextPlaceholder" /></div>
+    <div class="row" style="align-items:flex-start;"><label data-i18n="labelPageGlossary">페이지 용어집</label><textarea id="pageGlossary" rows="3" placeholder="비우면 영상 용어집 상속&#10;예: subreddit=서브레딧" data-i18n-placeholder="pageGlossaryPlaceholder"></textarea></div>
+    <div class="hint" data-i18n="pageAdvancedApplyHint">페이지 설정은 DOM 번역에만 적용됩니다. 페이지 용어집을 비우면 위 용어집을 상속합니다.</div>
   </div>
 
   <script src="protocol.js"></script>

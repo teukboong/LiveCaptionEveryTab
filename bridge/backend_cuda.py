@@ -184,12 +184,13 @@ def _postprocess_asr(text):
 
 # --- Backend interface (the names server.py rebinds to) -----------------------------------------------
 def translate_once(text, recent_pairs=(), target="Korean", hint="", register="casual",
-                   glossary_pairs=(), on_update=None, kv_reuse=None, max_tokens=None, stream_every=None):
+                   glossary_pairs=(), on_update=None, kv_reuse=None, max_tokens=None, stream_every=None,
+                   profile="caption"):
     """Stateless per-clause translation. Same prompt as the MLX path (shared _translate_messages), streamed
     so the live loop's on_update preview works identically. kv_reuse is ignored — the remote server manages
     its own prefix/KV caching (llama.cpp prompt cache, vLLM automatic prefix caching)."""
     import server as _srv
-    msgs = _srv._translate_messages(text, recent_pairs, target, hint, register, glossary_pairs)
+    msgs = _srv._translate_messages(text, recent_pairs, target, hint, register, glossary_pairs, profile)
     gen_max = max(1, int(max_tokens or TX_GEN_MAX))
     return _chat(msgs, gen_max, int(stream_every or 4), on_update)
 
