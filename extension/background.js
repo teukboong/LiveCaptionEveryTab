@@ -14,6 +14,10 @@ function lccErrorText(e) {
   return String(e && e.message || e || "unknown error");
 }
 
+function respondError(sendResponse, e) {
+  sendResponse({ ok: false, error: lccErrorText(e) });
+}
+
 function warnOffscreenDelivery(label, e) {
   const now = Date.now();
   if (now - lccLastOffscreenWarnAt < LCC_OFFSCREEN_WARN_INTERVAL_MS) return;
@@ -270,13 +274,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       await ensureOffscreen();
       sendOffscreenBestEffort({ target: "offscreen", cmd: "start-page", pageContext: nextContext, config }, "start-page");
       sendResponse({ ok: true, pageTranslating: true, settings: config });
-    }).catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+    }).catch((e) => respondError(sendResponse, e));
     return true;
   }
   if (msg.type === "popup-cleanup") {
     cleanup()
       .then(() => sendResponse({ ok: true }))
-      .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+      .catch((e) => respondError(sendResponse, e));
     return true;
   }
   if (msg.type === "popup-config-update") {
@@ -291,43 +295,43 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return { ok: true, applied: true };
     })
       .then((res) => sendResponse(res || { ok: true }))
-      .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+      .catch((e) => respondError(sendResponse, e));
     return true;
   }
   if (msg.type === "popup-clear-transcript") {
     clearTranscript(msg.tabId)
       .then(() => sendResponse({ ok: true }))
-      .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+      .catch((e) => respondError(sendResponse, e));
     return true;
   }
   if (msg.type === "popup-start") {
     startAudio(msg.streamId, msg.tabId, msg.delaySec, msg.pageContext)
       .then(() => sendResponse({ ok: true }))
-      .catch((e) => { console.error("[lcc] startAudio", e); sendResponse({ ok: false, error: String(e && e.message || e) }); });
+      .catch((e) => { console.error("[lcc] startAudio", e); respondError(sendResponse, e); });
     return true;
   }
   if (msg.type === "popup-start-video") {
     startVideo(msg.tabId, msg.delaySec, msg.pageContext)
       .then(() => sendResponse({ ok: true }))
-      .catch((e) => { console.error("[lcc] startVideo", e); sendResponse({ ok: false, error: String(e && e.message || e) }); });
+      .catch((e) => { console.error("[lcc] startVideo", e); respondError(sendResponse, e); });
     return true;
   }
   if (msg.type === "popup-start-page") {
     startPage(msg.tabId, msg.pageContext)
       .then(() => sendResponse({ ok: true }))
-      .catch((e) => { console.error("[lcc] startPage", e); sendResponse({ ok: false, error: String(e && e.message || e) }); });
+      .catch((e) => { console.error("[lcc] startPage", e); respondError(sendResponse, e); });
     return true;
   }
   if (msg.type === "popup-stop") {
     cleanup()
       .then(() => sendResponse({ ok: true }))
-      .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+      .catch((e) => respondError(sendResponse, e));
     return true;
   }
   if (msg.type === "lcc-ask") {
     chrome.runtime.sendMessage({ target: "offscreen", cmd: "ask", mode: msg.mode, transcript: msg.transcript, question: msg.question })
       .then((res) => sendResponse(res && res.ok === false ? res : { ok: true }))
-      .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+      .catch((e) => respondError(sendResponse, e));
     return true;
   }
   if (msg.type === "page-translate-batch") {
@@ -340,13 +344,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           .then((res) => (res && res.ok === false) ? res : { ok: true, routed: true });
       })
       .then((res) => sendResponse(res || { ok: true, routed: false }))
-      .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+      .catch((e) => respondError(sendResponse, e));
     return true;
   }
   if (msg.route === "background" || msg.target === "background") {
     forward(msg)
       .then(() => sendResponse({ ok: true }))
-      .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+      .catch((e) => respondError(sendResponse, e));
     return true;
   }
 });

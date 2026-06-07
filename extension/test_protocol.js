@@ -239,7 +239,12 @@ assert.match(
 );
 assert.match(
   backgroundJs,
-  /if \(msg\.type === "popup-stop"\) \{[\s\S]*cleanup\(\)[\s\S]*sendResponse\(\{ ok: true \}\)[\s\S]*sendResponse\(\{ ok: false, error: String\(e && e\.message \|\| e\) \}\)[\s\S]*return true;/,
+  /function respondError\(sendResponse, e\) \{[\s\S]*sendResponse\(\{ ok: false, error: lccErrorText\(e\) \}\);[\s\S]*\}/,
+  "background error responses use the shared error text helper",
+);
+assert.match(
+  backgroundJs,
+  /if \(msg\.type === "popup-stop"\) \{[\s\S]*cleanup\(\)[\s\S]*sendResponse\(\{ ok: true \}\)[\s\S]*respondError\(sendResponse, e\)[\s\S]*return true;/,
   "background acknowledges popup stop success or failure",
 );
 assert.match(
@@ -249,7 +254,7 @@ assert.match(
 );
 assert.match(
   backgroundJs,
-  /if \(msg\.type === "lcc-ask"\) \{[\s\S]*chrome\.runtime\.sendMessage\(\{ target: "offscreen", cmd: "ask"[\s\S]*sendResponse\(res && res\.ok === false \? res : \{ ok: true \}\)[\s\S]*sendResponse\(\{ ok: false, error: String\(e && e\.message \|\| e\) \}\)[\s\S]*return true;/,
+  /if \(msg\.type === "lcc-ask"\) \{[\s\S]*chrome\.runtime\.sendMessage\(\{ target: "offscreen", cmd: "ask"[\s\S]*sendResponse\(res && res\.ok === false \? res : \{ ok: true \}\)[\s\S]*respondError\(sendResponse, e\)[\s\S]*return true;/,
   "background acknowledges AI request delivery failures",
 );
 assert.match(
