@@ -14,14 +14,40 @@ const PCM_RATE = 16000;
 const PCM_BUFFER_BYTES = PCM_RATE * 2 * 6;                // keep up to 6s while the bridge restarts
 const WS_BACKPRESSURE_BYTES = PCM_BUFFER_BYTES * 2;         // browser WebSocket send buffer cap
 const DOM_BATCH_QUEUE_BYTES = 128 * 1024;                  // bound page translation backlog if the bridge restarts
+const BACKGROUND_WARN_INTERVAL_MS = 2000;
+let lastBackgroundWarnAt = 0;
+
+function errorText(e) {
+  return String(e && e.message || e || "unknown error");
+}
+
+function warnBackgroundDelivery(label, e) {
+  const now = Date.now();
+  if (now - lastBackgroundWarnAt < BACKGROUND_WARN_INTERVAL_MS) return;
+  lastBackgroundWarnAt = now;
+  console.warn("[lcc-offscreen] background delivery failed:", label, errorText(e));
+}
+
+function sendBackgroundBestEffort(msg, label) {
+  try {
+    const p = chrome.runtime.sendMessage(msg);
+    if (p && typeof p.then === "function") {
+      p
+        .then((res) => { if (res && res.ok === false) warnBackgroundDelivery(label, res.error || res.msg || "not ok"); })
+        .catch((e) => warnBackgroundDelivery(label, e));
+    }
+  } catch (e) {
+    warnBackgroundDelivery(label, e);
+  }
+}
 
 function report(text) {
   console.log("[lcc-offscreen]", text);
-  chrome.runtime.sendMessage({ route: "background", type: "err", text });
+  sendBackgroundBestEffort({ route: "background", type: "err", text }, "err");
 }
 function notice(text) {
   console.log("[lcc-offscreen]", text);
-  chrome.runtime.sendMessage({ route: "background", type: "notice", text });
+  sendBackgroundBestEffort({ route: "background", type: "notice", text }, "notice");
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -46,7 +72,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "ask", mode: msg.mode, transcript: msg.transcript || "", question: msg.question || "" }));
       } else {
-        chrome.runtime.sendMessage({ route: "background", type: "answer", text: "자막을 시작한 상태에서만 요약/질문이 됩니다." });
+        sendBackgroundBestEffort({ route: "background", type: "answer", text: "자막을 시작한 상태에서만 요약/질문이 됩니다." }, "answer");
       }
       sendResponse({ ok: true });
     } catch (e) {
@@ -60,7 +86,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 // chrome.storage here, so we can't self-resume from session — instead announce readiness and let
 // the service worker (re)deliver the start params + settings. Dedupe in start()/startRelay makes
 // the warm message + this handshake idempotent.
-chrome.runtime.sendMessage({ route: "background", type: "offscreen-ready" });
+sendBackgroundBestEffort({ route: "background", type: "offscreen-ready" }, "offscreen-ready");
 
 function connectWS() {
   if (ws && ws.readyState !== WebSocket.CLOSED) {
@@ -74,7 +100,7 @@ function connectWS() {
   ws.binaryType = "arraybuffer";
   ws.onopen = () => {
     backoff = 0;                                    // good connect -> reset backoff
-    chrome.runtime.sendMessage({ route: "background", type: "wsstate", open: true });
+    sendBackgroundBestEffort({ route: "background", type: "wsstate", open: true }, "wsstate");
     globalThis.lccBridgeHello(ws);
     sendBridgeConfig();
   };
@@ -82,7 +108,7 @@ function connectWS() {
     wsConfigured = false;
     resetStreamClock();                              // new WS means server audio_ms starts at 0 again
     if (relayMode) relayReconnect = true;            // bridge audio_ms resets on reconnect -> offscreen must re-anchor (wall-based)
-    chrome.runtime.sendMessage({ route: "background", type: "wsstate", open: false });
+    sendBackgroundBestEffort({ route: "background", type: "wsstate", open: false }, "wsstate");
     const why = ev && (ev.code || ev.reason) ? "브릿지 연결 끊김 (" + ev.code + (ev.reason ? " · " + ev.reason : "") + ")" : "브릿지 연결 끊김";
     report(why);
     if (active) scheduleReconnect();                // dropped/restarted while capturing -> retry (audio stays up)
@@ -96,7 +122,7 @@ function connectWS() {
           d.type === "dom_translate_done" || d.type === "dom_translate_busy" || d.type === "dom_translate_err" ||
           d.type === "answer_partial" || d.type === "answer" ||
           d.type === "err" || d.type === "notice") {   // surface bridge diagnostics (e.g. ASR switch failure) — content.js renders them
-        chrome.runtime.sendMessage({ route: "background", ...d });
+        sendBackgroundBestEffort({ route: "background", ...d }, d.type || "bridge-message");
       }
     } catch (_) {}
   };
@@ -136,13 +162,13 @@ function announceStreamClock() {
   if (streamClockSent || !streamClockWall) return;
   if (relayMode && !relayReconnect) return;   // initial video anchor is stamped precisely by delay.js (page perf); offscreen re-anchors only after a reconnect
   streamClockSent = true;
-  chrome.runtime.sendMessage({
+  sendBackgroundBestEffort({
     route: "background",
     type: "stream-clock-start",
     mode: relayMode ? "video" : "audio",
     playbackDelayMs: Math.round(currentDelaySec * 1000),
     streamStartWall: streamClockWall,
-  });
+  }, "stream-clock-start");
 }
 function lccWsCanSendPcm() {
   return ws && ws.readyState === WebSocket.OPEN && wsConfigured && ws.bufferedAmount < WS_BACKPRESSURE_BYTES;
@@ -314,8 +340,8 @@ async function start(streamId, pageContext, requestedDelaySec, config) {
     // restart isn't deduped away. stop(false) detaches onclose, so announce the closed state here.
     report("탭 오디오 캡처/설정 실패: " + (e && e.message || e));
     stop(false);
-    chrome.runtime.sendMessage({ route: "background", type: "wsstate", open: false });
-    chrome.runtime.sendMessage({ route: "background", type: "capture-failed" });   // roll back the SW's optimistic capturing/badge state
+    sendBackgroundBestEffort({ route: "background", type: "wsstate", open: false }, "wsstate");
+    sendBackgroundBestEffort({ route: "background", type: "capture-failed" }, "capture-failed");   // roll back the SW's optimistic capturing/badge state
     throw e;
   }
 }

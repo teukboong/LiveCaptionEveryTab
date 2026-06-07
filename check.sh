@@ -49,3 +49,4 @@ done
 node extension/test_protocol.js
 node extension/test_extension_actions.js
 node extension/test_delay_runtime.js
+node extension/test_offscreen_runtime.js
