@@ -195,6 +195,22 @@ def translate_once(text, recent_pairs=(), target="Korean", hint="", register="ca
     return _chat(msgs, gen_max, int(stream_every or 4), on_update)
 
 
+def translate_page_batch_once(items, recent_pairs=(), target="Korean", hint="", register="casual",
+                              glossary_pairs=(), max_tokens=None):
+    """DOM page microbatch translation. Same strict JSON prompt/parser as the MLX path."""
+    import server as _srv
+    clean_items = [
+        {"id": str(it.get("id", ""))[:80], "text": str(it.get("text", "")).strip()}
+        for it in (items or [])
+        if isinstance(it, dict) and str(it.get("id", "")).strip() and str(it.get("text", "")).strip()
+    ]
+    if not clean_items:
+        return {}
+    msgs = _srv._translate_page_batch_messages(clean_items, recent_pairs, target, hint, register, glossary_pairs)
+    raw = _chat(msgs, int(max_tokens or _srv.PAGE_TX_BATCH_MAX_TOKENS), 4, None)
+    return _srv._parse_page_batch_result(raw, clean_items)
+
+
 def run_ask(mode, transcript_text, question="", target="Korean", on_partial=None):
     """On-demand summary / Q&A over the transcript — same messages as the MLX path, streamed."""
     import server as _srv

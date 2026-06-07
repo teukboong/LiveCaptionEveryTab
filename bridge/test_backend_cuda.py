@@ -110,6 +110,8 @@ captured = {}
 def _fake_chat(messages, max_tokens, stream_every=4, on_update=None, extra_body=None):
     captured["messages"] = messages
     captured["max_tokens"] = max_tokens
+    if "valid JSON array" in messages[0]["content"]:
+        return '[{"id":"a","target":"공유"},{"id":"b","target":"r/SipsTea"}]'
     if on_update is not None:
         on_update("부분")
     return "최종"
@@ -129,6 +131,17 @@ check("tx_prompt_parity",
 bc.translate_once("Share", [], "Korean", "Reddit page", "casual", [], max_tokens=24, profile="page")
 check("tx_page_profile_prompt_parity",
       captured["messages"] == srv._translate_messages("Share", [], "Korean", "Reddit page", "casual", [], "page"))
+page_batch = bc.translate_page_batch_once([
+    {"id": "a", "text": "Share"},
+    {"id": "b", "text": "r/SipsTea"},
+], [], "Korean", "Reddit page", "casual", [], max_tokens=96)
+check("tx_page_batch_returns_json_map", page_batch == {"a": "공유", "b": "r/SipsTea"})
+check("tx_page_batch_max_tokens_passthrough", captured["max_tokens"] == 96)
+check("tx_page_batch_prompt_parity",
+      captured["messages"] == srv._translate_page_batch_messages([
+          {"id": "a", "text": "Share"},
+          {"id": "b", "text": "r/SipsTea"},
+      ], [], "Korean", "Reddit page", "casual", []))
 
 want_msgs, want_max = srv._ask_messages("qa", "the transcript", "what was said?", "Korean")
 bc.run_ask("qa", "the transcript", "what was said?", "Korean")

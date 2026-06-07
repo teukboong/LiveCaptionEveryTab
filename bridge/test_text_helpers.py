@@ -94,6 +94,21 @@ ok("page.fewshot_ui_label", {"role": "assistant", "content": "공유"} in page_m
 ok("page.fewshot_preserves_subreddit", {"role": "assistant", "content": "r/SipsTea"} in page_msgs)
 caption_msgs = s._translate_messages("Share", target="Korean", register="casual", profile="caption")
 ok("caption.prompt_live_speech", "live speech" in caption_msgs[0]["content"] or "live interpreter" in caption_msgs[0]["content"])
+batch_msgs = s._translate_page_batch_messages([
+    {"id": "a", "text": "Share"},
+    {"id": "b", "text": "r/SipsTea"},
+], target="Korean", hint="Reddit")
+ok("page.batch_prompt_json", "valid JSON array" in batch_msgs[0]["content"])
+ok("page.batch_prompt_target_field", "'target'" in batch_msgs[0]["content"])
+check("page.batch_parse", s._parse_page_batch_result(
+    '```json\n[{"id":"a","target":"공유"},{"id":"b","target":"r/SipsTea"}]\n```',
+    [{"id": "a", "text": "Share"}, {"id": "b", "text": "r/SipsTea"}],
+), {"a": "공유", "b": "r/SipsTea"})
+try:
+    s._parse_page_batch_result('[{"id":"a","target":"공유"}]', [{"id": "a", "text": "Share"}, {"id": "b", "text": "Log in"}])
+    ok("page.batch_missing_id_rejected", False)
+except ValueError:
+    ok("page.batch_missing_id_rejected", True)
 
 # --- DOM translation batch normalization: untrusted page items stay bounded before model use ---
 dom_items = s._dom_translate_items({
