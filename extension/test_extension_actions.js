@@ -183,10 +183,12 @@ async function runPopupStartWithCleanup(reply) {
 
 function loadBackgroundHarness({
   failLocalRemove = false,
+  failOffscreenClose = false,
   failOffscreenMessage = false,
   failOffscreenPcm = false,
   failSessionSet = false,
   failTabMessage = false,
+  hasOffscreenDocument = false,
   pageTranslating = false,
   senderTabId,
 } = {}) {
@@ -204,8 +206,11 @@ function loadBackgroundHarness({
       setBadgeBackgroundColor() {},
     },
     offscreen: {
-      hasDocument() { return Promise.resolve(false); },
-      closeDocument() { return Promise.resolve(); },
+      hasDocument() { return Promise.resolve(hasOffscreenDocument); },
+      closeDocument() {
+        if (failOffscreenClose) return Promise.reject(new Error("offscreen close failed"));
+        return Promise.resolve();
+      },
       createDocument() { return Promise.resolve(); },
     },
     runtime: {
@@ -363,6 +368,14 @@ function runBackgroundClearTranscript(options) {
   const backgroundCleanupFailure = await runBackgroundMessage({ type: "popup-cleanup" }, { failSessionSet: true });
   assert.deepEqual(plain(backgroundCleanupFailure.response), { ok: false, error: "session set failed" });
   assert.equal(plain(backgroundCleanupFailure.sessionSet).length, 1);
+
+  const backgroundOffscreenCloseFailure = await runBackgroundMessage(
+    { type: "popup-cleanup" },
+    { failOffscreenClose: true, hasOffscreenDocument: true },
+  );
+  assert.deepEqual(plain(backgroundOffscreenCloseFailure.response), { ok: false, error: "offscreen close failed" });
+  assert.deepEqual(plain(backgroundOffscreenCloseFailure.sessionSet), []);
+  assert.deepEqual(plain(backgroundOffscreenCloseFailure.tabMessages), []);
 
   const pageBatch = { type: "page-translate-batch", requestId: "ptr1", items: [{ id: "n1", text: "Hello" }] };
   const backgroundPageBatch = await runBackgroundMessage(pageBatch, { pageTranslating: true, senderTabId: 123 });

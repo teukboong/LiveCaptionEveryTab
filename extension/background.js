@@ -65,9 +65,13 @@ async function ensureOffscreen() {
   });
 }
 
+async function closeOffscreenIfPresent() {
+  if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument();
+}
+
 async function cleanup() {
   const { mode, capturedTabId, pageTabId } = await chrome.storage.session.get(["mode", "capturedTabId", "pageTabId"]);
-  try { if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument(); } catch (_) {}
+  await closeOffscreenIfPresent();
   if (capturedTabId != null) {
     if (mode === "video") sendTab(capturedTabId, { type: "vdelay-stop" });   // delay.js: tear down A/V tap+render
     sendTab(capturedTabId, { type: "status", on: false });                   // content.js: hide the caption overlay (both modes)
@@ -358,11 +362,14 @@ async function onTabGone(tabId) {
     // page-translate tab gone; a capture may still be live on another tab -> clear only the page side
     await chrome.storage.session.set({ pageTranslating: false, pageTabId: null, pageContext: null, pageUrl: null });
     if (!captioning) {                                         // nothing else holds the offscreen WS -> close it too
-      try { if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument(); } catch (_) {}
+      await closeOffscreenIfPresent();
       await chrome.storage.session.set({ capturing: false, wsOpen: false });
       chrome.action.setBadgeText({ text: "" });
     }
   }
 }
-chrome.tabs.onRemoved.addListener((tabId) => { onTabGone(tabId); });
-chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => { onTabGone(removedTabId); });
+function handleTabGone(tabId) {
+  onTabGone(tabId).catch((e) => console.warn("[lcc] tab-gone cleanup failed:", tabId, lccErrorText(e)));
+}
+chrome.tabs.onRemoved.addListener((tabId) => { handleTabGone(tabId); });
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => { handleTabGone(removedTabId); });
