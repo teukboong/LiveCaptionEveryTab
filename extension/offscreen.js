@@ -126,7 +126,12 @@ function connectWS() {
   ws.onopen = () => {
     backoff = 0;                                    // good connect -> reset backoff
     sendBackgroundBestEffort({ route: "background", type: "wsstate", open: true }, "wsstate");
-    globalThis.lccBridgeHello(ws);
+    try {
+      globalThis.lccBridgeHello(ws);
+    } catch (e) {
+      report("hello 전송 실패: " + errorText(e));
+      return;
+    }
     sendBridgeConfig();
   };
   ws.onclose = (ev) => {

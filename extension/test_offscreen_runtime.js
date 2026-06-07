@@ -13,7 +13,7 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-async function loadOffscreen({ failSocket = false, failSocketSend = false, failTypes = [] } = {}) {
+async function loadOffscreen({ failHello = false, failSocket = false, failSocketSend = false, failTypes = [] } = {}) {
   let listener = null;
   const runtimeMessages = [];
   const sockets = [];
@@ -43,6 +43,10 @@ async function loadOffscreen({ failSocket = false, failSocketSend = false, failT
 
     message(data) {
       this.onmessage && this.onmessage({ data });
+    }
+
+    open() {
+      this.onopen && this.onopen();
     }
   }
 
@@ -77,6 +81,7 @@ async function loadOffscreen({ failSocket = false, failSocketSend = false, failT
     JSON,
     WebSocket: FakeWebSocket,
     lccBridgeHello(ws) {
+      if (failHello) throw new Error("hello failed");
       ws.send(JSON.stringify({ type: "hello" }));
     },
     lccBuildBridgeConfig() {
@@ -162,6 +167,17 @@ function sendOffscreenMessage(harness, msg) {
   assert.deepEqual(plain(failedConfigResponse), { ok: false, error: "ws send failed" });
   assert.deepEqual(plain(configFailure.runtimeMessages.slice(1)), [
     { route: "background", type: "err", text: "config 전송 실패: ws send failed" },
+  ]);
+
+  const helloFailure = await loadOffscreen({ failHello: true });
+  const helloStartResponse = await sendOffscreenMessage(helloFailure, { target: "offscreen", cmd: "start-page", pageContext: "", config: {} });
+  assert.deepEqual(plain(helloStartResponse), { ok: true });
+  assert.equal(helloFailure.sockets.length, 1);
+  helloFailure.sockets[0].open();
+  await flushMicrotasks();
+  assert.deepEqual(plain(helloFailure.runtimeMessages.slice(1)), [
+    { route: "background", type: "wsstate", open: true },
+    { route: "background", type: "err", text: "hello 전송 실패: hello failed" },
   ]);
 
   console.log("test_offscreen_runtime: OK (offscreen runtime failures are observable)");
