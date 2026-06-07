@@ -152,6 +152,11 @@ assert.match(
   "popup install resume shows both completed and failed terminal status",
 );
 assert.match(
+  popupJs,
+  /status\.textContent = tr\("stopping"\);[\s\S]*const stopped = await chrome\.runtime\.sendMessage\(\{ type: "popup-stop" \}\);[\s\S]*if \(stopped && stopped\.ok === false\) throw new Error/,
+  "popup waits for stop acknowledgement before showing stopped",
+);
+assert.match(
   contentJs,
   /let settings = globalThis\.lccNormalizeSettings\(\{\}\);/,
   "content overlay starts from canonical shared defaults",
@@ -190,6 +195,11 @@ assert.match(
   backgroundJs,
   /requireContentScript\(await ensureContentScript\(tabId\)\);[\s\S]*const config = await bridgeConfig\(\);/,
   "page start requires content-script injection before session state",
+);
+assert.match(
+  backgroundJs,
+  /if \(msg\.type === "popup-stop"\) \{[\s\S]*cleanup\(\)[\s\S]*sendResponse\(\{ ok: true \}\)[\s\S]*sendResponse\(\{ ok: false, error: String\(e && e\.message \|\| e\) \}\)[\s\S]*return true;/,
+  "background acknowledges popup stop success or failure",
 );
 
 console.log("test_protocol: OK (target/UI language settings stay canonical through protocol.js)");

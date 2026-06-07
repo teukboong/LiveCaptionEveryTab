@@ -472,9 +472,15 @@ loadSettings();
 
 btn.onclick = async () => {
   if (capturing) {
-    chrome.runtime.sendMessage({ type: "popup-stop" });   // background tears down the right mode+tab
-    setState(false);
-    status.textContent = tr("stopped");
+    try {
+      status.textContent = tr("stopping");
+      const stopped = await chrome.runtime.sendMessage({ type: "popup-stop" });   // background tears down the right mode+tab
+      if (stopped && stopped.ok === false) throw new Error(stopped.error || tr("stopFailed"));
+      setState(false);
+      status.textContent = tr("stopped");
+    } catch (e) {
+      status.textContent = tr("failurePrefix") + (e && e.message || e);
+    }
     return;
   }
   const tab = await getActiveTab();
