@@ -1253,7 +1253,11 @@ def _translate_messages(text, recent_pairs=(), target="Korean", hint="", registe
 # let the bridge stream each segment back the instant the *next* marker appears (the content script paints
 # it immediately). Re-alignable by number, so a dropped/merged line degrades to a per-segment miss (caller
 # falls back to per-item) instead of corrupting the whole batch.
-_PAGE_MARKER_RE = re.compile(r"@@\s*(\d+)\s*@@")
+# Line-START anchored so marker-looking text mid-translation can't split another node, but the segment
+# text may follow on the same line OR the next — models vary, and requiring "marker alone on its line"
+# would silently drop the whole batch to per-item if the model ever inlines the translation. Collisions
+# (a translation line literally starting with @@n@@) are still caught by the strict 1..N sequence check.
+_PAGE_MARKER_RE = re.compile(r"(?m)^[ \t]*@@\s*(\d+)\s*@@")
 
 
 def _page_marker_input(items):
@@ -1303,29 +1307,56 @@ def _translate_page_batch_messages(items, recent_pairs=(), target="Korean", hint
     return msgs
 
 
-def _page_marker_map(text: str):
-    """1-based segment index -> raw segment text, parsed from a marker-formatted model response."""
+def _page_marker_matches(text: str):
+    """Return line-anchored @@n@@ marker matches from a model response. Markers are intentionally
+    accepted only when they occupy their own line; marker-looking text inside a translation must not
+    split or remap another DOM node."""
+    return list(_PAGE_MARKER_RE.finditer(text or ""))
+
+
+def _page_marker_sequence_ok(marks, n_items: int, *, complete: bool):
+    """For DOM replacement, a marker collision is worse than a miss. Require the model's markers to be
+    the strict 1..N sequence before trusting parsed output; streaming accepts only a valid prefix."""
+    if not marks:
+        return False
+    idxs = [int(m.group(1)) for m in marks]
+    if complete and len(idxs) != n_items:
+        return False
+    if len(idxs) > n_items:
+        return False
+    return all(idx == pos + 1 for pos, idx in enumerate(idxs))
+
+
+def _page_marker_map(text: str, items=None):
+    """1-based segment index -> raw segment text, parsed from a marker-formatted model response.
+    The complete parser rejects missing/duplicate/out-of-order/extra markers so model errors fall
+    back per item instead of corrupting cross-node DOM application."""
     raw = text or ""
-    marks = list(_PAGE_MARKER_RE.finditer(raw))
+    marks = _page_marker_matches(raw)
+    if items is not None and not _page_marker_sequence_ok(marks, len(items), complete=True):
+        raise ValueError("page batch response markers are missing, duplicated, out of order, or extra")
     out = {}
     for j, m in enumerate(marks):
         idx = int(m.group(1))
-        if idx in out:                     # first occurrence wins; ignore accidental repeats
-            continue
         end = marks[j + 1].start() if j + 1 < len(marks) else len(raw)
         out[idx] = raw[m.end():end]
     return out
 
 
 def _emit_page_markers(text: str, items, emitted: set, on_segment):
-    """Stream helper: emit each COMPLETE segment (one whose following marker has already appeared) exactly
-    once. The last marker's segment is still being generated, so it is left for the final flush."""
-    marks = list(_PAGE_MARKER_RE.finditer(text or ""))
+    """Stream helper: emit each COMPLETE segment only while the generated marker stream is a strict
+    @@1@@, @@2@@, ... prefix. The last marker's segment is still growing, so it waits for final flush."""
+    raw = text or ""
+    marks = _page_marker_matches(raw)
+    if not _page_marker_sequence_ok(marks, len(items), complete=False):
+        return
     for j in range(len(marks) - 1):
-        idx = int(marks[j].group(1))
-        if idx in emitted or not (1 <= idx <= len(items)):
+        idx = j + 1
+        if idx in emitted:
             continue
-        seg = _clean((text or "")[marks[j].end():marks[j + 1].start()])
+        seg = _clean(raw[marks[j].end():marks[j + 1].start()])
+        if not seg:
+            continue
         emitted.add(idx)
         it = items[idx - 1]
         on_segment(str(it["id"]), str(it["text"]), seg)
@@ -1336,16 +1367,17 @@ def _parse_page_batch_result(text: str, items):
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json|text)?\s*", "", raw, flags=re.I).strip()
         raw = re.sub(r"\s*```$", "", raw).strip()
-    seg = _page_marker_map(raw)
+    seg = _page_marker_map(raw, items)
     out, missing = {}, []
     for i, it in enumerate(items):
         t = seg.get(i + 1)
-        if t is None:
+        cleaned = _clean(t) if t is not None else ""
+        if not cleaned:
             missing.append(str(it["id"]))
             continue
-        out[str(it["id"])] = _clean(t)
+        out[str(it["id"])] = cleaned
     if missing:
-        raise ValueError(f"page batch response missing segments: {', '.join(missing[:4])}")
+        raise ValueError(f"page batch response missing/empty segments: {', '.join(missing[:4])}")
     return out
 
 
@@ -1598,7 +1630,10 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
     prompt = _ensure_ids(prompt)
     if _TX_KV_WINDOW is None:
         _TX_KV_WINDOW = _learn_tx_window(_page_tx_cache if _page_tx_cache is not None else make_prompt_cache(lm_model))
-    use_reuse = _PAGE_TX_KVREUSE if kv_reuse is None else kv_reuse
+    # Streamed DOM segments are applied immediately by the content script; if a persistent KV invariant
+    # later forces a fresh retry, there is no safe way to "unsend" already-painted replacements. Use a
+    # fresh per-call cache for streaming unless the caller explicitly opts back into reuse.
+    use_reuse = (False if on_segment is not None else _PAGE_TX_KVREUSE) if kv_reuse is None else kv_reuse
     reuse = use_reuse and (len(prompt) + gen_max + _TX_WINDOW_MARGIN) <= min(_TX_KV_MAX, _TX_KV_WINDOW)
     if reuse:
         if _page_tx_cache is not None:

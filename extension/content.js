@@ -542,6 +542,8 @@ let lccPageTranslateScrollHandler = null;
 let lccPageTranslateFlushTimer = null;
 let lccPageTranslateScanTimer = null;
 let lccPageTranslateReqSeq = 0;
+let lccPageTranslateEpoch = 0;
+let lccPageTranslateConfigSig = "";
 // Work is keyed by normalized source text, not by node: identical strings (the hundreds of repeated
 // "Reply"/"Share"/"5h ago" on a real page) collapse to ONE model call and fan out to every node sharing
 // the text. Two queues give viewport-first ordering — visible nodes translate before off-screen ones.
@@ -620,6 +622,32 @@ function lccPageSourceKey(source) {
 function lccPageLabelNamespace() {
   return String((lccPageTranslateSettings && lccPageTranslateSettings.targetLang) || "");
 }
+function lccPageConfigSignature() {
+  const s = lccPageTranslateSettings || {};
+  return [
+    s.targetLang || "",
+    s.pageRegister || "",
+    s.pageTranslateSelector || "body",
+    String(s.pageTranslateMinChars || ""),
+    String(s.pageTranslateMaxChars || ""),
+    lccPageHash(s.pageContextHint || s.contextHint || ""),
+    lccPageHash(s.pageGlossary || s.glossary || ""),
+  ].join("|");
+}
+function lccPageLooksLikeUiLabel(norm) {
+  const s = String(norm || "").trim();
+  if (!s || s.length > LCC_PAGE_LABEL_MAX_CHARS) return false;
+  if (/[\r\n]/.test(s)) return false;
+  if (/https?:|www\.|@/.test(s)) return false;
+  if (/^[\d\s.,:%()+\-–—/\\]+$/.test(s)) return false;
+  if (/^[\d#]/.test(s)) return false;
+  if (/[.!?。！？]$/.test(s)) return false;
+  return s.split(/\s+/).filter(Boolean).length <= 4;
+}
+function lccPageRequestOwns(requestId, key) {
+  const req = lccPageTranslateRequests.get(String(requestId || ""));
+  return !!(req && Array.isArray(req.keys) && req.keys.includes(key));
+}
 async function lccPageLoadLabelCache() {
   const ns = lccPageLabelNamespace();
   if (lccPageLabelLoaded && lccPageLabelNs === ns) return;
@@ -648,9 +676,10 @@ async function lccPageLoadLabelCache() {
   lccPageLabelLoaded = true;
 }
 function lccPageLabelRemember(norm, key, target) {
-  if (!lccPageLabelLoaded || norm.length > LCC_PAGE_LABEL_MAX_CHARS) return;
+  const rendered = String(target || "").trim();
+  if (!lccPageLabelLoaded || !lccPageLooksLikeUiLabel(norm) || !rendered || rendered === norm) return;
   lccPageLabelCache.delete(key);
-  lccPageLabelCache.set(key, { source: norm, target, t: Date.now() });
+  lccPageLabelCache.set(key, { source: norm, target: rendered, t: Date.now() });
   while (lccPageLabelCache.size > LCC_PAGE_LABEL_MAX_ENTRIES) {
     lccPageLabelCache.delete(lccPageLabelCache.keys().next().value);
   }
@@ -743,7 +772,7 @@ function lccPageRememberCache(source, target) {
     lccPageTranslateCache.delete(lccPageTranslateCache.keys().next().value);
   }
   lccPageScheduleCachePersist();
-  if (norm.length <= LCC_PAGE_LABEL_MAX_CHARS) lccPageLabelRemember(norm, key, rendered);   // short -> cross-site
+  if (lccPageLooksLikeUiLabel(norm)) lccPageLabelRemember(norm, key, rendered);   // conservative short UI labels -> cross-site
 }
 function lccPageTextParts(raw) {
   const text = String(raw || "");
@@ -778,8 +807,9 @@ function lccPageInViewport(parent) {
 // they map to null and fall through to the model (which returns already-target text unchanged).
 const LCC_PAGE_TARGET_SCRIPT = Object.freeze({
   Korean: /[가-힣ᄀ-ᇿ㄰-㆏]/g,
-  Japanese: /[぀-ヿ一-鿿]/g,
-  Chinese: /[一-鿿]/g,
+  // Han characters are shared across Chinese/Japanese/Korean. For Japanese, only kana is distinctive;
+  // for Chinese there is no safe script-only skip, so the model decides whether Han-only text is already target.
+  Japanese: /[぀-ヿ]/g,
   Russian: /[Ѐ-ӿ]/g, Ukrainian: /[Ѐ-ӿ]/g, Bulgarian: /[Ѐ-ӿ]/g, Serbian: /[Ѐ-ӿ]/g,
   Greek: /[Ͱ-Ͽ]/g,
   Arabic: /[؀-ۿ]/g, Persian: /[؀-ۿ]/g, Urdu: /[؀-ۿ]/g,
@@ -787,6 +817,7 @@ const LCC_PAGE_TARGET_SCRIPT = Object.freeze({
   Thai: /[฀-๿]/g,
   Hindi: /[ऀ-ॿ]/g, Bengali: /[ঀ-৿]/g, Tamil: /[஀-௿]/g, Telugu: /[ఀ-౿]/g,
 });
+const LCC_PAGE_TARGET_SCRIPT_MIN = Object.freeze({ Japanese: 0.2 });
 function lccPageAlreadyTarget(core) {
   const re = LCC_PAGE_TARGET_SCRIPT[lccPageTranslateSettings.targetLang];
   if (!re) return false;
@@ -794,7 +825,8 @@ function lccPageAlreadyTarget(core) {
   try { letters = (core.match(/\p{L}/gu) || []).length; }
   catch (_) { letters = (core.match(/[A-Za-zÀ-]/g) || []).length; }
   if (!letters) return false;
-  return (core.match(re) || []).length / letters >= 0.6;
+  const minRatio = LCC_PAGE_TARGET_SCRIPT_MIN[lccPageTranslateSettings.targetLang] || 0.6;
+  return (core.match(re) || []).length / letters >= minRatio;
 }
 function lccPageNodeAllowed(node) {
   if (!lccPageTranslateOn || !LCC_IS_TOP || !node || node.nodeType !== Node.TEXT_NODE) return false;
@@ -832,6 +864,7 @@ function lccPagePruneWork(work) {
 }
 function lccPageApplyToNode(node, state, source, target, expectedFull, pre, post, originalFull) {
   state.source = source;
+  state.sourceNorm = lccPageSourceNorm(source);
   state.pre = pre || "";
   state.post = post || "";
   state.expectedFull = expectedFull;
@@ -857,6 +890,7 @@ function lccPageQueueNode(node) {
     return false;
   }
   state.source = parts.core;
+  state.sourceNorm = lccPageSourceNorm(parts.core);
   state.pre = parts.pre;
   state.post = parts.post;
   state.expectedFull = expectedFull;
@@ -873,7 +907,7 @@ function lccPageQueueNode(node) {
     }
     return false;
   }
-  work = { text: parts.core, nodes: new Set([node]), status: "queued", hot };
+  work = { text: parts.core, norm: lccPageSourceNorm(parts.core), nodes: new Set([node]), status: "queued", hot };
   lccPageWork.set(key, work);
   (hot ? lccPageHotQueue : lccPageColdQueue).push(key);
   lccPageScheduleFlush();
@@ -999,7 +1033,7 @@ function lccPageFlush() {
   };
   if (pull(lccPageHotQueue, true)) pull(lccPageColdQueue, false);
   if (items.length) {
-    const requestId = "ptr" + (++lccPageTranslateReqSeq);
+    const requestId = "ptr" + lccPageTranslateEpoch + "-" + (++lccPageTranslateReqSeq);
     const keys = items.map((it) => it.id);
     const timer = setTimeout(() => lccPageTranslateRetry({ request_id: requestId, retry_ms: 500 }), 30000);
     lccPageTranslateRequests.set(requestId, { keys, timer });
@@ -1037,6 +1071,7 @@ function lccPageClearTransient(restore) {
   }
   lccPageTranslateNodes.clear();
   lccPageTranslateReqSeq = 0;
+  lccPageTranslateEpoch += 1;
 }
 function lccPageNotifyReady() {
   if (!LCC_IS_TOP) return;
@@ -1072,7 +1107,10 @@ function lccPageStopUrlWatch() {
 }
 function lccPageTranslateStart(rawSettings) {
   if (!LCC_IS_TOP) return;
+  const wasOn = lccPageTranslateOn;
   lccPageTranslateSettings = globalThis.lccNormalizeSettings({ ...lccPageTranslateSettings, ...(rawSettings || {}) });
+  if (!wasOn) { lccPageTranslateEpoch += 1; lccPageTranslateReqSeq = 0; }
+  lccPageTranslateConfigSig = lccPageConfigSignature();
   lccPageTranslateOn = true;
   lccPageTranslateUrl = location.href;
   lccPageTranslateLastContext = lccPageContext();
@@ -1099,7 +1137,11 @@ function lccPageTranslateStart(rawSettings) {
 }
 function lccPageTranslateConfig(rawSettings) {
   if (!lccPageTranslateOn) return;
+  const prevSig = lccPageTranslateConfigSig || lccPageConfigSignature();
   lccPageTranslateSettings = globalThis.lccNormalizeSettings({ ...lccPageTranslateSettings, ...(rawSettings || {}) });
+  const nextSig = lccPageConfigSignature();
+  if (nextSig !== prevSig) lccPageClearTransient(true);
+  lccPageTranslateConfigSig = nextSig;
   lccPageLoadCache().finally(() => lccPageScheduleScan(0));
 }
 function lccPageTranslateStop(restore) {
@@ -1118,35 +1160,42 @@ function lccPageTranslateApply(msg) {
   if (!lccPageTranslateOn) return;
   lccPageTranslateStats.resultSeen += 1;
   const key = String(msg.item_id || "");
+  const requestId = String(msg.request_id || "");
+  if (!lccPageRequestOwns(requestId, key)) return;
   const source = String(msg.source || "");
+  const sourceNorm = lccPageSourceNorm(source);
   const target = String(msg.target || "").trim();
   const work = lccPageWork.get(key);
   const nodes = work ? work.nodes : null;
   if (!nodes || !nodes.size) { lccPageTranslateStats.dropNoNode += 1; if (work) lccPageWork.delete(key); return; }
   if (!target) {
+    // Drop on empty: clear pending + work so the node keeps its source text. Not a permanent loss — the
+    // next scan (scroll/mutation) re-queues it. Requeuing here instead would loop forever on any string
+    // the model deterministically renders empty.
     lccPageTranslateStats.dropEmpty += 1;
     for (const n of nodes) { const st = lccPageTranslateState.get(n); if (st) st.pending = false; }
     lccPageWork.delete(key);
     return;
   }
   let applied = 0;
-  for (const node of nodes) {                     // one result paints every node that shared the source text
+  for (const node of nodes) {                     // one result paints every node that shared the normalized source text
     const state = lccPageTranslateState.get(node);
     if (!node || !state || !node.isConnected) { lccPageTranslateStats.dropNoNode += 1; continue; }
-    if (state.source !== source) { lccPageTranslateStats.dropSource += 1; continue; }
+    if ((state.sourceNorm || lccPageSourceNorm(state.source)) !== sourceNorm) { lccPageTranslateStats.dropSource += 1; continue; }
     const currentParts = lccPageTextParts(node.nodeValue);
-    if (node.nodeValue !== state.expectedFull && currentParts.core !== source) { lccPageTranslateStats.dropChanged += 1; continue; }
+    if (node.nodeValue !== state.expectedFull && lccPageSourceNorm(currentParts.core) !== sourceNorm) { lccPageTranslateStats.dropChanged += 1; continue; }
     const pre = node.nodeValue === state.expectedFull ? (state.pre || "") : currentParts.pre;
     const post = node.nodeValue === state.expectedFull ? (state.post || "") : currentParts.post;
     lccPageApplyToNode(node, state, source, target, node.nodeValue, pre, post);
     applied += 1;
   }
-  lccPageRememberCache(source, target);
+  if (applied > 0) lccPageRememberCache(source, target);
   lccPageTranslateStats.applied += applied;
   lccPageWork.delete(key);
 }
 function lccPageTranslateDrop(msg) {            // dom_translate_err for one item -> give up on it (no requeue)
   const key = String(msg.item_id || "");
+  if (!lccPageRequestOwns(String(msg.request_id || ""), key)) return;
   const work = lccPageWork.get(key);
   if (!work) return;
   for (const n of work.nodes) { const st = lccPageTranslateState.get(n); if (st) st.pending = false; }
