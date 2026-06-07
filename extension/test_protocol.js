@@ -198,6 +198,16 @@ assert.match(
   "content glossary reports live config push failures",
 );
 assert.match(
+  contentJs,
+  /function lccPageBatchRouteFailed\(requestId\) \{[\s\S]*if \(lccPageVerifyRequests\.has\(requestId\)\) \{ lccPageVerifyDone\(requestId\); return; \}[\s\S]*lccPageTranslateRetry\(\{ request_id: requestId, retry_ms: 500 \}\);[\s\S]*\}/,
+  "content page batch ack failures use the existing retry/done paths",
+);
+assert.match(
+  contentJs,
+  /function lccPageSendBatch\(requestId, items\) \{[\s\S]*chrome\.runtime\.sendMessage\(\{ type: "page-translate-batch", requestId, items \}\)[\s\S]*res\.ok === false \|\| res\.routed === false[\s\S]*lccPageBatchRouteFailed\(requestId\)[\s\S]*\.catch\(\(\) => lccPageBatchRouteFailed\(requestId\)\)[\s\S]*catch \(e\) \{[\s\S]*lccPageBatchRouteFailed\(requestId\);[\s\S]*\}/,
+  "content page batch sender consumes routing acknowledgements",
+);
+assert.match(
   backgroundJs,
   /async function ensureContentScript\(tabId\) \{[\s\S]*return false;[\s\S]*return true;[\s\S]*return false;[\s\S]*\}/,
   "background content-script injection reports success or failure",

@@ -1307,6 +1307,22 @@ function lccPageVerifyScheduleIdle() {
   if (lccPageVerifyTimer || !lccPageVerifyEnabled()) return;
   lccPageVerifyTimer = lccPageRequestIdle(() => { lccPageVerifyTimer = 0; lccPageVerifyFlush(); }, 3000);
 }
+function lccPageBatchRouteFailed(requestId) {
+  if (lccPageVerifyRequests.has(requestId)) { lccPageVerifyDone(requestId); return; }
+  lccPageTranslateRetry({ request_id: requestId, retry_ms: 500 });
+}
+function lccPageSendBatch(requestId, items) {
+  try {
+    const sent = chrome.runtime.sendMessage({ type: "page-translate-batch", requestId, items });
+    if (sent && typeof sent.then === "function") {
+      sent
+        .then((res) => { if (res && (res.ok === false || res.routed === false)) lccPageBatchRouteFailed(requestId); })
+        .catch(() => lccPageBatchRouteFailed(requestId));
+    }
+  } catch (e) {
+    lccPageBatchRouteFailed(requestId);
+  }
+}
 function lccPageVerifyFlush() {
   if (!lccPageTranslateOn || !lccPageVerifyEnabled() || !lccPageVerifyQueue.length) return;
   // never compete with visible translation — only when the whole pipeline is idle
@@ -1330,7 +1346,7 @@ function lccPageVerifyFlush() {
   const timer = setTimeout(() => lccPageVerifyDone(requestId), 30000);
   lccPageVerifyRequests.set(requestId, { keys, timer });
   lccPageVerifyInflight = requestId;
-  try { chrome.runtime.sendMessage({ type: "page-translate-batch", requestId, items }); } catch (_) {}
+  lccPageSendBatch(requestId, items);
 }
 function lccPageVerifyApply(msg) {
   const key = String(msg.item_id || "");
@@ -1398,7 +1414,7 @@ function lccPageFlush() {
     const keys = items.map((it) => it.id);
     const timer = setTimeout(() => lccPageTranslateRetry({ request_id: requestId, retry_ms: 500 }), 30000);
     lccPageTranslateRequests.set(requestId, { keys, timer });
-    try { chrome.runtime.sendMessage({ type: "page-translate-batch", requestId, items }); } catch (_) {}
+    lccPageSendBatch(requestId, items);
   }
   if ((lccPageHotQueue.length || lccPageColdQueue.length) && lccPageTranslateRequests.size < policy.maxInflight) {
     lccPageScheduleFlush(Math.max(160, policy.flushMs * 2));
