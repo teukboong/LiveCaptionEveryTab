@@ -73,6 +73,42 @@ with tempfile.TemporaryDirectory() as tmp:
         os.environ.update(old_env)
         host.ROOT = old_root
 
+with tempfile.TemporaryDirectory() as tmp:
+    tmp_path = Path(tmp)
+    repo = tmp_path / "repo"
+    server = repo / "bridge" / "server.py"
+    server.parent.mkdir(parents=True)
+    server.write_text("# fake bridge\n")
+
+    old_root = host.ROOT
+    old_port_listener_pids = host.port_listener_pids
+    old_pid_command = host._pid_command
+    try:
+        host.ROOT = str(repo)
+        own_cmd = f"/venv/bin/python -u {server}"
+        foreign_cmd = "/venv/bin/python -u /tmp/other-checkout/bridge/server.py"
+        prefix_cmd = f"/venv/bin/python -u {server}.bak"
+
+        check("cmd_match.own", host._cmd_matches_this_bridge(own_cmd), True)
+        check("cmd_match.foreign", host._cmd_matches_this_bridge(foreign_cmd), False)
+        check("cmd_match.prefix_collision", host._cmd_matches_this_bridge(prefix_cmd), False)
+
+        host.port_listener_pids = lambda: [101, 202]
+        host._pid_command = lambda pid: own_cmd if int(pid) == 101 else foreign_cmd
+        check("bridge_pids.filters_foreign", host.bridge_pids(), [101])
+        check("foreign_listener.filters_own", host._foreign_listener_pids(), [202])
+
+        host.port_listener_pids = lambda: [202]
+        status = host.do_status()
+        check("status.foreign_running", status.get("running"), False)
+        check("status.foreign_blocked", status.get("blocked"), True)
+        check("start.foreign_blocked", host.do_start({}).get("blocked"), True)
+        check("stop.foreign_blocked", host.do_stop().get("blocked"), True)
+    finally:
+        host.ROOT = old_root
+        host.port_listener_pids = old_port_listener_pids
+        host._pid_command = old_pid_command
+
 check("asr.granite", host._asr_engine({"asrEngine": "granite"}), "granite")
 check("asr.qwen3", host._asr_engine({"asrEngine": "qwen3"}), "qwen3")
 check("asr.parakeet", host._asr_engine({"asrEngine": "parakeet"}), "parakeet")

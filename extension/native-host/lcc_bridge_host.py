@@ -14,7 +14,7 @@ Commands:
   {"cmd":"stop"}    -> SIGTERM then SIGKILL the process holding the port
   {"cmd":"restart"} -> stop (if running) then start
 """
-import sys, os, json, struct, subprocess, time, signal, shutil
+import sys, os, json, struct, subprocess, time, signal, shutil, shlex
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUN_BRIDGE = os.path.normpath(os.path.join(HERE, "..", "..", "bridge", "run_bridge.sh"))
@@ -75,23 +75,67 @@ def port_open():
     return bool(port_listener_pids())
 
 
+def _server_py():
+    return os.path.realpath(os.path.join(ROOT, "bridge", "server.py"))
+
+
+def _pid_command(pid):
+    try:
+        out = subprocess.run(["ps", "-p", str(int(pid)), "-o", "command="],
+                             capture_output=True, text=True, timeout=4).stdout
+        return out.strip()
+    except Exception as e:
+        hlog(f"ps cmd err pid={pid}: {e}")
+        return ""
+
+
+def _cmd_matches_this_bridge(cmd):
+    if not cmd:
+        return False
+    server = _server_py()
+    raw_server = os.path.normpath(os.path.join(ROOT, "bridge", "server.py"))
+    try:
+        tokens = shlex.split(cmd)
+    except Exception:
+        tokens = cmd.split()
+    for token in tokens:
+        if os.path.realpath(token) == server or os.path.normpath(token) == raw_server:
+            return True
+    return False
+
+
+def _this_bridge_pids(pids):
+    return sorted(int(pid) for pid in pids if _cmd_matches_this_bridge(_pid_command(pid)))
+
+
+def _foreign_listener_pids():
+    ours = set(_this_bridge_pids(port_listener_pids()))
+    return [pid for pid in port_listener_pids() if pid not in ours]
+
+
 def bridge_pids():
-    """PIDs listening on PORT (preferred) or any server.py (fallback). Best-effort, no hard dep."""
-    pids = set(port_listener_pids())
+    """PIDs for this checkout's bridge. Prefer the port listener; fallback catches a still-loading server."""
+    pids = set(_this_bridge_pids(port_listener_pids()))
     if not pids:
-        pgrep = shutil.which("pgrep") or "/usr/bin/pgrep"
         try:
-            out = subprocess.run([pgrep, "-f", "bridge/server.py"],
+            out = subprocess.run(["ps", "-axo", "pid=,command="],
                                  capture_output=True, text=True, timeout=4).stdout
-            pids.update(int(p) for p in out.split() if p.strip().isdigit())
+            for line in out.splitlines():
+                pid_s, _sep, cmd = line.strip().partition(" ")
+                if pid_s.isdigit() and _cmd_matches_this_bridge(cmd):
+                    pids.add(int(pid_s))
         except Exception as e:
-            hlog(f"pgrep err: {e}")
+            hlog(f"ps scan err: {e}")
     return sorted(pids)
 
 
 def do_status():
     pids = bridge_pids()
-    return {"ok": True, "running": port_open() or bool(pids), "pid": (pids[0] if pids else None)}
+    foreign = _foreign_listener_pids()
+    reply = {"ok": True, "running": bool(pids), "pid": (pids[0] if pids else None)}
+    if foreign and not pids:
+        reply.update({"blocked": True, "error": f"포트 {PORT}가 다른 프로세스에 사용 중: pid {foreign[0]}"})
+    return reply
 
 
 def _start_env(msg):
@@ -157,8 +201,13 @@ def do_start(msg=None):
             "msg": "CUDA 스택 기동 완료" if data.get("ok", True) else data.get("error", "CUDA 스택 실패"),
             "detail": data,
         }
-    if port_open():
-        return {"ok": True, "running": True, "already": True, "msg": "이미 실행 중"}
+    listener_pids = _this_bridge_pids(port_listener_pids())
+    if listener_pids:
+        return {"ok": True, "running": True, "already": True, "pid": listener_pids[0], "msg": "이미 실행 중"}
+    foreign = _foreign_listener_pids()
+    if foreign:
+        return {"ok": False, "running": False, "blocked": True,
+                "error": f"포트 {PORT}가 다른 프로세스에 사용 중입니다(pid {foreign[0]}). 브릿지를 시작하지 않았습니다."}
     # The port isn't open for ~40s while the bridge loads models. If a server.py is already starting,
     # a second launch would load a second 26B model (~52GB RAM) — treat an existing PID as "already
     # starting" and never double-launch.
@@ -197,6 +246,10 @@ def do_stop():
         }
     pids = bridge_pids()
     if not pids:
+        foreign = _foreign_listener_pids()
+        if foreign:
+            return {"ok": False, "running": False, "blocked": True,
+                    "error": f"포트 {PORT}는 다른 프로세스가 사용 중입니다(pid {foreign[0]}). 종료하지 않았습니다."}
         return {"ok": True, "running": False, "msg": "실행 중 아님"}
     for sig in (signal.SIGTERM, signal.SIGKILL):
         for pid in pids:
@@ -207,10 +260,11 @@ def do_stop():
             except Exception as e:
                 hlog(f"kill {sig} {pid}: {e}")
         for _ in range(10):
-            if not port_open() and not bridge_pids():
+            if not bridge_pids():
                 return {"ok": True, "running": False, "msg": "종료됨"}
             time.sleep(0.5)
-    return {"ok": not port_open(), "running": port_open(), "msg": "종료 시도 완료"}
+    still_running = bool(bridge_pids())
+    return {"ok": not still_running, "running": still_running, "msg": "종료 시도 완료"}
 
 
 def _venv_python():
