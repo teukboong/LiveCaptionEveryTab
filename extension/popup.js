@@ -723,6 +723,11 @@ function pollInstall() {
     try {
       const r = await nmSend({ cmd: "install_status" });
       if (r.noHost) { clearInterval(instPoll); instPoll = null; setInstBusy(false); setInstStatus(tr("noHost"), "#dc2626"); return; }
+      if (!r.ok) {
+        clearInterval(instPoll); instPoll = null; setInstBusy(false);
+        setInstStatus(tr("installFailed", { error: r.error || "" }), "#dc2626");
+        return;
+      }
       if (r.idle) {
         clearInterval(instPoll); instPoll = null; setInstBusy(false);
         setInstStatus(tr("installIdle"), "#999");
