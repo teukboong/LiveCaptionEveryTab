@@ -58,12 +58,21 @@ function notice(text) {
   console.log("[lcc-offscreen]", text);
   sendBackgroundBestEffort({ route: "background", type: "notice", text }, "notice");
 }
+function runOffscreenCommand(sendResponse, failPrefix, fn) {
+  try {
+    const p = fn();
+    if (p && typeof p.catch === "function") p.catch((e) => report(failPrefix + errorText(e)));
+    sendResponse({ ok: true });
+  } catch (e) {
+    sendResponse({ ok: false, error: errorText(e) });
+  }
+}
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.target !== "offscreen") return;
-  if (msg.cmd === "start") start(msg.streamId, msg.pageContext || "", msg.delaySec, msg.config).catch((e) => report("start 실패: " + (e && e.message || e)));
-  else if (msg.cmd === "start-relay") startRelay(msg.pageContext || "", msg.delaySec, msg.config).catch((e) => report("relay 시작 실패: " + (e && e.message || e)));
-  else if (msg.cmd === "start-page") startPage(msg.pageContext || "", msg.config).catch((e) => report("페이지 번역 시작 실패: " + (e && e.message || e)));
+  if (msg.cmd === "start") runOffscreenCommand(sendResponse, "start 실패: ", () => start(msg.streamId, msg.pageContext || "", msg.delaySec, msg.config));
+  else if (msg.cmd === "start-relay") runOffscreenCommand(sendResponse, "relay 시작 실패: ", () => startRelay(msg.pageContext || "", msg.delaySec, msg.config));
+  else if (msg.cmd === "start-page") runOffscreenCommand(sendResponse, "페이지 번역 시작 실패: ", () => startPage(msg.pageContext || "", msg.config));
   else if (msg.cmd === "config") {
     try {
       currentConfig = msg.config || {};
@@ -152,7 +161,7 @@ function sendBridgeConfig() {
     wsConfigured = true;
     flushBufferedPcm();
     flushDomBatches();
-  } catch (e) { report("config 전송 실패: " + (e && e.message || e)); }
+  } catch (e) { report("config 전송 실패: " + errorText(e)); }
 }
 function scheduleReconnect() {
   if (reconnectTimer || !active) return;

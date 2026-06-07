@@ -13,7 +13,7 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-async function loadOffscreen({ failTypes = [] } = {}) {
+async function loadOffscreen({ failSocket = false, failTypes = [] } = {}) {
   let listener = null;
   const runtimeMessages = [];
   const sockets = [];
@@ -24,6 +24,7 @@ async function loadOffscreen({ failTypes = [] } = {}) {
     static CLOSING = 2;
 
     constructor(url) {
+      if (failSocket) throw new Error("socket failed");
       this.url = url;
       this.readyState = FakeWebSocket.OPEN;
       this.sent = [];
@@ -136,11 +137,21 @@ function sendOffscreenMessage(harness, msg) {
   assert.deepEqual(plain(failedBatchResponse), { ok: false, error: "bad item id" });
 
   const bridgeParseFailure = await loadOffscreen();
-  bridgeParseFailure.listener({ target: "offscreen", cmd: "start-page", pageContext: "", config: {} }, {}, () => {});
+  const startPageResponse = await sendOffscreenMessage(bridgeParseFailure, { target: "offscreen", cmd: "start-page", pageContext: "", config: {} });
   await flushMicrotasks();
+  assert.deepEqual(plain(startPageResponse), { ok: true });
   assert.equal(bridgeParseFailure.sockets.length, 1);
   bridgeParseFailure.sockets[0].message("{not json");
   assert.match(bridgeParseFailure.warnings.join("\n"), /bridge message ignored: .*JSON/);
+
+  const startPageFailure = await loadOffscreen({ failSocket: true });
+  const failedStartPageResponse = await sendOffscreenMessage(startPageFailure, { target: "offscreen", cmd: "start-page", pageContext: "", config: {} });
+  await flushMicrotasks();
+  await flushMicrotasks();
+  assert.deepEqual(plain(failedStartPageResponse), { ok: true });
+  assert.deepEqual(plain(startPageFailure.runtimeMessages.slice(1)), [
+    { route: "background", type: "err", text: "페이지 번역 시작 실패: socket failed" },
+  ]);
 
   console.log("test_offscreen_runtime: OK (offscreen runtime failures are observable)");
 })().catch((e) => {
