@@ -263,7 +263,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
     return true;
   }
-  if (msg.type === "lcc-ask") { chrome.runtime.sendMessage({ target: "offscreen", cmd: "ask", mode: msg.mode, transcript: msg.transcript, question: msg.question }); return; }
+  if (msg.type === "lcc-ask") {
+    chrome.runtime.sendMessage({ target: "offscreen", cmd: "ask", mode: msg.mode, transcript: msg.transcript, question: msg.question })
+      .then((res) => sendResponse(res && res.ok === false ? res : { ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
+    return true;
+  }
   if (msg.type === "page-translate-batch") {
     const tabId = sender && sender.tab && sender.tab.id;
     ensureOffscreen()

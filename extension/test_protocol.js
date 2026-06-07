@@ -127,6 +127,7 @@ const popupHtml = fs.readFileSync(path.join(root, "extension", "popup.html"), "u
 const popupJs = fs.readFileSync(path.join(root, "extension", "popup.js"), "utf8");
 const contentJs = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
 const backgroundJs = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
+const offscreenJs = fs.readFileSync(path.join(root, "extension", "offscreen.js"), "utf8");
 assert.match(popupHtml, /<select id="targetLang"><\/select>/, "popup target select is populated from protocol.js");
 assert.match(popupHtml, /<select id="uiLang"><\/select>/, "popup UI-language select is populated from protocol.js");
 assert.match(popupHtml, /id="pageTranslate"/, "popup exposes the page translation toggle");
@@ -155,6 +156,11 @@ assert.match(
   popupJs,
   /status\.textContent = tr\("stopping"\);[\s\S]*const stopped = await chrome\.runtime\.sendMessage\(\{ type: "popup-stop" \}\);[\s\S]*if \(stopped && stopped\.ok === false\) throw new Error/,
   "popup waits for stop acknowledgement before showing stopped",
+);
+assert.match(
+  popupJs,
+  /async function sendAsk\(mode, question\) \{[\s\S]*const asked = await chrome\.runtime\.sendMessage\(\{ type: "lcc-ask", mode: mode, question: question \|\| "", transcript: transcript \}\);[\s\S]*if \(asked && asked\.ok === false\) throw new Error/,
+  "popup waits for AI request acknowledgement before leaving the pending state",
 );
 assert.match(
   contentJs,
@@ -200,6 +206,16 @@ assert.match(
   backgroundJs,
   /if \(msg\.type === "popup-stop"\) \{[\s\S]*cleanup\(\)[\s\S]*sendResponse\(\{ ok: true \}\)[\s\S]*sendResponse\(\{ ok: false, error: String\(e && e\.message \|\| e\) \}\)[\s\S]*return true;/,
   "background acknowledges popup stop success or failure",
+);
+assert.match(
+  backgroundJs,
+  /if \(msg\.type === "lcc-ask"\) \{[\s\S]*chrome\.runtime\.sendMessage\(\{ target: "offscreen", cmd: "ask"[\s\S]*sendResponse\(res && res\.ok === false \? res : \{ ok: true \}\)[\s\S]*sendResponse\(\{ ok: false, error: String\(e && e\.message \|\| e\) \}\)[\s\S]*return true;/,
+  "background acknowledges AI request delivery failures",
+);
+assert.match(
+  offscreenJs,
+  /else if \(msg\.cmd === "ask"\) \{[\s\S]*sendResponse\(\{ ok: true \}\);[\s\S]*sendResponse\(\{ ok: false, error: String\(e && e\.message \|\| e\) \}\);[\s\S]*\}/,
+  "offscreen acknowledges AI request handling",
 );
 
 console.log("test_protocol: OK (target/UI language settings stay canonical through protocol.js)");

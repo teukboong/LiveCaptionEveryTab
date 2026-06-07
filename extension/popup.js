@@ -536,16 +536,20 @@ async function renderHist() {
   }
   el.scrollTop = el.scrollHeight;
 }
-function sendAsk(mode, question) {
+async function sendAsk(mode, question) {
   const res = document.getElementById("aiResult");
   if (!capturing) { res.textContent = tr("askNeedsCaption"); return; }
   res.textContent = (mode === "qa" ? tr("answering") : tr("summarizing"));
-  chrome.storage.local.get("lcc-transcript").then((r) => {
+  try {
+    const r = await chrome.storage.local.get("lcc-transcript");
     const transcript = (r["lcc-transcript"] || []).map((e) => e.source || e.ko).join(" ").slice(-8000);   // match server window; keep the control msg small
     if (!transcript.trim()) { res.textContent = tr("noTranscriptYet"); return; }
-    chrome.storage.session.remove("lcc-answer");
-    chrome.runtime.sendMessage({ type: "lcc-ask", mode: mode, question: question || "", transcript: transcript });
-  });
+    await chrome.storage.session.remove("lcc-answer");
+    const asked = await chrome.runtime.sendMessage({ type: "lcc-ask", mode: mode, question: question || "", transcript: transcript });
+    if (asked && asked.ok === false) throw new Error(asked.error || tr("failurePrefix").trim());
+  } catch (e) {
+    res.textContent = tr("failurePrefix") + (e && e.message || e);
+  }
 }
 document.getElementById("aiSum").onclick = () => sendAsk("summary", "");
 const aiQ = document.getElementById("aiQ");

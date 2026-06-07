@@ -24,7 +24,7 @@ function notice(text) {
   chrome.runtime.sendMessage({ route: "background", type: "notice", text });
 }
 
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.target !== "offscreen") return;
   if (msg.cmd === "start") start(msg.streamId, msg.pageContext || "", msg.delaySec, msg.config).catch((e) => report("start 실패: " + (e && e.message || e)));
   else if (msg.cmd === "start-relay") startRelay(msg.pageContext || "", msg.delaySec, msg.config).catch((e) => report("relay 시작 실패: " + (e && e.message || e)));
@@ -37,10 +37,15 @@ chrome.runtime.onMessage.addListener((msg) => {
   else if (msg.cmd === "dom-translate-batch") queueOrSendDomBatch(msg);
   else if (msg.cmd === "stop") stop();
   else if (msg.cmd === "ask") {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "ask", mode: msg.mode, transcript: msg.transcript || "", question: msg.question || "" }));
-    } else {
-      chrome.runtime.sendMessage({ route: "background", type: "answer", text: "자막을 시작한 상태에서만 요약/질문이 됩니다." });
+    try {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "ask", mode: msg.mode, transcript: msg.transcript || "", question: msg.question || "" }));
+      } else {
+        chrome.runtime.sendMessage({ route: "background", type: "answer", text: "자막을 시작한 상태에서만 요약/질문이 됩니다." });
+      }
+      sendResponse({ ok: true });
+    } catch (e) {
+      sendResponse({ ok: false, error: String(e && e.message || e) });
     }
   }
 });
