@@ -1,10 +1,10 @@
-# Live Caption Every Tab — 任意网站的实时外语→韩语字幕
+# Live Caption Every Tab — 任意网站的实时外语→你的语言字幕
 
 [한국어](README.md) · [English](README.en.md) · [日本語](README.ja.md) · [Español](README.es.md) · **中文**
 
 > 🤖 本项目**从代码到文档全部通过 vibe coding（AI 结对编程）完成**。
 
-在 YouTube、Twitch、**X** 或任何网站上，抓取浏览器标签页的音频，用**本地 Gemma-4** 转写+翻译，在视频上方显示两行字幕（原文/韩语）。（标签页捕获与域名无关，只要标签页有声音就行。）
+在 YouTube、Twitch、**X** 或任何网站上，抓取浏览器标签页的音频，用**本地 Gemma-4** 转写+翻译，在视频上方显示两行字幕（原文/你的语言）。（标签页捕获与域名无关，只要标签页有声音就行。）
 转写可在弹窗中选择 **Granite Speech 4.1**（英语强）或 **Qwen3-ASR**（多语种，含日语/韩语）。两者都原生输出标点与大小写，无人声时用 `[no speech]` 进行门控。
 
 ## 为什么要做（明明已有类似工具）
@@ -41,7 +41,7 @@
                                                         VAD + soft-cut ASR atom
                                                         → Granite / Qwen3-ASR 转写（标点·多语种）
                                                         → unit assembler
-                                                        → Gemma-4 (tier) 韩语翻译
+                                                        → Gemma-4 (tier) 翻译
    [content.js 两行覆盖层] ◀──WS(JSON caption)──────────┘
 ```
 - ASR 在弹窗中从**两个 mlx-audio 引擎**里选（▸ 转写引擎）。**Granite Speech 4.1 2B**（`ibm-granite/granite-speech-4.1-2b`·英语忠实，WER 接近 0%）与 **Qwen3-ASR 1.7B**（`Qwen/Qwen3-ASR-1.7B`·含日语/韩语共 52 种语言，自动语种识别）。两者都原生输出标点·truecasing，所以句子切分可直接进行。与翻译模型共享同一块 Apple GPU（串行）。⚠ granite 需要 mlx-audio **main 上的 conv 修复**（见 SETUP）。
@@ -73,7 +73,7 @@ bash bridge/run_bridge.sh
 - **内容类型预设**：在弹窗里选一次内容类型（一般·闲聊 / 会议·讲座 / 新闻·访谈 / 个人直播），即把语体（register）与延迟模式打包匹配——讲座=正式·稳定，新闻=均衡，直播=口语·即时。语气·句末·few-shot 锚点随内容变化，并自动检测源语言（EN/JA）选取匹配示例。
 - **术语表**：在弹窗里填 `名称=译法`（每行一个），即可对该术语进行转写偏置 + 在翻译中始终渲染一致（消除同一名称每行译法不同的抖动）。`术语提示` 为自由文本偏置。
 - **精度模式（两遍重转写）**：开启后，由自然结束（pause/eos）或终止标点确定的多小句句子，会在确定前把累积音频整体再转写一遍 → 消除拼接 VAD 片段造成的边界错误。确定会慢约 0.7s，故为开关（默认 OFF）。因重叠/拆分导致对齐损坏的单元会被自动排除（`unit_pure` 守卫）。
-- **流式字幕**：原文按 ASR atom 先显示，韩语预览经 debounce/coalesce。已确定字幕在 final 队列中优先处理。
+- **流式字幕**：原文按 ASR atom 先显示，翻译预览经 debounce/coalesce。已确定字幕在 final 队列中优先处理。
 - **三档延迟模式**：`aggressive` 尽量让 Parakeet 的 CPU 转写与 MLX 翻译重叠，并以 latest-only 预翻当前 unit 预览；`balanced` 仅在 MLX 空闲时预览；`stable` 只显示已确定的翻译。final 翻译始终优先于预览。
 - **Lookahead 视频延迟**：在视频延迟模式下，实际音频立即转写·翻译，字幕则按真实 PCM 流起始 clock 与语音区间（`start_ms`/`end_ms`）排程输出。弹窗的同步校正可做 ±2 秒微调。
 - **同步调试**：在弹窗开启后，会在字幕下方与控制台显示 `kind/unit/start/end/due/now/lag/delay/offset/q`，用于确认输出是否早于 due time。

@@ -133,10 +133,10 @@ BACKEND = _normalize_backend(os.environ.get("LCC_BACKEND"), "mlx")   # mlx (Appl
 # probes hardware or prints. Effective on MLX (selects LM_MODEL); on CUDA the GGUF is chosen by cuda/serve_llama.sh
 # and the tier here only labels the OpenAI 'model' field + logs which GGUF tier to serve.
 _LM_TIERS = {
-    "mlx": {   # mlx-lm repo ids (Gemma 4, Apache-2.0)
-        "full": "mlx-community/gemma-4-26b-a4b-it-4bit",                                              # ~14GB weights
-        "mid":  os.environ.get("LCC_LM_MID_MLX",  "mlx-community/gemma-4-E4B-it-qat-assistant-6bit"),  # ~5GB (QAT)
-        "lite": os.environ.get("LCC_LM_LITE_MLX", "mlx-community/gemma-4-e2b-it-4bit"),               # ~3.2GB
+    "mlx": {   # Gemma 4, Apache-2.0. full=mlx_lm. mid/lite are Gemma-4 nano (multimodal) → need mlx_vlm loader (pending).
+        "full": "mlx-community/gemma-4-26b-a4b-it-4bit",                              # ~14GB, mlx_lm
+        "mid":  os.environ.get("LCC_LM_MID_MLX",  "mlx-community/gemma-4-e4b-it-4bit"),   # ~5GB  (nano; mlx_vlm)
+        "lite": os.environ.get("LCC_LM_LITE_MLX", "mlx-community/gemma-4-e2b-it-4bit"),   # ~3.2GB (nano; mlx_vlm)
     },
     "cuda": {  # llama.cpp serves the .gguf chosen at launch; this is just the OpenAI 'model' label
         "full": os.environ.get("LCC_LM_FULL_CUDA", "gemma-4-26b-a4b-it-qat-q4_0"),
@@ -197,14 +197,26 @@ def _free_mem_gb_cuda():
     except Exception:
         return None
 
+def _mlx_device_info():
+    try:
+        return mx.device_info()            # mlx >= 0.30
+    except Exception:
+        return mx.metal.device_info()      # older mlx (deprecated path)
+
+def _mlx_active_memory():
+    try:
+        return mx.get_active_memory()
+    except Exception:
+        return mx.metal.get_active_memory()
+
 def _free_mem_gb_mlx():
     """Idle unified memory (GB) on Apple Silicon: min(Metal working-set budget − active MLX, OS-available)."""
     budget_free = None
     try:
-        info = mx.metal.device_info()
+        info = _mlx_device_info()
         budget = float(info.get("max_recommended_working_set_size", 0))
         if budget > 0:
-            budget_free = (budget - float(mx.metal.get_active_memory())) / 1e9
+            budget_free = (budget - float(_mlx_active_memory())) / 1e9
     except Exception:
         pass
     cands = [v for v in (budget_free, _system_available_gb()) if v is not None]
@@ -380,8 +392,19 @@ def load_models(asr=True, lm=True, vad=True):
                 else:
                     raise
         if lm and lm_model is None:
-            print("[bridge] loading 26B-A4B MoE (translate)…", flush=True)
-            lm_model, lm_tok = lm_load(LM_MODEL)
+            print(f"[bridge] loading translator ({LM_TIER}: {LM_MODEL})…", flush=True)
+            try:
+                lm_model, lm_tok = lm_load(LM_MODEL)
+            except Exception as e:
+                # Gemma-4 nano (E4B/E2B) ships as a multimodal checkpoint (language_model.* prefix) that mlx_lm's
+                # text loader can't read; they DO load via mlx_vlm (verified). A vlm translate path for mid/lite
+                # is pending — until then full (26B-A4B, mlx_lm) is the working MLX tier.
+                if LM_TIER in ("mid", "lite") and "not in model" in str(e):
+                    raise RuntimeError(
+                        f"tier '{LM_TIER}' model {LM_MODEL} is a Gemma-4 nano (multimodal) checkpoint the mlx_lm "
+                        f"translator can't load yet (mlx_vlm loader pending). Set LCC_LM_TIER=full, or LCC_LM_MODEL "
+                        f"to an mlx_lm-loadable model.") from e
+                raise
     if vad and silero is None:
         print("[bridge] loading Silero VAD…", flush=True)
         silero = load_silero_vad(onnx=True)

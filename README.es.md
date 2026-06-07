@@ -1,10 +1,10 @@
-# Live Caption Every Tab — Subtítulos en tiempo real de cualquier sitio (extranjero→coreano)
+# Live Caption Every Tab — Subtítulos en tiempo real de cualquier sitio (extranjero→tu idioma)
 
 [한국어](README.md) · [English](README.en.md) · [日本語](README.ja.md) · **Español** · [中文](README.zh.md)
 
 > 🤖 Este proyecto se construyó **íntegramente mediante vibe coding (programación en pareja con IA)** — desde el código hasta la documentación.
 
-En YouTube, Twitch, **X** o cualquier sitio, captura el audio de la pestaña del navegador y usa un **Gemma-4 local** para transcribir + traducir, mostrando subtítulos de 2 líneas (original / coreano) sobre el vídeo. (La captura de pestaña es independiente del dominio, así que funciona en cualquier pestaña con sonido.)
+En YouTube, Twitch, **X** o cualquier sitio, captura el audio de la pestaña del navegador y usa un **Gemma-4 local** para transcribir + traducir, mostrando subtítulos de 2 líneas (original / tu idioma) sobre el vídeo. (La captura de pestaña es independiente del dominio, así que funciona en cualquier pestaña con sonido.)
 Para la transcripción eliges en el popup entre **Granite Speech 4.1** (fuerte en inglés) y **Qwen3-ASR** (multilingüe, incl. japonés/coreano). Ambos generan puntuación y mayúsculas de forma nativa, y filtran el silencio con `[no speech]`.
 
 ## Por qué existe (ya hay herramientas parecidas)
@@ -41,12 +41,12 @@ La elección del motor de transcripción (inglés=granite / multilingüe=qwen3) 
                                                         VAD + soft-cut ASR atom
                                                         → transcripción Granite / Qwen3-ASR (puntuación·multilingüe)
                                                         → unit assembler
-                                                        → traducción al coreano Gemma-4 (tier)
+                                                        → traducción Gemma-4 (tier)
    [overlay de 2 líneas content.js] ◀──WS(JSON caption)──┘
 ```
 - El ASR elige entre **dos motores mlx-audio** en el popup (▸ Motor de transcripción). **Granite Speech 4.1 2B** (`ibm-granite/granite-speech-4.1-2b` · fiel en inglés, WER ~0%) y **Qwen3-ASR 1.7B** (`Qwen/Qwen3-ASR-1.7B` · 52 idiomas incl. japonés/coreano, ID de idioma automático). Ambos generan puntuación·truecasing de forma nativa, así que el troceado por frases funciona tal cual. Comparte la GPU de Apple con el traductor (serializado). ⚠ granite necesita el **arreglo de conv en mlx-audio main** (ver SETUP).
 - Un Parakeet de baja latencia solo para inglés es una vía para usuarios avanzados, solo con `LCC_ASR_ENGINE=parakeet` (CPU, en paralelo a la traducción; modelo `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`, `sherpa-onnx==1.13.2`). El selector del popup solo muestra granite/qwen3.
-- Traducción: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — **prompt de calidad** por defecto (expert interpreter·by-meaning·no-translationese + 3 few-shots, coste amortizado por KV-cache → coreano hablado natural en vez de un estilo escrito rígido). Baja latencia con `LCC_TX_PROFILE=fast`. **Idioma destino seleccionable** (KO/EN/JA/ZH/ES/FR/DE), origen autodetectado, se omite cuando destino=origen.
+- Traducción: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — **prompt de calidad** por defecto (expert interpreter·by-meaning·no-translationese + 3 few-shots, coste amortizado por KV-cache → salida hablada natural en vez de un estilo escrito rígido). Baja latencia con `LCC_TX_PROFILE=fast`. **Idioma destino seleccionable** (KO/EN/JA/ZH/ES/FR/DE), origen autodetectado, se omite cuando destino=origen.
 - RAM ~26GB (pesos) + un poco de KV por chunk. Latencia ~2.9–3.4s por chunk de habla (ASR ~0.7s + traducción ~1.4s + prefill de audio + espera de límite de cláusula).
 - MTP no aporta nada en este hardware, así que no se usa (verificado en MoE·dense·E4B).
 - ⚠️ Requiere Chrome/Edge/Brave genuinos — algunos forks de Chromium (p. ej. ChatGPT Atlas) no implementan `chrome.tabCapture`.
@@ -73,7 +73,7 @@ bash bridge/run_bridge.sh
 - **Presets por tipo de contenido**: elige un tipo (general·charla / conferencia·ponencia / noticias·entrevista / streaming personal) una vez y agrupa el registro (tono) + el modo de latencia — ponencia=formal·estable, noticias=equilibrado, streaming=coloquial·inmediato. El tono·las terminaciones de frase·los anclajes few-shot se adaptan al contenido, y el idioma de origen (EN/JA) se autodetecta para elegir ejemplos acordes.
 - **Glosario**: introduce `nombre=traducción` (uno por línea) en el popup para sesgar la transcripción + renderizar siempre ese término igual en la traducción (elimina que un nombre se traduzca distinto en cada línea). `Pistas de términos` es sesgo de texto libre.
 - **Modo precisión (re-transcripción en 2 pasadas)**: al activarlo, las frases multicláusula que se confirman por un final natural (pause/eos) o por puntuación terminal se re-transcriben enteras una vez justo antes de confirmar → elimina errores de límite al unir fragmentos de VAD. La confirmación es ~0.7s más lenta, por eso es un interruptor (por defecto OFF). Las unidades cuya alineación se rompió por solape/división se excluyen automáticamente (guarda `unit_pure`).
-- **Subtítulos en streaming**: la línea original aparece primero por cada ASR atom; la vista previa en coreano se debounce/coalesce. Los subtítulos confirmados tienen prioridad en la cola final.
+- **Subtítulos en streaming**: la línea original aparece primero por cada ASR atom; la vista previa traducida se debounce/coalesce. Los subtítulos confirmados tienen prioridad en la cola final.
 - **3 modos de latencia**: `aggressive` solapa al máximo la transcripción CPU de Parakeet con la traducción MLX y pre-traduce la vista previa de la unidad actual en modo latest-only; `balanced` muestra vista previa solo cuando MLX está libre; `stable` muestra solo traducciones confirmadas. La traducción final siempre tiene prioridad sobre la vista previa.
 - **Retardo de vídeo Lookahead**: en modo de retardo de vídeo el audio real se transcribe·traduce de inmediato, y los subtítulos se programan al reloj real de inicio del stream PCM y a la ventana de habla (`start_ms`/`end_ms`). La corrección de sincronía del popup permite ajuste fino de ±2s.
 - **Depuración de sincronía**: al activarla en el popup, muestra `kind/unit/start/end/due/now/lag/delay/offset/q` bajo el subtítulo y en la consola para verificar que la salida no llega antes del due time.

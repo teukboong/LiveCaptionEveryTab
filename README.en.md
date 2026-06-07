@@ -1,10 +1,10 @@
-# Live Caption Every Tab — Realtime foreign→Korean captions for any site
+# Live Caption Every Tab — Realtime foreign→your-language captions for any site
 
 [한국어](README.md) · **English** · [日本語](README.ja.md) · [Español](README.es.md) · [中文](README.zh.md)
 
 > 🤖 This project was built **entirely through vibe coding (AI pair-programming)** — from the code to the documentation.
 
-On YouTube, Twitch, **X**, or any site, it captures the browser tab's audio and uses a **local Gemma-4** to transcribe + translate, showing 2-line captions (source / Korean) over the video. (Tab capture is domain-agnostic, so any tab with sound works.)
+On YouTube, Twitch, **X**, or any site, it captures the browser tab's audio and uses a **local Gemma-4** to transcribe + translate, showing 2-line captions (source / your language) over the video. (Tab capture is domain-agnostic, so any tab with sound works.)
 For transcription you pick in the popup between **Granite Speech 4.1** (strong English) and **Qwen3-ASR** (multilingual incl. Japanese/Korean). Both emit punctuation and casing natively, and gate silence with `[no speech]`.
 
 ## Why this exists (similar tools already exist)
@@ -41,12 +41,12 @@ The transcription-engine choice (English=granite / multilingual=qwen3) is identi
                                                         VAD + soft-cut ASR atom
                                                         → Granite / Qwen3-ASR transcription (punctuation·multilingual)
                                                         → unit assembler
-                                                        → Gemma-4 (tier) Korean translation
+                                                        → Gemma-4 (tier) translation
    [content.js 2-line overlay] ◀──WS(JSON caption)──────┘
 ```
 - ASR picks between **two mlx-audio engines** in the popup (▸ Transcription engine). **Granite Speech 4.1 2B** (`ibm-granite/granite-speech-4.1-2b` · faithful English, ~0% WER) and **Qwen3-ASR 1.7B** (`Qwen/Qwen3-ASR-1.7B` · 52 languages incl. Japanese/Korean, auto language ID). Both emit punctuation·truecasing natively so sentence chunking just works. Shares the Apple GPU with the translator (serialized). ⚠ granite needs the **conv fix on mlx-audio main** (see SETUP).
 - A low-latency English-only Parakeet is a power-user escape hatch via `LCC_ASR_ENGINE=parakeet` only (CPU, parallel to translation; model `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`, `sherpa-onnx==1.13.2`). The popup selector only exposes granite/qwen3.
-- Translation: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — default **quality prompt** (expert interpreter·by-meaning·no-translationese + 3 few-shots, cost amortized by KV-cache → natural spoken Korean rather than stiff written style). Low latency via `LCC_TX_PROFILE=fast`. **Target language is selectable** (KO/EN/JA/ZH/ES/FR/DE), source auto-detected, skipped when target=source.
+- Translation: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — default **quality prompt** (expert interpreter·by-meaning·no-translationese + 3 few-shots, cost amortized by KV-cache → natural spoken output rather than stiff written style). Low latency via `LCC_TX_PROFILE=fast`. **Target language is selectable** (KO/EN/JA/ZH/ES/FR/DE), source auto-detected, skipped when target=source.
 - RAM ~26GB (weights) + a little KV per chunk. Latency ~2.9–3.4s per utterance chunk (ASR ~0.7s + translation ~1.4s + audio prefill + clause-boundary wait).
 - MTP is pointless on this hardware, so unused (verified across MoE·dense·E4B).
 - ⚠️ Needs genuine Chrome/Edge/Brave — some Chromium forks (e.g. ChatGPT Atlas) don't implement `chrome.tabCapture`.
@@ -73,7 +73,7 @@ bash bridge/run_bridge.sh
 - **Content-type presets**: pick a content type once (general·chat / conference·lecture / news·interview / personal streaming) and it bundles register (tone) + latency mode — lecture=formal·stable, news=balanced, streaming=colloquial·instant. Tone·sentence-endings·few-shot anchors adapt to the content, and the source language (EN/JA) is auto-detected to pick matching examples.
 - **Glossary**: enter `name=translation` (one per line) in the popup to bias transcription + always render that term identically in translation (removes the wobble of a name translated differently each line). `Term hints` is free-text biasing.
 - **Accuracy mode (2-pass re-transcription)**: when on, multi-clause sentences finalized by a natural end (pause/eos) or terminal punctuation get their accumulated audio re-transcribed once as a whole right before commit → removes boundary errors from stitching VAD fragments. Finalization is ~0.7s slower, so it's a toggle (default OFF). Units whose alignment broke from overlap/split are auto-excluded (`unit_pure` guard).
-- **Streaming captions**: the source line appears first per ASR atom; the Korean preview is debounced/coalesced. Committed captions are prioritized in the final queue.
+- **Streaming captions**: the source line appears first per ASR atom; the translated preview is debounced/coalesced. Committed captions are prioritized in the final queue.
 - **3 latency modes**: `aggressive` overlaps Parakeet CPU transcription with MLX translation as much as possible and pre-translates the current unit preview latest-only; `balanced` previews only when MLX is idle; `stable` shows only committed translations. Final translation always takes priority over preview.
 - **Lookahead video delay**: in video-delay mode the actual audio is transcribed·translated immediately, and captions are scheduled to the real PCM stream-start clock and the utterance window (`start_ms`/`end_ms`). The popup's sync offset allows ±2s fine-tuning.
 - **Sync debug**: when enabled in the popup, it shows `kind/unit/start/end/due/now/lag/delay/offset/q` below the caption and in the console to verify output isn't earlier than due time.

@@ -9,7 +9,7 @@ Mac(Apple MLX)와 **같은 확장프로그램**을, 이번엔 **NVIDIA GPU**로 
 [Windows Chrome 확장] ──WS(PCM16 16k)──▶ [WSL2: bridge/server.py  (LCC_BACKEND=cuda)]
                                             VAD + 문장 조립 + 스케줄러 (Mac과 동일 코드)
                                             ├─HTTP─▶ granite/qwen3 ASR :8000  (전사, Mac과 동일 모델)
-                                            └─HTTP─▶ llama.cpp 26B     :8080  (한국어 번역)
+                                            └─HTTP─▶ llama.cpp 26B     :8080  (모국어 번역)
    [content.js 오버레이 2줄] ◀──WS(JSON)────┘
 ```
 

@@ -1,10 +1,10 @@
-# Live Caption Every Tab — 모든 사이트 실시간 외국어→한국어 자막
+# Live Caption Every Tab — 모든 사이트 실시간 외국어→모국어 자막
 
 **한국어** · [English](README.en.md) · [日本語](README.ja.md) · [Español](README.es.md) · [中文](README.zh.md)
 
 > 🤖 이 프로젝트는 코드부터 문서까지 **전부 바이브 코딩(AI 페어 프로그래밍)으로** 만들었습니다.
 
-유튜브·트위치·**X**·기타 어떤 사이트든, 브라우저 탭 오디오를 잡아 **로컬 Gemma-4**로 전사+번역해서 영상 위에 2줄 자막(원문/한국어)을 띄운다. (탭 캡처는 도메인 무관이라 소리 나는 탭이면 다 됨)
+유튜브·트위치·**X**·기타 어떤 사이트든, 브라우저 탭 오디오를 잡아 **로컬 Gemma-4**로 전사+번역해서 영상 위에 2줄 자막(원문/모국어)을 띄운다. (탭 캡처는 도메인 무관이라 소리 나는 탭이면 다 됨)
 전사는 **Granite Speech 4.1**(영어 강함)·**Qwen3-ASR**(일어·한국어 등 다국어) 중 팝업에서 고른다. 둘 다 구두점·대소문자를 직접 찍고, 말 없으면 `[no speech]`로 게이트한다.
 
 ## 왜 만들었나 (비슷한 도구는 이미 있는데)
@@ -41,7 +41,7 @@
                                                         VAD + soft-cut ASR atom
                                                         → Granite / Qwen3-ASR 전사 (구두점·다국어)
                                                         → unit assembler
-                                                        → Gemma-4 (tier) 한국어 번역
+                                                        → Gemma-4 (tier) 번역
    [content.js 오버레이 2줄] ◀──WS(JSON caption)────────┘
 ```
 - ASR은 **두 개의 mlx-audio 엔진** 중 팝업에서 선택(▸ 전사 엔진). **Granite Speech 4.1 2B**(`ibm-granite/granite-speech-4.1-2b` · 영어 충실, WER 0%대)와 **Qwen3-ASR 1.7B**(`Qwen/Qwen3-ASR-1.7B` · 일어·한국어 포함 52언어, 언어 자동감지). 둘 다 구두점·truecasing을 네이티브로 찍어 문장 청킹이 그대로 된다. 번역 모델과 같은 Apple GPU 공유(직렬). ⚠ granite는 mlx-audio **main의 conv 수정** 필요(SETUP 참고).
@@ -73,7 +73,7 @@ bash bridge/run_bridge.sh
 - **영상 종류 프리셋**: 팝업에서 콘텐츠 유형(일반·잡담 / 컨퍼런스·강연 / 뉴스·인터뷰 / 개인 스트리밍)을 한 번 고르면 말투(register)와 지연 모드를 묶어서 맞춘다 — 강연=격식·안정, 뉴스=균형, 스트리밍=구어·즉각. 어조·종결어미·few-shot 앵커가 콘텐츠에 맞게 바뀌고, 소스 언어(EN/JA)도 자동감지해 맞는 예시를 고름
 - **용어집**: 팝업에 `이름=번역`(줄마다 하나)을 넣으면 그 용어를 전사 바이어싱 + 번역에서 항상 같게 렌더링(이름이 줄마다 다르게 번역되는 흔들림 제거). `용어 힌트`는 자유 텍스트 바이어싱
 - **정확도 모드(2패스 재전사)**: 켜면 자연 종료(pause/eos)나 종결부호로 확정되는 다절(多節) 문장의 누적 오디오를 확정 직전 한 번 더 통째로 전사 → VAD 조각 이어붙임 경계 오류 제거. 확정이 ~0.7s 느려져 토글(기본 OFF). 오버랩/스플릿으로 정렬이 깨진 유닛은 자동 제외(`unit_pure` 가드)
-- **스트리밍 자막**: 원문은 ASR atom 단위로 먼저 뜨고, 한국어 preview는 debounce/coalesce됨. 확정 자막은 final queue에서 우선 처리
+- **스트리밍 자막**: 원문은 ASR atom 단위로 먼저 뜨고, 번역 preview는 debounce/coalesce됨. 확정 자막은 final queue에서 우선 처리
 - **지연 모드 3단계**: `공격`은 Parakeet CPU 전사와 MLX 번역을 최대한 겹치고 현재 unit preview를 latest-only로 미리 번역, `균형`은 MLX idle일 때만 preview, `안정`은 확정 번역만 표시. final 번역은 항상 preview보다 우선
 - **Lookahead 영상 지연**: 영상 지연 모드에서는 실제 오디오는 즉시 전사·번역하고, 자막은 실제 PCM 스트림 시작 clock과 발화 구간(`start_ms`/`end_ms`)에 맞춰 예약 출력. popup의 싱크 보정으로 ±2초 미세 조정 가능
 - **싱크 디버그**: popup에서 켜면 자막 아래와 console에 `kind/unit/start/end/due/now/lag/delay/offset/q`를 표시해 실제 출력이 due time보다 빠른지 확인 가능

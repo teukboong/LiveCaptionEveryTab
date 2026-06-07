@@ -26,7 +26,7 @@ Tiered so the project runs across a range of hardware:
   tier   model (Apple Silicon / MLX)                weights (q4)  use
   -----  ----------------------------------------   -----------   --------------------
   full   mlx-community/gemma-4-26b-a4b-it-4bit       ~14 GB        best quality (32GB)
-  mid    mlx-community/gemma-4-E4B-it-qat-*          ~5  GB        balanced  (16GB)
+  mid    mlx-community/gemma-4-e4b-it-4bit          ~5  GB        balanced  (16GB)
   lite   mlx-community/gemma-4-e2b-it-4bit (qat)     ~3.2 GB       minimal   (<=16GB)
 
   Windows + NVIDIA (llama.cpp GGUF):
