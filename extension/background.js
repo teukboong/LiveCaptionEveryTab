@@ -251,7 +251,10 @@ async function forward(msg) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "vd-pcm") { sendOffscreenBestEffort({ target: "offscreen", cmd: "pcm", pcm: msg.pcm }, "vd-pcm"); return; }   // delay.js -> offscreen relay (video mode)
-  if (msg.type === "offscreen-ready") { resendStart(); return; }   // offscreen loaded -> (re)deliver start params
+  if (msg.type === "offscreen-ready") {
+    resendStart().catch((e) => console.warn("[lcc] offscreen-ready resend failed:", lccErrorText(e)));
+    return;
+  }   // offscreen loaded -> (re)deliver start params
   if (msg.type === "popup-status") {
     chrome.storage.session.get(["captioning", "pageTranslating", "capturing", "wsOpen"]).then(({ captioning, pageTranslating, capturing, wsOpen }) => {
       const active = !!captioning || !!pageTranslating || !!capturing;

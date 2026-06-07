@@ -186,6 +186,7 @@ function loadBackgroundHarness({
   failOffscreenClose = false,
   failOffscreenMessage = false,
   failOffscreenPcm = false,
+  failSessionGet = false,
   failSessionSet = false,
   failTabMessage = false,
   hasOffscreenDocument = false,
@@ -244,7 +245,10 @@ function loadBackgroundHarness({
         },
       },
       session: {
-        get() { return Promise.resolve({ capturedTabId: 456, pageTabId: 123, pageTranslating }); },
+        get() {
+          if (failSessionGet) return Promise.reject(new Error("session get failed"));
+          return Promise.resolve({ capturedTabId: 456, pageTabId: 123, pageTranslating });
+        },
         set(value) {
           sessionSet.push(value);
           if (failSessionSet) return Promise.reject(new Error("session set failed"));
@@ -428,7 +432,14 @@ function runBackgroundClearTranscript(options) {
   ]);
   assert.match(backgroundPcmFailure.warnings.join("\n"), /offscreen delivery failed: vd-pcm offscreen pcm failed/);
 
-  console.log("test_extension_actions: OK (popup/background cleanup, transcript clear, page batch, and video PCM paths pass)");
+  const backgroundOffscreenReadyFailure = await runBackgroundOneWay(
+    { type: "offscreen-ready" },
+    { failSessionGet: true },
+  );
+  assert.deepEqual(plain(backgroundOffscreenReadyFailure.runtimeMessages), []);
+  assert.match(backgroundOffscreenReadyFailure.warnings.join("\n"), /offscreen-ready resend failed: session get failed/);
+
+  console.log("test_extension_actions: OK (popup/background cleanup, transcript clear, page batch, video PCM, and offscreen-ready paths pass)");
 })().catch((e) => {
   console.error(e);
   process.exit(1);

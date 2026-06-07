@@ -244,6 +244,11 @@ assert.match(
 );
 assert.match(
   backgroundJs,
+  /if \(msg\.type === "offscreen-ready"\) \{[\s\S]*resendStart\(\)\.catch\(\(e\) => console\.warn\("\[lcc\] offscreen-ready resend failed:", lccErrorText\(e\)\)\);[\s\S]*return;[\s\S]*\}/,
+  "background reports offscreen-ready resend failures",
+);
+assert.match(
+  backgroundJs,
   /if \(msg\.type === "popup-stop"\) \{[\s\S]*cleanup\(\)[\s\S]*sendResponse\(\{ ok: true \}\)[\s\S]*respondError\(sendResponse, e\)[\s\S]*return true;/,
   "background acknowledges popup stop success or failure",
 );
