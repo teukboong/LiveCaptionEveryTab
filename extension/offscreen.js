@@ -82,8 +82,8 @@ function connectWS() {
     try {
       const d = JSON.parse(e.data);
       if (d.type === "caption" || d.type === "caption_partial" || d.type === "source" ||
-          d.type === "dom_translate_result" || d.type === "dom_translate_done" ||
-          d.type === "dom_translate_busy" || d.type === "dom_translate_err" ||
+          d.type === "dom_translate_result" || d.type === "dom_translate_partial" ||
+          d.type === "dom_translate_done" || d.type === "dom_translate_busy" || d.type === "dom_translate_err" ||
           d.type === "answer_partial" || d.type === "answer" ||
           d.type === "err" || d.type === "notice") {   // surface bridge diagnostics (e.g. ASR switch failure) — content.js renders them
         chrome.runtime.sendMessage({ route: "background", ...d });
@@ -207,6 +207,7 @@ function queueOrSendDomBatch(msg) {
   const payload = {
     type: "dom_translate_batch",
     request_id: String(msg.requestId),
+    partial: String((currentConfig && currentConfig.pageTranslateStream) || "partial") === "partial",
     items: msg.items.slice(0, 12).map((it) => ({
       id: String(it.id || ""),
       text: String(it.text || ""),

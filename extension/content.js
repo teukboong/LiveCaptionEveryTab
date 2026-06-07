@@ -450,6 +450,8 @@ function lccHandleBridgeMessage(msg) {
     lccPageTranslateConfig(msg.settings || {});
   } else if (msg.type === "dom_translate_result") {
     lccPageTranslateApply(msg);
+  } else if (msg.type === "dom_translate_partial") {
+    lccPageTranslatePartial(msg);
   } else if (msg.type === "dom_translate_done") {
     lccPageTranslateDone(msg);
   } else if (msg.type === "dom_translate_busy") {
@@ -553,7 +555,11 @@ const lccPageWork = new Map();               // sourceKey -> { text, nodes:Set<n
 const lccPageTranslateNodes = new Set();     // every node we hold state for (restore on stop)
 const lccPageTranslateState = new WeakMap(); // node -> per-node DOM state
 const lccPageTranslateRequests = new Map();  // requestId -> { keys:[sourceKey], timer }
-const lccPageTranslateStats = { resultSeen: 0, applied: 0, dropNoNode: 0, dropSource: 0, dropChanged: 0, dropEmpty: 0 };
+const lccPageTranslateStats = {
+  resultSeen: 0, partialSeen: 0, applied: 0, partialApplied: 0,
+  dropNoNode: 0, dropSource: 0, dropChanged: 0, dropEmpty: 0,
+};
+const LCC_PAGE_PARTIAL_MAX_CHARS = 420;      // speculative DOM streaming is only for short visible text
 // Time-sliced scan: a persistent TreeWalker advanced in idle chunks so a huge DOM never blocks the main
 // thread, plus a one-shot below-fold prefetch so scrolling lands on already-translated text.
 const LCC_PAGE_SCAN_SLICE_MS = 6;            // main-thread budget per scan chunk
@@ -834,7 +840,7 @@ function lccPageNodeAllowed(node) {
   if (!parent || parent.closest(LCC_PAGE_EXCLUDE_SELECTOR)) return false;
   const state = lccPageTranslateState.get(node);
   if (state && state.translatedFull && node.nodeValue === state.translatedFull) return false;
-  if (state && state.revealing) return false;   // mid-reveal partial text must not re-enter the queue
+  if (state && state.partialFull && node.nodeValue === state.partialFull) return false;   // a speculative partial is showing
   if (!lccPageNodeStyled(parent)) return false;
   if (!lccPagePrefetchScanning && !lccPageNearViewport(parent)) return false;   // prefetch relaxes the window
   const { core } = lccPageTextParts(node.nodeValue);
@@ -849,79 +855,36 @@ function lccPageNodeAllowed(node) {
 function lccPageStateFor(node) {
   let state = lccPageTranslateState.get(node);
   if (!state) {
-    state = { pending: false, source: "", originalFull: "" };
+    state = { pending: false, source: "", originalFull: "", partialFull: "", partialTarget: "" };
     lccPageTranslateState.set(node, state);
     lccPageTranslateNodes.add(node);
   }
   return state;
 }
+function lccPageNodeHoldsPendingSource(node, state) {
+  if (!node || !state) return false;
+  return node.nodeValue === state.expectedFull || (!!state.partialFull && node.nodeValue === state.partialFull);
+}
+function lccPageClearPartialState(state) {
+  if (!state) return;
+  state.partialFull = "";
+  state.partialTarget = "";
+  state.partialRequestId = "";
+}
+function lccPageRestorePartialNode(node, state) {
+  if (!node || !state || !state.partialFull) return;
+  if (node.isConnected && node.nodeValue === state.partialFull) node.nodeValue = state.expectedFull;
+  lccPageClearPartialState(state);
+}
 function lccPagePruneWork(work) {
-  // Keep only nodes still in the DOM holding the exact source we queued (untranslated, unchanged).
+  // Keep nodes still in the DOM holding either the queued source or a speculative partial for that source.
   for (const n of [...work.nodes]) {
     const st = lccPageTranslateState.get(n);
-    if (!n.isConnected || !st || n.nodeValue !== st.expectedFull) work.nodes.delete(n);
+    if (!n.isConnected || !st || !lccPageNodeHoldsPendingSource(n, st)) work.nodes.delete(n);
   }
   return work.nodes.size > 0;
 }
-// ---- reveal animation: paint a freshly-arrived translation grapheme-by-grapheme over ~160ms. Purely
-// visual — the model/bridge pipeline is untouched (we already hold the final string). Gated to the
-// viewport, short strings, no reduced-motion; cache hits and off-screen nodes snap instantly.
-const LCC_PAGE_REVEAL_MAX_CHARS = 120;
-const LCC_PAGE_REVEAL_MS = 160;
-function lccPageGraphemes(s) {
-  s = String(s || "");
-  try {
-    if (typeof Intl !== "undefined" && Intl.Segmenter) {
-      return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(s)].map((x) => x.segment);
-    }
-  } catch (_) {}
-  return Array.from(s);   // fallback: code points (still won't split surrogate pairs)
-}
-function lccPageRevealEnabled() {
-  return lccPageTranslateSettings.pageReveal !== false;
-}
-function lccPageShouldReveal(node, target) {
-  if (!lccPageRevealEnabled()) return false;
-  if (!target || target.length > LCC_PAGE_REVEAL_MAX_CHARS) return false;
-  if (typeof document !== "undefined" && document.hidden) return false;
-  if (!node || !node.parentElement || !lccPageInViewport(node.parentElement)) return false;
-  try { if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return false; } catch (_) {}
-  return true;
-}
-function lccPageRevealCancel(state) {
-  if (state && state.revealRaf) { try { cancelAnimationFrame(state.revealRaf); } catch (_) {} state.revealRaf = 0; }
-  if (state) state.revealing = false;
-}
-function lccPageRevealToNode(node, state, pre, target, post, animate) {
-  pre = String(pre || ""); post = String(post || "");
-  const finalFull = pre + String(target || "") + post;
-  state.translated = target;
-  state.translatedFull = finalFull;           // final value is set up front; reveal only changes what's painted
-  if (state.revealRaf) { try { cancelAnimationFrame(state.revealRaf); } catch (_) {} state.revealRaf = 0; }
-  if (!animate || !lccPageShouldReveal(node, target)) {
-    state.revealing = false;
-    node.nodeValue = finalFull;               // instant
-    return;
-  }
-  const chars = lccPageGraphemes(target);
-  const seq = (state.revealSeq || 0) + 1;
-  state.revealSeq = seq;
-  state.revealing = true;
-  const started = lccPageNow();
-  const budget = Math.max(60, Math.min(LCC_PAGE_REVEAL_MS, chars.length * 18));
-  const step = () => {
-    if (state.revealSeq !== seq) return;      // a newer reveal/apply owns this node
-    if (!lccPageTranslateOn || !node.isConnected) { state.revealing = false; state.revealRaf = 0; return; }
-    if (!state.revealing) { state.revealRaf = 0; node.nodeValue = finalFull; return; }
-    const p = Math.min(1, (lccPageNow() - started) / budget);
-    const n = Math.max(1, Math.ceil(chars.length * p));
-    node.nodeValue = pre + chars.slice(0, n).join("") + post;   // one DOM write per frame (rAF-coalesced)
-    if (p < 1) state.revealRaf = requestAnimationFrame(step);
-    else { state.revealing = false; state.revealRaf = 0; node.nodeValue = finalFull; }
-  };
-  state.revealRaf = requestAnimationFrame(step);
-}
-function lccPageApplyToNode(node, state, source, target, expectedFull, pre, post, originalFull, animate) {
+function lccPageApplyToNode(node, state, source, target, expectedFull, pre, post, originalFull) {
   state.source = source;
   state.sourceNorm = lccPageSourceNorm(source);
   state.pre = pre || "";
@@ -929,7 +892,42 @@ function lccPageApplyToNode(node, state, source, target, expectedFull, pre, post
   state.expectedFull = expectedFull;
   state.originalFull = originalFull || expectedFull;
   state.pending = false;
-  lccPageRevealToNode(node, state, state.pre, target, state.post, animate);   // animate only fresh results
+  lccPageClearPartialState(state);
+  state.translated = target;
+  state.translatedFull = state.pre + target + state.post;
+  node.nodeValue = state.translatedFull;       // direct browser DOM replacement, not an overlay
+}
+// Speculative partial streaming: paint the model's in-progress translation into the node; a later final
+// (dom_translate_result) confirms it, and busy/err/clear restores the original. Partials are never cached.
+function lccPagePartialAllowed(node, target) {
+  if (!node || !node.parentElement || !target || target.length > LCC_PAGE_PARTIAL_MAX_CHARS) return false;
+  if (document.hidden || !lccPageInViewport(node.parentElement)) return false;
+  try { if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return false; } catch (_) {}
+  return true;
+}
+function lccPageApplyPartialToNode(node, state, source, target, requestId, sourceNorm) {
+  if (!lccPagePartialAllowed(node, target)) return false;
+  const current = node.nodeValue;
+  const isExpected = current === state.expectedFull;
+  const isPartial = !!state.partialFull && current === state.partialFull;
+  let pre = state.pre || "";
+  let post = state.post || "";
+  if (!isExpected && !isPartial) {                  // node text changed under us -> only paint if it's still the source
+    const currentParts = lccPageTextParts(current);
+    if (lccPageSourceNorm(currentParts.core) !== sourceNorm) return false;
+    pre = currentParts.pre;
+    post = currentParts.post;
+  }
+  state.source = source;
+  state.sourceNorm = sourceNorm;
+  state.pre = pre;
+  state.post = post;
+  state.pending = true;
+  state.partialTarget = target;
+  state.partialRequestId = requestId;
+  state.partialFull = pre + target + post;
+  node.nodeValue = state.partialFull;
+  return true;
 }
 function lccPageQueueNode(node) {
   if (!lccPageNodeAllowed(node)) return false;
@@ -1118,16 +1116,21 @@ function lccPageClearTransient(restore) {
   if (restore) {
     for (const node of lccPageTranslateNodes) {
       const state = lccPageTranslateState.get(node);
-      const wasRevealing = !!(state && state.revealing);
-      lccPageRevealCancel(state);
-      if (state && node.isConnected && state.originalFull &&
-          (wasRevealing || (state.translatedFull && node.nodeValue === state.translatedFull))) {
-        node.nodeValue = state.originalFull;   // revert fully-translated AND mid-reveal partials to source
+      if (state && node.isConnected) {
+        const isFinal = state.translatedFull && node.nodeValue === state.translatedFull;
+        const isPartial = state.partialFull && node.nodeValue === state.partialFull;
+        if (isFinal || isPartial) node.nodeValue = state.originalFull || state.expectedFull || node.nodeValue;
       }
       lccPageTranslateState.delete(node);
     }
   } else {
-    for (const node of lccPageTranslateNodes) { lccPageRevealCancel(lccPageTranslateState.get(node)); lccPageTranslateState.delete(node); }
+    for (const node of lccPageTranslateNodes) {
+      const state = lccPageTranslateState.get(node);   // URL-change clear: revert only in-flight speculative partials
+      if (state && node.isConnected && state.partialFull && node.nodeValue === state.partialFull) {
+        node.nodeValue = state.originalFull || state.expectedFull || node.nodeValue;
+      }
+      lccPageTranslateState.delete(node);
+    }
   }
   lccPageTranslateNodes.clear();
   lccPageTranslateReqSeq = 0;
@@ -1216,6 +1219,28 @@ function lccPageTranslateStop(restore) {
   lccPageStopUrlWatch();
   lccPageClearTransient(restore);
 }
+function lccPageTranslatePartial(msg) {
+  if (!lccPageTranslateOn || lccPageTranslateSettings.pageTranslateStream === "final") return;
+  lccPageTranslateStats.partialSeen += 1;
+  const key = String(msg.item_id || "");
+  const requestId = String(msg.request_id || "");
+  if (!lccPageRequestOwns(requestId, key)) return;          // late/foreign result must not paint current work
+  const source = String(msg.source || "");
+  const sourceNorm = lccPageSourceNorm(source);
+  const target = String(msg.target || "").trim();
+  if (!target) return;
+  const work = lccPageWork.get(key);
+  const nodes = work ? work.nodes : null;
+  if (!nodes || !nodes.size) return;
+  let applied = 0;
+  for (const node of nodes) {
+    const state = lccPageTranslateState.get(node);
+    if (!node || !state || !node.isConnected) continue;
+    if ((state.sourceNorm || lccPageSourceNorm(state.source)) !== sourceNorm) continue;
+    if (lccPageApplyPartialToNode(node, state, source, target, requestId, sourceNorm)) applied += 1;
+  }
+  lccPageTranslateStats.partialApplied += applied;
+}
 function lccPageTranslateApply(msg) {
   if (!lccPageTranslateOn) return;
   lccPageTranslateStats.resultSeen += 1;
@@ -1242,11 +1267,14 @@ function lccPageTranslateApply(msg) {
     const state = lccPageTranslateState.get(node);
     if (!node || !state || !node.isConnected) { lccPageTranslateStats.dropNoNode += 1; continue; }
     if ((state.sourceNorm || lccPageSourceNorm(state.source)) !== sourceNorm) { lccPageTranslateStats.dropSource += 1; continue; }
+    const isExpected = node.nodeValue === state.expectedFull;
+    const isPartial = !!state.partialFull && node.nodeValue === state.partialFull;   // confirming a speculative partial
     const currentParts = lccPageTextParts(node.nodeValue);
-    if (node.nodeValue !== state.expectedFull && lccPageSourceNorm(currentParts.core) !== sourceNorm) { lccPageTranslateStats.dropChanged += 1; continue; }
-    const pre = node.nodeValue === state.expectedFull ? (state.pre || "") : currentParts.pre;
-    const post = node.nodeValue === state.expectedFull ? (state.post || "") : currentParts.post;
-    lccPageApplyToNode(node, state, source, target, node.nodeValue, pre, post, node.nodeValue, true);   // fresh -> animate
+    if (!isExpected && !isPartial && lccPageSourceNorm(currentParts.core) !== sourceNorm) { lccPageTranslateStats.dropChanged += 1; continue; }
+    const pre = (isExpected || isPartial) ? (state.pre || "") : currentParts.pre;
+    const post = (isExpected || isPartial) ? (state.post || "") : currentParts.post;
+    const expectedForState = isPartial ? state.expectedFull : node.nodeValue;
+    lccPageApplyToNode(node, state, source, target, expectedForState, pre, post);
     applied += 1;
   }
   if (applied > 0) lccPageRememberCache(source, target);
@@ -1258,13 +1286,14 @@ function lccPageTranslateDrop(msg) {            // dom_translate_err for one ite
   if (!lccPageRequestOwns(String(msg.request_id || ""), key)) return;
   const work = lccPageWork.get(key);
   if (!work) return;
-  for (const n of work.nodes) { const st = lccPageTranslateState.get(n); if (st) st.pending = false; }
+  for (const n of work.nodes) { const st = lccPageTranslateState.get(n); if (st) { lccPageRestorePartialNode(n, st); st.pending = false; } }
   lccPageWork.delete(key);
 }
 function lccPageRequeueKey(key) {
   const work = lccPageWork.get(key);
   if (!work || work.status !== "pending") return;
   if (!lccPagePruneWork(work)) { lccPageWork.delete(key); return; }
+  for (const n of work.nodes) { const st = lccPageTranslateState.get(n); if (st) { lccPageRestorePartialNode(n, st); st.pending = false; } }
   work.status = "queued";
   (work.hot ? lccPageHotQueue : lccPageColdQueue).push(key);
 }

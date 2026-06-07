@@ -1345,9 +1345,43 @@ def _page_marker_map(text: str, items=None):
     return out
 
 
-def _emit_page_markers(text: str, items, emitted: set, on_segment):
-    """Stream helper: emit each COMPLETE segment only while the generated marker stream is a strict
-    @@1@@, @@2@@, ... prefix. The last marker's segment is still growing, so it waits for final flush."""
+PAGE_TX_PARTIAL_SOURCE_MAX_CHARS = max(40, int(os.environ.get("LCC_PAGE_TX_PARTIAL_SOURCE_MAX_CHARS", "420")))
+PAGE_TX_PARTIAL_MIN_DELTA_CHARS = max(1, int(os.environ.get("LCC_PAGE_TX_PARTIAL_MIN_DELTA_CHARS", "2")))
+PAGE_TX_PARTIAL_MIN_INTERVAL_S = max(0.02, float(os.environ.get("LCC_PAGE_TX_PARTIAL_MIN_INTERVAL_MS", "70")) / 1000.0)
+
+
+def _page_strip_incomplete_marker_tail(segment: str) -> str:
+    """During token streaming the model may have started the next marker (e.g. a bare ``\\n@@2``) before it
+    completed a line-anchored ``@@2@@``. Don't let that half-marker flicker into the speculative DOM text."""
+    return re.sub(r"(?:\r?\n)[ \t]*@{1,2}[ \t]*(?:\d{0,5})[ \t]*(?:@{0,2})[ \t]*$", "", segment or "")
+
+
+def _page_partial_should_emit(text: str, last: str, now=None, last_t: float = 0.0) -> bool:
+    text = _clean(text)
+    last = last or ""
+    if not text or text == last:
+        return False
+    visible = _stream_visible_chars(text)
+    if visible <= 0:
+        return False
+    if not last:
+        return True
+    delta = visible - _stream_visible_chars(last)
+    if delta >= PAGE_TX_PARTIAL_MIN_DELTA_CHARS:
+        return True
+    if now is not None and delta > 0 and (now - float(last_t or 0.0)) >= PAGE_TX_PARTIAL_MIN_INTERVAL_S:
+        return True
+    return False
+
+
+def _emit_page_markers(text: str, items, emitted: set, on_segment, on_partial=None, partial_state=None):
+    """Stream helper for DOM page batches.
+
+    Final path: emit each COMPLETE segment only while the generated marker stream is a strict
+    ``@@1@@, @@2@@, ...`` prefix — a segment is complete once its NEXT marker appears.
+
+    Partial path: when on_partial is given, also emit the still-growing CURRENT segment. These are
+    speculative UI only; the final parser stays the source of truth and may still reject the batch."""
     raw = text or ""
     marks = _page_marker_matches(raw)
     if not _page_marker_sequence_ok(marks, len(items), complete=False):
@@ -1360,8 +1394,27 @@ def _emit_page_markers(text: str, items, emitted: set, on_segment):
         if not seg:
             continue
         emitted.add(idx)
+        if partial_state is not None:
+            partial_state.pop(idx, None)
         it = items[idx - 1]
         on_segment(str(it["id"]), str(it["text"]), seg)
+    if on_partial is None or not marks:
+        return
+    idx = len(marks)
+    if idx < 1 or idx > len(items) or idx in emitted:
+        return
+    it = items[idx - 1]
+    if len(str(it.get("text", ""))) > PAGE_TX_PARTIAL_SOURCE_MAX_CHARS:
+        return
+    seg = _clean(_page_strip_incomplete_marker_tail(raw[marks[-1].end():]))
+    partial_state = partial_state if partial_state is not None else {}
+    st = partial_state.setdefault(idx, {"last": "", "t": 0.0})
+    now = time.perf_counter()
+    if not _page_partial_should_emit(seg, st.get("last", ""), now, st.get("t", 0.0)):
+        return
+    st["last"] = seg
+    st["t"] = now
+    on_partial(str(it["id"]), str(it["text"]), seg)
 
 
 def _parse_page_batch_result(text: str, items):
@@ -1595,11 +1648,12 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
 
 def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hint: str = "",
                               register: str = "casual", glossary_pairs=(), max_tokens=None, kv_reuse=None,
-                              on_segment=None):
+                              on_segment=None, on_partial=None):
     """Translate a DOM batch in one model call. Uses a page-only prefix KV cache so page DOM work never
     disturbs the live-caption translator cache. Output is @@n@@-marked; when on_segment is given each segment
-    is streamed back the instant its following marker appears. Returns {id: target}; raises on a missing
-    segment so callers can fall back to per-item translation."""
+    is streamed back the instant its following marker appears, and on_partial streams the still-growing
+    current segment as speculative UI. Returns {id: target}; raises on a missing segment so callers can fall
+    back to per-item translation."""
     global _page_tx_cache, _page_tx_cache_ids, _TX_KV_WINDOW
     clean_items = [
         {"id": str(it.get("id", ""))[:80], "text": str(it.get("text", "")).strip()}
@@ -1611,6 +1665,7 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
     msgs = _translate_page_batch_messages(clean_items, recent_pairs, target, hint, register, glossary_pairs)
     gen_max = max(1, int(max_tokens or _page_batch_max_tokens(clean_items)))
     emitted = set()
+    partial_state = {}
 
     def _finish(full_text):
         result = _parse_page_batch_result(full_text, clean_items)   # raises on a missing segment
@@ -1666,13 +1721,13 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
                 since += 1
                 if since >= 6:                                  # stream completed segments without per-token regex cost
                     since = 0
-                    _emit_page_markers("".join(out), clean_items, emitted, on_segment)
+                    _emit_page_markers("".join(out), clean_items, emitted, on_segment, on_partial, partial_state)
     except Exception:
         if reuse:
             _reset_page_tx_cache()
         raise
     if on_segment is not None:
-        _emit_page_markers("".join(out), clean_items, emitted, on_segment)
+        _emit_page_markers("".join(out), clean_items, emitted, on_segment, on_partial, partial_state)
     if reuse and _page_tx_cache is not None:
         actual = _tx_cache_offset(_page_tx_cache)
         if actual is None:
@@ -1682,7 +1737,7 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
             print(f"[pagekv] invariant breach: offset {actual} < prompt {len(prompt)} -> fresh retry", flush=True)
             return translate_page_batch_once(
                 clean_items, recent_pairs, target, hint, register, glossary_pairs,
-                max_tokens=max_tokens, kv_reuse=False, on_segment=on_segment,
+                max_tokens=max_tokens, kv_reuse=False, on_segment=on_segment, on_partial=on_partial,
             )
         elif actual > len(prompt):
             if _page_tx_trim_or_reset(actual - len(prompt), len(prompt)):
@@ -2576,9 +2631,11 @@ async def handle(ws):
                         # context-preserving path (translated separately so the batch call never goes huge).
                         short = [it for it in items if len(it["text"]) <= PAGE_LONG_CHARS]
                         longs = [it for it in items if len(it["text"]) > PAGE_LONG_CHARS]
-                        print(f"[dom-tx] request={request_id} items={len(items)} short={len(short)} long={len(longs)}", flush=True)
+                        partial_requested = bool(d.get("partial"))
+                        print(f"[dom-tx] request={request_id} items={len(items)} short={len(short)} long={len(longs)} partial={int(partial_requested)}", flush=True)
                         sent = [0]
                         sent_ids = set()
+                        last_partial = {}
                         deferred = False
 
                         async def _send_seg(item_id, source, target):
@@ -2588,6 +2645,16 @@ async def handle(ws):
                             sent[0] += 1
                             await send_json({
                                 "type": "dom_translate_result", "request_id": request_id,
+                                "item_id": item_id, "source": source, "target": out,
+                            })
+
+                        async def _send_partial(item_id, source, target):   # speculative UI only; never cached
+                            out = _clean(target)
+                            if not out or last_partial.get(item_id) == out:
+                                return
+                            last_partial[item_id] = out
+                            await send_json({
+                                "type": "dom_translate_partial", "request_id": request_id,
                                 "item_id": item_id, "source": source, "target": out,
                             })
 
@@ -2601,7 +2668,11 @@ async def handle(ws):
                                 _SEG_DONE = object()
 
                                 def _on_segment(item_id, source, target, _q=seg_q):
-                                    loop.call_soon_threadsafe(_q.put_nowait, (item_id, source, target))
+                                    loop.call_soon_threadsafe(_q.put_nowait, ("final", item_id, source, target))
+
+                                def _on_partial(item_id, source, target, _q=seg_q):
+                                    if partial_requested:
+                                        loop.call_soon_threadsafe(_q.put_nowait, ("partial", item_id, source, target))
 
                                 def _worker(_q=seg_q, _done=_SEG_DONE):
                                     try:
@@ -2610,6 +2681,7 @@ async def handle(ws):
                                             list(dom_recent_pairs),
                                             target=target_lang, hint=page_hint, register=page_register,
                                             glossary_pairs=list(page_glossary), on_segment=_on_segment,
+                                            on_partial=(_on_partial if partial_requested else None),
                                         )
                                     finally:
                                         loop.call_soon_threadsafe(_q.put_nowait, _done)
@@ -2622,8 +2694,11 @@ async def handle(ws):
                                         seg = await seg_q.get()
                                         if seg is _SEG_DONE:
                                             break
-                                        seg_id, seg_src, seg_tgt = seg
+                                        seg_kind, seg_id, seg_src, seg_tgt = seg
                                         if seg_id in sent_ids:
+                                            continue
+                                        if seg_kind == "partial":
+                                            await _send_partial(seg_id, seg_src, seg_tgt)
                                             continue
                                         sent_ids.add(seg_id)
                                         await _send_seg(seg_id, seg_src, seg_tgt)
@@ -2651,14 +2726,46 @@ async def handle(ws):
                                     break
                                 source = item["text"]
                                 try:
+                                    partial_q = asyncio.Queue()
+                                    _PARTIAL_DONE = object()
+                                    partial_task = None
+                                    want_partial = partial_requested and len(source) <= PAGE_TX_PARTIAL_SOURCE_MAX_CHARS
+
+                                    def _single_partial(p, _q=partial_q, _on=want_partial):
+                                        if _on:
+                                            loop.call_soon_threadsafe(_q.put_nowait, p)
+
+                                    async def _single_partial_pump(_q=partial_q, _done=_PARTIAL_DONE, _item=item, _src=source):
+                                        last, last_t = "", 0.0
+                                        while True:
+                                            p = await _q.get()
+                                            if p is _done:
+                                                break
+                                            now = time.perf_counter()
+                                            outp = _clean(p)
+                                            if not _page_partial_should_emit(outp, last, now, last_t):
+                                                continue
+                                            last, last_t = outp, now
+                                            if _item["id"] not in sent_ids:
+                                                await _send_partial(_item["id"], _src, outp)
+
                                     page_tx = functools.partial(
                                         translate_once, source, list(dom_recent_pairs),
                                         target=target_lang, hint=page_hint, register=page_register,
-                                        glossary_pairs=list(page_glossary), kv_reuse=False, profile="page",
+                                        glossary_pairs=list(page_glossary),
+                                        on_update=(_single_partial if want_partial else None),
+                                        kv_reuse=False, profile="page", stream_every=3,
                                         max_tokens=_page_batch_max_tokens([dict(item)]),   # _TX_GEN_MAX(64) would truncate
                                     )
-                                    async with mlx_lock:
-                                        out = await loop.run_in_executor(_mlx_pool, page_tx)
+                                    if want_partial:
+                                        partial_task = asyncio.create_task(_single_partial_pump())
+                                    try:
+                                        async with mlx_lock:
+                                            out = await loop.run_in_executor(_mlx_pool, page_tx)
+                                    finally:
+                                        if partial_task is not None:
+                                            partial_q.put_nowait(_PARTIAL_DONE)
+                                            await asyncio.gather(partial_task, return_exceptions=True)
                                     sent_ids.add(item["id"])
                                     await _send_seg(item["id"], source, out)
                                 except Exception as e:

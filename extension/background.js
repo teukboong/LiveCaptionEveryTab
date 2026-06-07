@@ -160,10 +160,10 @@ async function forward(msg) {
   else if (msg.type === "answer_partial") chrome.storage.session.set({ "lcc-answer": { text: msg.text, done: false } });   // popup reads via onChanged
   else if (msg.type === "answer") chrome.storage.session.set({ "lcc-answer": { text: msg.text, done: true } });
   else if (msg.type === "err" && capturedTabId != null) sendTab(capturedTabId, { type: "err", text: msg.text });
-  else if ((msg.type === "dom_translate_result" || msg.type === "dom_translate_done" || msg.type === "dom_translate_busy" || msg.type === "dom_translate_err") && pageTabId != null) {
+  else if ((msg.type === "dom_translate_result" || msg.type === "dom_translate_partial" || msg.type === "dom_translate_done" || msg.type === "dom_translate_busy" || msg.type === "dom_translate_err") && pageTabId != null) {
     sendTab(pageTabId, payload);
   }
-  if (msg.type === "caption" || msg.type === "source" || msg.type === "dom_translate_result") chrome.storage.session.set({ wsOpen: true });  // data flowing => connected (self-heal)
+  if (msg.type === "caption" || msg.type === "source" || msg.type === "dom_translate_result" || msg.type === "dom_translate_partial") chrome.storage.session.set({ wsOpen: true });  // data flowing => connected (self-heal)
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

@@ -101,7 +101,6 @@
     <label class="mode-toggle"><input type="checkbox" id="captionTranslate" /><span data-i18n="captionTranslate">동영상 번역</span></label>
   </div>
   <div class="hint" data-i18n="pageTranslateHint">페이지 번역은 오버레이 없이 실제 DOM 텍스트를 순차적으로 교체합니다.</div>
-  <div class="chk"><input type="checkbox" id="pageReveal" /><label for="pageReveal" data-i18n="pageReveal">번역을 부드럽게 채우기</label></div>
 
   <h4 class="tight" data-i18n="sectionUi">UI</h4>
   <div class="row"><label for="uiLang" data-i18n="labelUiLang">UI 언어</label><select id="uiLang"></select></div>
@@ -187,6 +186,10 @@
       <option value="lecture" data-i18n="pageRegisterLecture">문서 · 격식</option>
       <option value="news" data-i18n="pageRegisterNews">뉴스 · 보도</option>
       <option value="chat" data-i18n="pageRegisterChat">댓글 · 대화</option>
+    </select></div>
+    <div class="row"><label data-i18n="labelPageStream">페이지 출력</label><select id="pageTranslateStream">
+      <option value="partial" data-i18n="pageStreamPartial">라이브 partial</option>
+      <option value="final" data-i18n="pageStreamFinal">확정만</option>
     </select></div>
     <div class="row"><label data-i18n="labelPageContextHint">페이지 힌트</label><input type="text" id="pageContextHint" placeholder="비우면 영상 용어 힌트 상속" data-i18n-placeholder="pageContextPlaceholder" /></div>
     <div class="row" style="align-items:flex-start;"><label data-i18n="labelPageGlossary">페이지 용어집</label><textarea id="pageGlossary" rows="3" placeholder="비우면 영상 용어집 상속&#10;예: subreddit=서브레딧" data-i18n-placeholder="pageGlossaryPlaceholder"></textarea></div>

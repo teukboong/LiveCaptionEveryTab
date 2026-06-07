@@ -196,10 +196,11 @@ def translate_once(text, recent_pairs=(), target="Korean", hint="", register="ca
 
 
 def translate_page_batch_once(items, recent_pairs=(), target="Korean", hint="", register="casual",
-                              glossary_pairs=(), max_tokens=None, kv_reuse=None, on_segment=None):
+                              glossary_pairs=(), max_tokens=None, kv_reuse=None, on_segment=None, on_partial=None):
     """DOM page microbatch translation. Same @@n@@-marker prompt/parser as the MLX path. kv_reuse is ignored
     (remote CUDA text servers handle prefix caching). When on_segment is given, segments stream back via the
-    chat stream's incremental marker parse just like the MLX path."""
+    chat stream's incremental marker parse just like the MLX path; on_partial streams the still-growing
+    current segment as speculative UI."""
     del kv_reuse
     import server as _srv
     clean_items = [
@@ -211,10 +212,11 @@ def translate_page_batch_once(items, recent_pairs=(), target="Korean", hint="", 
         return {}
     msgs = _srv._translate_page_batch_messages(clean_items, recent_pairs, target, hint, register, glossary_pairs)
     emitted = set()
+    partial_state = {}
     on_update = None
     if on_segment is not None:
         def on_update(partial):
-            _srv._emit_page_markers(partial, clean_items, emitted, on_segment)
+            _srv._emit_page_markers(partial, clean_items, emitted, on_segment, on_partial, partial_state)
     raw = _chat(msgs, int(max_tokens or _srv._page_batch_max_tokens(clean_items)), 6, on_update)
     result = _srv._parse_page_batch_result(raw, clean_items)
     if on_segment is not None:

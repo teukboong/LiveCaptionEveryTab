@@ -72,7 +72,9 @@ const UI_TEXT = Object.freeze({
     advancedVadHint: "문장 대기↑ = 더 긴 문맥으로 번역(지연↑) · 음성 감지↑ = 잡음/음악 더 무시",
     accuracyMode: "정확도 모드 (문장 2패스 재전사)",
     autoPrime: "자동 용어 프라이밍 (제목을 힌트로)",
-    pageReveal: "번역을 부드럽게 채우기",
+    labelPageStream: "페이지 출력",
+    pageStreamPartial: "라이브 partial",
+    pageStreamFinal: "확정만",
     labelSyncOffset: "싱크 보정",
     debugSync: "싱크 디버그 표시",
     labelContextHint: "용어 힌트",
@@ -188,7 +190,9 @@ const UI_TEXT = Object.freeze({
     advancedVadHint: "Higher sentence wait gives more context but more latency. Higher voice detect ignores more noise/music.",
     accuracyMode: "Accuracy mode (2-pass sentence retranscribe)",
     autoPrime: "Auto term priming (use title as hint)",
-    pageReveal: "Reveal translations smoothly",
+    labelPageStream: "Page output",
+    pageStreamPartial: "Live partial",
+    pageStreamFinal: "Final only",
     labelSyncOffset: "Sync offset",
     debugSync: "Show sync debug",
     labelContextHint: "Term hint",
@@ -357,7 +361,7 @@ async function loadSettings() {
   document.getElementById("pageRegister").value = settings.pageRegister;
   document.getElementById("accuracyMode").checked = settings.accuracyMode;
   document.getElementById("autoPrime").checked = settings.autoPrime;
-  document.getElementById("pageReveal").checked = settings.pageReveal !== false;
+  document.getElementById("pageTranslateStream").value = settings.pageTranslateStream;
   document.getElementById("debugSync").checked = settings.debugSync;
   document.getElementById("contextHint").value = settings.contextHint;
   document.getElementById("glossary").value = settings.glossary;
@@ -652,7 +656,11 @@ document.getElementById("latencyMode").addEventListener("change", (e) => { setti
 document.getElementById("register").addEventListener("change", (e) => { settings.register = e.target.value; saveSettings(true, true); });
 document.getElementById("accuracyMode").addEventListener("change", (e) => { settings.accuracyMode = e.target.checked; saveSettings(); });
 document.getElementById("autoPrime").addEventListener("change", (e) => { settings.autoPrime = e.target.checked; saveSettings(); });
-document.getElementById("pageReveal").addEventListener("change", (e) => { settings.pageReveal = e.target.checked; saveSettings(true); });
+document.getElementById("pageTranslateStream").addEventListener("change", (e) => {
+  settings.pageTranslateStream = e.target.value === "final" ? "final" : "partial";
+  e.target.value = settings.pageTranslateStream;
+  saveSettings(true);
+});
 document.getElementById("debugSync").addEventListener("change", (e) => { settings.debugSync = e.target.checked; saveSettings(); });
 document.getElementById("contextHint").addEventListener("input", (e) => { settings.contextHint = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });
 document.getElementById("glossary").addEventListener("input", (e) => { settings.glossary = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });

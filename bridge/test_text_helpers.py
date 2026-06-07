@@ -126,6 +126,25 @@ check("page.stream_first_complete", got, [("a", "공유")])      # segment 2 sti
 s._emit_page_markers("@@1@@\n공유\n\n@@2@@\n로그인\n\n@@3@@\n답글", seg_items, emitted_now, lambda i, src, tgt: got.append((i, tgt)))
 check("page.stream_second_complete", got, [("a", "공유"), ("b", "로그인")])   # seg 1 not re-emitted; seg 3 still growing
 
+# --- true partial streaming: the current segment streams before its next marker, half-written markers
+# never leak into the speculative DOM text, and a final supersedes + clears the partial state ---
+partial_emitted, partials, partial_state = set(), [], {}
+s._emit_page_markers(
+    "@@1@@\n공\n@@", seg_items, partial_emitted,
+    lambda i, src, tgt: partials.append(("final", i, tgt)),
+    lambda i, src, tgt: partials.append(("partial", i, tgt)),
+    partial_state,
+)
+check("page.partial_current_segment", partials, [("partial", "a", "공")])   # half-marker "\n@@" stripped
+s._emit_page_markers(
+    "@@1@@\n공유\n\n@@2@@\n로", seg_items, partial_emitted,
+    lambda i, src, tgt: partials.append(("final", i, tgt)),
+    lambda i, src, tgt: partials.append(("partial", i, tgt)),
+    partial_state,
+)
+ok("page.partial_final_supersedes", ("final", "a", "공유") in partials)
+ok("page.partial_state_cleared_on_final", 1 not in partial_state)
+
 # --- long paragraph: sentence-chunked, context-preserving (no model) ---
 check("page.split_sentences", s._split_sentences("One. Two! Three?"), ["One.", "Two!", "Three?"])
 _chunks = s._chunk_text(". ".join("X" * 80 for _ in range(8)) + ".", max_chars=200)
