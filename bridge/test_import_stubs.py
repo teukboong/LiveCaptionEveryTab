@@ -23,3 +23,22 @@ def install():
     mod.load_silero_vad = load_silero_vad
     mod.VADIterator = VADIterator
     sys.modules["silero_vad"] = mod
+
+
+def _expect_model_load_blocked(label, fn):
+    try:
+        fn()
+    except RuntimeError as e:
+        if "outside model-free tests" in str(e):
+            return
+        raise AssertionError(f"{label}: wrong error: {e}") from e
+    raise AssertionError(f"{label}: model loading was not blocked")
+
+
+if __name__ == "__main__":
+    install()
+    import silero_vad
+
+    _expect_model_load_blocked("load_silero_vad", silero_vad.load_silero_vad)
+    _expect_model_load_blocked("VADIterator", silero_vad.VADIterator)
+    print("test_import_stubs: OK (silero_vad model loading is blocked in model-free tests)")
