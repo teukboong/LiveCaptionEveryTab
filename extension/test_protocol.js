@@ -10,10 +10,15 @@ vm.runInNewContext(fs.readFileSync(path.join(__dirname, "protocol.js"), "utf8"),
 
 assert.ok(context.LCC_TARGET_LANGS.includes("Hindi"), "target list exposes Hindi");
 assert.equal(JSON.stringify(context.LCC_UI_LANGS.map((lang) => lang.value)), JSON.stringify(["ko", "en"]));
+assert.equal(JSON.stringify(context.LCC_ASR_ENGINES), JSON.stringify(["granite", "qwen3"]));
 assert.equal(context.lccCanonicalTargetLang("hindi"), "Hindi");
 assert.equal(context.lccCanonicalUiLang("EN"), "en");
+assert.equal(context.lccCanonicalAsrEngine("QWEN3"), "qwen3");
+assert.equal(context.lccCanonicalAsrEngine("parakeet"), "granite");
 assert.equal(context.lccNormalizeSettings({ targetLang: "hindi" }).targetLang, "Hindi");
 assert.equal(context.lccNormalizeSettings({ uiLang: "EN" }).uiLang, "en");
+assert.equal(context.lccNormalizeSettings({ asrEngine: "QWEN3" }).asrEngine, "qwen3");
+assert.equal(context.lccNormalizeSettings({ asrEngine: "parakeet" }).asrEngine, "granite");
 assert.equal(context.lccNormalizeSettings({ runMode: "page" }).runMode, "page");
 assert.equal(context.lccNormalizeSettings({ runMode: "bogus" }).runMode, "video");
 assert.equal(context.lccNormalizeSettings({ pageTranslateStream: "final" }).pageTranslateStream, "final");
@@ -28,6 +33,8 @@ assert.equal(context.lccRunModeIncludesPage("both"), true);
 assert.equal(context.lccRunModeIncludesCaption("both"), true);
 assert.equal(context.lccBuildBridgeConfig({ targetLang: "Hindi" }, "").targetLang, "Hindi");
 assert.equal(context.lccBuildBridgeConfig({ targetLang: "hindi" }, "").targetLang, "Hindi");
+assert.equal(context.lccBuildBridgeConfig({ asrEngine: "QWEN3" }, "").asrEngine, "qwen3");
+assert.equal(context.lccBuildBridgeConfig({ asrEngine: "parakeet" }, "").asrEngine, "granite");
 assert.equal(Object.hasOwn(context.lccBuildBridgeConfig({ uiLang: "en" }, ""), "uiLang"), false);
 const pageCfg = context.lccBuildBridgeConfig({
   contextHint: "video terms",

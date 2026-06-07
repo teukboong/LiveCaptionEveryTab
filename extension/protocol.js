@@ -58,6 +58,7 @@ const LCC_UI_LANGS = Object.freeze([
   Object.freeze({ value: "ko", label: "한국어" }),
   Object.freeze({ value: "en", label: "English" }),
 ]);
+const LCC_ASR_ENGINES = Object.freeze(["granite", "qwen3"]);
 
 function lccCanonicalTargetLang(value, fallback = "Korean") {
   const raw = String(value || fallback || "Korean").trim().toLowerCase();
@@ -70,10 +71,15 @@ globalThis.LCC_DEFAULT_SETTINGS = LCC_DEFAULT_SETTINGS;
 globalThis.LCC_RUN_MODES = LCC_RUN_MODES;
 globalThis.LCC_CONTENT_PRESETS = LCC_CONTENT_PRESETS;
 globalThis.LCC_REGISTERS = LCC_REGISTERS;
+globalThis.LCC_ASR_ENGINES = LCC_ASR_ENGINES;
 globalThis.lccCanonicalTargetLang = lccCanonicalTargetLang;
 globalThis.lccCanonicalUiLang = function lccCanonicalUiLang(value, fallback = "ko") {
   const raw = String(value || fallback || "ko").trim().toLowerCase();
   return LCC_UI_LANGS.some((lang) => lang.value === raw) ? raw : fallback;
+};
+globalThis.lccCanonicalAsrEngine = function lccCanonicalAsrEngine(value, fallback = "granite") {
+  const raw = String(value || fallback || "granite").trim().toLowerCase();
+  return LCC_ASR_ENGINES.includes(raw) ? raw : fallback;
 };
 globalThis.lccBridgeHello = function lccBridgeHello(ws) {
   ws.send(JSON.stringify({ type: "hello", token: globalThis.LCC_WS_TOKEN }));
@@ -86,6 +92,7 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   if (raw.latencyMode == null) out.latencyMode = preset.latencyMode;
   out.targetLang = lccCanonicalTargetLang(out.targetLang);
   out.uiLang = globalThis.lccCanonicalUiLang(out.uiLang);
+  out.asrEngine = globalThis.lccCanonicalAsrEngine(out.asrEngine);
   out.register = LCC_REGISTERS.includes(out.register) ? out.register : LCC_DEFAULT_SETTINGS.register;
   out.pageRegister = LCC_REGISTERS.includes(out.pageRegister) ? out.pageRegister : LCC_DEFAULT_SETTINGS.pageRegister;
   out.runMode = LCC_RUN_MODES[out.runMode] ? out.runMode : LCC_DEFAULT_SETTINGS.runMode;
@@ -110,7 +117,7 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
   const pageHint = [s.pageContextHint || s.contextHint || "", auto].filter(Boolean).join("; ").slice(0, 240);
   return {
     type: "config",
-    asrEngine: s.asrEngine || "granite",
+    asrEngine: globalThis.lccCanonicalAsrEngine(s.asrEngine),
     vadLevel: s.vadLevel ?? 2,
     sentSilenceMs: s.sentSilenceMs ?? 1300,
     targetLang: lccCanonicalTargetLang(s.targetLang),

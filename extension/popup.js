@@ -438,7 +438,8 @@ document.getElementById("uiLang").addEventListener("change", (e) => {
   refreshBridge();
 });
 document.getElementById("asrEngine").addEventListener("change", (e) => {
-  settings.asrEngine = e.target.value;
+  settings.asrEngine = globalThis.lccCanonicalAsrEngine(e.target.value);
+  e.target.value = settings.asrEngine;
   saveSettings(true);
 });
 document.getElementById("contentType").addEventListener("change", (e) => {
