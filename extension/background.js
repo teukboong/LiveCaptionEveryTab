@@ -39,6 +39,7 @@ async function cleanup() {
     pageTabId: null,
     pendingStreamId: null,
     pageContext: null,
+    pageUrl: null,
     delaySec: null,
     wsOpen: false,
   });
@@ -100,7 +101,12 @@ async function startVideo(tabId, delaySec, pageContext) {
 
 async function startPage(tabId, pageContext) {
   const config = await bridgeConfig();
-  await chrome.storage.session.set({ capturing: true, pageTranslating: true, pageTabId: tabId, pageContext: pageContext || "" });
+  let pageUrl = "";
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    pageUrl = (tab && tab.url) || "";
+  } catch (_) {}
+  await chrome.storage.session.set({ capturing: true, pageTranslating: true, pageTabId: tabId, pageContext: pageContext || "", pageUrl });
   await ensureOffscreen();
   chrome.runtime.sendMessage({ target: "offscreen", cmd: "start-page", pageContext: pageContext || "", config });
   sendTab(tabId, { type: "page-translate-start", settings: config });
@@ -172,9 +178,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "content-ready") {
     const tabId = sender && sender.tab && sender.tab.id;
-    chrome.storage.session.get(["pageTranslating", "pageTabId"]).then(async ({ pageTranslating, pageTabId }) => {
+    chrome.storage.session.get(["pageTranslating", "pageTabId", "pageContext"]).then(async ({ pageTranslating, pageTabId, pageContext }) => {
       const shouldResumePage = !!pageTranslating && tabId != null && pageTabId === tabId;
-      sendResponse({ ok: true, pageTranslating: shouldResumePage, settings: shouldResumePage ? await bridgeConfig() : null });
+      if (!shouldResumePage) {
+        sendResponse({ ok: true, pageTranslating: false, settings: null });
+        return;
+      }
+      const nextContext = String(msg.pageContext || pageContext || "").trim().slice(0, 200);
+      const nextUrl = String(msg.pageUrl || (sender && sender.tab && sender.tab.url) || "").slice(0, 500);
+      const config = await bridgeConfig();
+      await chrome.storage.session.set({ pageContext: nextContext, pageUrl: nextUrl });
+      await ensureOffscreen();
+      chrome.runtime.sendMessage({ target: "offscreen", cmd: "start-page", pageContext: nextContext, config });
+      sendResponse({ ok: true, pageTranslating: true, settings: config });
     }).catch((e) => sendResponse({ ok: false, error: String(e && e.message || e) }));
     return true;
   }

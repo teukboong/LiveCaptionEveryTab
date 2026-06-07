@@ -100,6 +100,7 @@ batch_msgs = s._translate_page_batch_messages([
 ], target="Korean", hint="Reddit")
 ok("page.batch_prompt_json", "valid JSON array" in batch_msgs[0]["content"])
 ok("page.batch_prompt_target_field", "'target'" in batch_msgs[0]["content"])
+ok("page.batch_long_token_cap", s._page_batch_max_tokens([{"id": "long", "text": "x" * 1200}]) > 512)
 check("page.batch_parse", s._parse_page_batch_result(
     '```json\n[{"id":"a","target":"공유"},{"id":"b","target":"r/SipsTea"}]\n```',
     [{"id": "a", "text": "Share"}, {"id": "b", "text": "r/SipsTea"}],

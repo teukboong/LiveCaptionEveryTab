@@ -128,7 +128,8 @@ def _config_bool(value, default=False):
 DOM_TX_MAX_ITEMS = int(os.environ.get("LCC_DOM_TX_MAX_ITEMS", "8"))
 DOM_TX_MAX_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_CHARS", "900"))
 DOM_TX_MAX_TOTAL_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_TOTAL_CHARS", "4000"))
-PAGE_TX_BATCH_MAX_TOKENS = max(64, int(os.environ.get("LCC_PAGE_TX_BATCH_MAX_TOKENS", "512")))
+PAGE_TX_BATCH_MIN_TOKENS = max(64, int(os.environ.get("LCC_PAGE_TX_BATCH_MIN_TOKENS", "128")))
+PAGE_TX_BATCH_MAX_TOKENS = max(PAGE_TX_BATCH_MIN_TOKENS, int(os.environ.get("LCC_PAGE_TX_BATCH_MAX_TOKENS", "1536")))
 
 
 def _dom_translate_items(payload, *, max_items=DOM_TX_MAX_ITEMS, max_chars=DOM_TX_MAX_CHARS,
@@ -1248,21 +1249,36 @@ def _page_batch_json(items):
     return json.dumps([{"id": str(it["id"]), "text": str(it["text"])} for it in items], ensure_ascii=False)
 
 
+def _page_batch_max_tokens(items):
+    total_chars = sum(len(str(it.get("text", ""))) for it in (items or []) if isinstance(it, dict))
+    n = sum(1 for it in (items or []) if isinstance(it, dict))
+    estimate = 96 + n * 24 + int(total_chars * 0.85)
+    return max(PAGE_TX_BATCH_MIN_TOKENS, min(PAGE_TX_BATCH_MAX_TOKENS, estimate))
+
+
+def _page_batch_system(target: str, hint: str = "", glossary_pairs=(), recent_pairs=()) -> str:
+    s = (
+        f"Translate visible web-page text into {target} for direct DOM replacement. Input is JSON array "
+        "objects with 'id' and 'text'. Return ONLY a valid JSON array, same order, one object per input, "
+        "with exactly 'id' copied unchanged and 'target' as replacement text. Preserve handles, subreddit/"
+        "community names, URLs, code, IDs, numbers, timestamps, emoji, product names, and already-target "
+        "language text unchanged. Use short native wording for UI labels. No markdown, comments, quotes, "
+        "explanations, or extra keys. "
+    )
+    s += _glossary_clause(glossary_pairs)
+    if hint:
+        s += f"Page context/terms: {hint}. "
+    if recent_pairs:
+        recent = [{"source": src, "target": tgt} for src, tgt in list(recent_pairs)[-4:]]
+        s += "Recent page renderings for consistency only: " + json.dumps(recent, ensure_ascii=False) + ". "
+    return s
+
+
 def _translate_page_batch_messages(items, recent_pairs=(), target="Korean", hint="", register="casual",
                                    glossary_pairs=()):
     """Prompt for page DOM microbatch translation. The output is strict JSON so the content script can map
     every replacement back to its original text node; invalid/missing ids fall back to per-item translation."""
-    sysmsg = (
-        _page_tx_system(target, hint, glossary_pairs)
-        + " For this request, the user input is a JSON array of objects with string fields 'id' and 'text'. "
-          "Return a valid JSON array with one object per input item, in the same order, using exactly these fields: "
-          "'id' copied unchanged and 'target' containing the replacement text. Do not include markdown fences, "
-          "comments, explanations, or any keys other than 'id' and 'target'."
-    )
-    if recent_pairs:
-        recent = [{"source": s, "target": t} for s, t in list(recent_pairs)[-4:]]
-        sysmsg += " Use these recent page translations only for consistency: " + json.dumps(recent, ensure_ascii=False) + "."
-    msgs = [{"role": "system", "content": sysmsg}]
+    msgs = [{"role": "system", "content": _page_batch_system(target, hint, glossary_pairs, recent_pairs)}]
     src_lang = _src_lang(" ".join(str(it.get("text", "")) for it in items))
     few = _fewshot(target, register, src_lang, "page")[:min(PAGE_TX_FEWSHOT_MAX, 4)]
     if few:
@@ -1529,7 +1545,7 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
     if not clean_items:
         return {}
     msgs = _translate_page_batch_messages(clean_items, recent_pairs, target, hint, register, glossary_pairs)
-    gen_max = max(1, int(max_tokens or PAGE_TX_BATCH_MAX_TOKENS))
+    gen_max = max(1, int(max_tokens or _page_batch_max_tokens(clean_items)))
     if _LM_IS_VLM:
         raw = _vlm_generate_text(msgs, gen_max, None)
         return _parse_page_batch_result(raw, clean_items)
@@ -2382,6 +2398,7 @@ async def handle(ws):
                                 deferred = True
                             else:
                                 try:
+                                    batch_t0 = time.perf_counter()
                                     page_batch_tx = functools.partial(
                                         translate_page_batch_once,
                                         [dict(item) for item in items],
@@ -2407,7 +2424,8 @@ async def handle(ws):
                                             "target": out,
                                         })
                                     batch_done = True
-                                    print(f"[dom-tx batch ok] request={request_id} items={len(items)}", flush=True)
+                                    batch_ms = int((time.perf_counter() - batch_t0) * 1000)
+                                    print(f"[dom-tx batch ok] request={request_id} items={len(items)} ms={batch_ms}", flush=True)
                                 except Exception as e:
                                     print(f"[dom-tx batch fallback] {e}", flush=True)
                         if not batch_done and not deferred:

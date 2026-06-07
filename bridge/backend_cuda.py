@@ -207,7 +207,7 @@ def translate_page_batch_once(items, recent_pairs=(), target="Korean", hint="", 
     if not clean_items:
         return {}
     msgs = _srv._translate_page_batch_messages(clean_items, recent_pairs, target, hint, register, glossary_pairs)
-    raw = _chat(msgs, int(max_tokens or _srv.PAGE_TX_BATCH_MAX_TOKENS), 4, None)
+    raw = _chat(msgs, int(max_tokens or _srv._page_batch_max_tokens(clean_items)), 4, None)
     return _srv._parse_page_batch_result(raw, clean_items)
 
 
