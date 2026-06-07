@@ -199,13 +199,18 @@ assert.match(
 );
 assert.match(
   contentJs,
-  /function lccPageBatchRouteFailed\(requestId\) \{[\s\S]*if \(lccPageVerifyRequests\.has\(requestId\)\) \{ lccPageVerifyDone\(requestId\); return; \}[\s\S]*lccPageTranslateRetry\(\{ request_id: requestId, retry_ms: 500 \}\);[\s\S]*\}/,
+  /function lccPageBatchRouteFailed\(requestId, reason\) \{[\s\S]*lccPageWarnBatchRouteFailure\(requestId, reason\);[\s\S]*if \(lccPageVerifyRequests\.has\(requestId\)\) \{ lccPageVerifyDone\(requestId\); return; \}[\s\S]*lccPageTranslateRetry\(\{ request_id: requestId, retry_ms: 500 \}\);[\s\S]*\}/,
   "content page batch ack failures use the existing retry/done paths",
 );
 assert.match(
   contentJs,
-  /function lccPageSendBatch\(requestId, items\) \{[\s\S]*chrome\.runtime\.sendMessage\(\{ type: "page-translate-batch", requestId, items \}\)[\s\S]*res\.ok === false \|\| res\.routed === false[\s\S]*lccPageBatchRouteFailed\(requestId\)[\s\S]*\.catch\(\(\) => lccPageBatchRouteFailed\(requestId\)\)[\s\S]*catch \(e\) \{[\s\S]*lccPageBatchRouteFailed\(requestId\);[\s\S]*\}/,
+  /function lccPageSendBatch\(requestId, items\) \{[\s\S]*chrome\.runtime\.sendMessage\(\{ type: "page-translate-batch", requestId, items \}\)[\s\S]*res\.ok === false \|\| res\.routed === false[\s\S]*lccPageBatchRouteFailed\(requestId, res\)[\s\S]*\.catch\(\(e\) => lccPageBatchRouteFailed\(requestId, e\)\)[\s\S]*catch \(e\) \{[\s\S]*lccPageBatchRouteFailed\(requestId, e\);[\s\S]*\}/,
   "content page batch sender consumes routing acknowledgements",
+);
+assert.match(
+  contentJs,
+  /function lccPageWarnBatchRouteFailure\(requestId, reason\) \{[\s\S]*console\.warn\("\[lcc\] page batch routing failed:", requestId, lccPageRouteFailureReason\(reason\)\);[\s\S]*\}/,
+  "content page batch sender keeps route failure reasons observable",
 );
 assert.match(
   backgroundJs,

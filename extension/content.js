@@ -776,6 +776,8 @@ const lccPageVerify = new Map();              // sourceKey -> { source, shown, n
 const lccPageVerifyQueue = [];                // sourceKeys pending verify
 const lccPageVerifyRequests = new Map();      // requestId -> { keys, timer }
 const LCC_PAGE_VERIFY_BATCH = 6;
+const LCC_PAGE_ROUTE_WARN_INTERVAL_MS = 2000;
+let lccPageRouteWarnAt = 0;
 // Time-sliced scan: a persistent TreeWalker advanced in idle chunks so a huge DOM never blocks the main
 // thread, plus a one-shot below-fold prefetch so scrolling lands on already-translated text.
 const LCC_PAGE_SCAN_SLICE_MS = 6;            // main-thread budget per scan chunk
@@ -1307,7 +1309,19 @@ function lccPageVerifyScheduleIdle() {
   if (lccPageVerifyTimer || !lccPageVerifyEnabled()) return;
   lccPageVerifyTimer = lccPageRequestIdle(() => { lccPageVerifyTimer = 0; lccPageVerifyFlush(); }, 3000);
 }
-function lccPageBatchRouteFailed(requestId) {
+function lccPageRouteFailureReason(e) {
+  if (!e) return "unknown error";
+  if (typeof e === "string") return e;
+  return String(e.error || e.msg || e.message || (e.routed === false ? "not routed" : e));
+}
+function lccPageWarnBatchRouteFailure(requestId, reason) {
+  const now = Date.now();
+  if (now - lccPageRouteWarnAt < LCC_PAGE_ROUTE_WARN_INTERVAL_MS) return;
+  lccPageRouteWarnAt = now;
+  console.warn("[lcc] page batch routing failed:", requestId, lccPageRouteFailureReason(reason));
+}
+function lccPageBatchRouteFailed(requestId, reason) {
+  lccPageWarnBatchRouteFailure(requestId, reason);
   if (lccPageVerifyRequests.has(requestId)) { lccPageVerifyDone(requestId); return; }
   lccPageTranslateRetry({ request_id: requestId, retry_ms: 500 });
 }
@@ -1316,11 +1330,11 @@ function lccPageSendBatch(requestId, items) {
     const sent = chrome.runtime.sendMessage({ type: "page-translate-batch", requestId, items });
     if (sent && typeof sent.then === "function") {
       sent
-        .then((res) => { if (res && (res.ok === false || res.routed === false)) lccPageBatchRouteFailed(requestId); })
-        .catch(() => lccPageBatchRouteFailed(requestId));
+        .then((res) => { if (res && (res.ok === false || res.routed === false)) lccPageBatchRouteFailed(requestId, res); })
+        .catch((e) => lccPageBatchRouteFailed(requestId, e));
     }
   } catch (e) {
-    lccPageBatchRouteFailed(requestId);
+    lccPageBatchRouteFailed(requestId, e);
   }
 }
 function lccPageVerifyFlush() {
