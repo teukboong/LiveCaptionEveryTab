@@ -187,7 +187,9 @@ async function startPage(tabId, pageContext) {
   try {
     const tab = await chrome.tabs.get(tabId);
     pageUrl = (tab && tab.url) || "";
-  } catch (_) {}
+  } catch (e) {
+    console.warn("[lcc] page URL lookup failed:", tabId, lccErrorText(e));
+  }
   await chrome.storage.session.set({ capturing: true, pageTranslating: true, pageTabId: tabId, pageContext: pageContext || "", pageUrl });
   await ensureOffscreen();
   sendOffscreenBestEffort({ target: "offscreen", cmd: "start-page", pageContext: pageContext || "", config }, "start-page");

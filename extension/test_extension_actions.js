@@ -189,6 +189,7 @@ function loadBackgroundHarness({
   failSecondSessionGet = false,
   failSessionGet = false,
   failSessionSet = false,
+  failTabGet = false,
   failTabMessage = false,
   hasOffscreenDocument = false,
   pageTranslating = false,
@@ -265,7 +266,10 @@ function loadBackgroundHarness({
       },
     },
     tabs: {
-      get() { return Promise.resolve({ url: "https://example.test" }); },
+      get() {
+        if (failTabGet) return Promise.reject(new Error("tab get failed"));
+        return Promise.resolve({ url: "https://example.test" });
+      },
       sendMessage(tabId, msg) {
         tabMessages.push({ tabId, msg });
         if (failTabMessage) return Promise.reject(new Error("tab message failed"));
@@ -427,6 +431,20 @@ function runBackgroundClearTranscript(options) {
   });
   assert.deepEqual(plain(backgroundPageBatchFailure.response), { ok: false, error: "offscreen batch failed" });
 
+  const backgroundStartPageUrlFailure = await runBackgroundMessage(
+    { type: "popup-start-page", tabId: 123, pageContext: "page ctx" },
+    { failTabGet: true },
+  );
+  assert.deepEqual(plain(backgroundStartPageUrlFailure.response), { ok: true });
+  assert.deepEqual(plain(backgroundStartPageUrlFailure.sessionSet), [
+    { capturing: true, pageTranslating: true, pageTabId: 123, pageContext: "page ctx", pageUrl: "" },
+  ]);
+  const startPageSettings = plain(backgroundStartPageUrlFailure.runtimeMessages[0].config);
+  assert.deepEqual(plain(backgroundStartPageUrlFailure.runtimeMessages), [
+    { target: "offscreen", cmd: "start-page", pageContext: "page ctx", config: startPageSettings },
+  ]);
+  assert.match(backgroundStartPageUrlFailure.warnings.join("\n"), /page URL lookup failed: 123 tab get failed/);
+
   const backgroundConfigReset = await runBackgroundMessage(
     { type: "popup-config-update", resetTranslationContext: true },
     { pageTranslating: true },
@@ -470,7 +488,7 @@ function runBackgroundClearTranscript(options) {
   assert.deepEqual(plain(backgroundOffscreenReadyFailure.runtimeMessages), []);
   assert.match(backgroundOffscreenReadyFailure.warnings.join("\n"), /offscreen-ready resend failed: session get failed/);
 
-  console.log("test_extension_actions: OK (popup/background cleanup, transcript clear, page batch, config reset, video PCM, and offscreen-ready paths pass)");
+  console.log("test_extension_actions: OK (popup/background cleanup, transcript clear, page start, page batch, config reset, video PCM, and offscreen-ready paths pass)");
 })().catch((e) => {
   console.error(e);
   process.exit(1);

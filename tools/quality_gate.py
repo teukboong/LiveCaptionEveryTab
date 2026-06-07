@@ -56,6 +56,7 @@ RULES = (
             (r"\bdocument\.", "background.js must stay DOM free"),
             (r"\bwindow\.", "background.js must stay DOM free"),
             (r"\bWebSocket\b", "background.js must route through offscreen"),
+            (r"catch\s*\(_\)\s*\{\s*\}", "background.js must keep boundary failures observable"),
         ),
     ),
     FileRule(
