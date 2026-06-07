@@ -228,6 +228,7 @@ const lccCommittedUnits = new Set();
 const lccStreamedFinalUnits = new Map(); // unit_id -> perf time when a final_stream was actually rendered
 let lccLivePartial = null;          // latest source/preview for the active unit
 let lccHoldUntil = 0, lccShown = "", lccShownUnit = null, lccShownKind = "", lccStreamStartPerf = 0;
+let lccMaxEndMs = -1;   // highest audio end_ms seen; a large backward jump = a WS reconnect reset the bridge clock
 let lccDelayMode = "live", lccPlaybackDelayMs = 0;
 const LCC_LAG_CAP_MS = 4000;   // start merging-to-catch-up at 4s lag (was 8s) so fast speech stays in sync
 const LCC_CAPTION_LEAD_MS = 0;
@@ -414,6 +415,7 @@ function lccPaceReset() {
   lccShown = ""; lccShownUnit = null; lccShownKind = "";
   lccStreamedFinalUnits.clear();
   lccKoState.unit = null; lccKoState.prev = ""; lccKoState.last = null; lccKoState.stableW = 0;
+  lccMaxEndMs = -1;
 }
 function lccScheduleFinal(item) {
   lccFinalQ.push(lccDecorateTiming(item));
@@ -475,7 +477,19 @@ let lccPaceTimer = null;   // the 150ms pacer runs only during an active session
 function lccStartPacer() { if (lccPaceTimer == null) lccPaceTimer = setInterval(lccPace, 150); }
 function lccStopPacer() { if (lccPaceTimer != null) { clearInterval(lccPaceTimer); lccPaceTimer = null; } }
 
+// Bridge audio_ms restarts near 0 on every WS reconnect. If a caption's end_ms jumps far backwards we treat
+// it as a stream restart: drop the now-stale queue and re-anchor the clock, so new captions don't render at
+// past timestamps (the rewind + flicker bug). Audio overlay only; video mode re-anchors via delay.js.
+function lccStreamResetIfRewound(endMs) {
+  if (lccDelayMode === "video" || !Number.isFinite(endMs)) return;
+  if (lccMaxEndMs >= 0 && endMs < lccMaxEndMs - 2000) {
+    lccPaceReset();
+    lccStreamStartPerf = lccNow() - endMs - lccPlaybackDelayMs - lccSyncOffsetMs();
+  }
+  if (endMs > lccMaxEndMs) lccMaxEndMs = endMs;
+}
 function lccHandleBridgeMessage(msg) {
+  if (msg && msg.end_ms != null) lccStreamResetIfRewound(Number(msg.end_ms));
   if (msg.type === "status") {
     if (msg.on) {
       lccSetPlaybackDelay(msg.mode || "live", msg.playbackDelayMs || 0);
