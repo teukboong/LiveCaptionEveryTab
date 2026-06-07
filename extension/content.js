@@ -206,6 +206,7 @@ function lccEnsureGlossBar() {
 }
 function lccCloseGlossBar() { if (lccGlossBar) lccGlossBar.style.display = "none"; }
 function lccToggleGlossBar() {
+  if (!lccShouldRender()) return;   // only the frame that renders captions has lccLastSrc/data — never pin the bar in a focused iframe
   const bar = lccEnsureGlossBar();
   if (bar.style.display === "flex") { lccCloseGlossBar(); return; }
   bar._fields.msg.textContent = "";
@@ -271,6 +272,7 @@ function lccShowRecent() {
   p.scrollTop = p.scrollHeight;   // newest (bottom) into view
 }
 function lccToggleRecent() {
+  if (!lccShouldRender()) return;   // transcript accumulates only in the render frame — opening here in a focused iframe shows an empty panel
   if (lccRecentPanel && lccRecentPanel.style.display === "block") { lccCloseRecent(); return; }
   lccShowRecent();
 }
@@ -492,10 +494,12 @@ function lccTakeFinal(now) {
   if (!shouldMerge) return first;
   const merged = { ...first };
   const parts = [first];
+  let koLen = (first.ko || "").length;        // running total — merged.ko isn't joined until after the loop
   while (parts.length < 4 && lccFinalQ.length) {
     const next = lccFinalQ[0];
     if ((next.dueAt || 0) > now + 250) break;
-    if ((merged.ko.length + next.ko.length) > 220 && lccLagMs(next, now) <= LCC_LAG_CAP_MS) break;
+    if ((koLen + (next.ko || "").length) > 220 && lccLagMs(next, now) <= LCC_LAG_CAP_MS) break;
+    koLen += (next.ko || "").length + 1;       // +1 for the joining space
     parts.push(lccFinalQ.shift());
   }
   if (parts.length === 1) return first;
@@ -510,6 +514,7 @@ function lccPace() {
   if (lccLastKoT && now - lccLastKoT > LCC_CAPTION_MAX_MS && !lccFinalQ.length &&
       (!lccLivePartial || !lccLivePartial.ko)) {
     setLines("", "");          // sticky timeout: nothing shown for a long time -> clear
+    lccShown = "";             // forget the dedup key, else an identical line that recurs after the clear is suppressed (blank stays)
     lccLastKoT = 0;
   }
   if (now < lccHoldUntil) {
@@ -714,6 +719,7 @@ try {
     lccStopPacer();
     if (lccTitleObserver) lccTitleObserver.disconnect();
     lccPaceReset();
+    lccFlushTranscript();        // persist any debounced-but-unwritten captions before we drop the in-memory copy
     lccTranscript.length = 0;
     lccPageTranslateStop(false);
     if (box) { box.remove(); box = null; }
@@ -1711,16 +1717,10 @@ lccResumePageTranslateIfActive();
 // ---- transcript accumulation -> storage.local (the popup renders history / export / summary / Q&A) ----
 const lccTranscript = [];
 let lccSessionStart = 0;
-function resetTranscript() {
-  lccTranscript.length = 0;
-  lccSessionStart = 0;
-  try { chrome.storage.local.remove(["lcc-transcript", "lcc-session"]); } catch (_) {}
-}
-function pushTranscript(source, ko) {
-  if (!ko) return;
-  if (!lccSessionStart) lccSessionStart = Date.now();
-  lccTranscript.push({ t: Date.now(), source: source || "", ko: ko });
-  if (lccTranscript.length > 1000) lccTranscript.shift();
+let lccStoreTimer = null;
+function lccFlushTranscript() {   // serialize up to 1000 entries at most ~1/sec, not on every committed caption
+  if (lccStoreTimer != null) { clearTimeout(lccStoreTimer); lccStoreTimer = null; }
+  if (!lccTranscript.length) return;
   const title = (lccLastCtx || document.title || "Live Caption").replace(/\s*[-—|/]\s*(YouTube|Twitch|X|Twitter)\s*$/i, "").trim();
   try {
     chrome.storage.local.set({
@@ -1728,4 +1728,17 @@ function pushTranscript(source, ko) {
       "lcc-session": { start: lccSessionStart, title: title },
     });
   } catch (_) {}
+}
+function resetTranscript() {
+  lccTranscript.length = 0;
+  lccSessionStart = 0;
+  if (lccStoreTimer != null) { clearTimeout(lccStoreTimer); lccStoreTimer = null; }   // drop a pending flush so it can't re-write after reset
+  try { chrome.storage.local.remove(["lcc-transcript", "lcc-session"]); } catch (_) {}
+}
+function pushTranscript(source, ko) {
+  if (!ko) return;
+  if (!lccSessionStart) lccSessionStart = Date.now();
+  lccTranscript.push({ t: Date.now(), source: source || "", ko: ko });
+  if (lccTranscript.length > 1000) lccTranscript.shift();
+  if (lccStoreTimer == null) lccStoreTimer = setTimeout(lccFlushTranscript, 1000);   // trailing debounce; in-memory copy stays live for Alt+R
 }

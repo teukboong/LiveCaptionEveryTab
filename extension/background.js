@@ -153,6 +153,7 @@ async function resetTranslationContext() {
 }
 
 async function forward(msg) {
+  if (msg.type === "capture-failed") { await cleanup(); return; }   // offscreen couldn't set up capture -> roll back the optimistic capturing/badge state
   if (msg.type === "wsstate") {                     // connection state isn't tab-specific -> set before the gate
     chrome.storage.session.set({ wsOpen: !!msg.open });   // (don't let the capturedTabId early-return drop it)
     chrome.action.setBadgeText({ text: msg.open ? "ON" : "…" });
@@ -263,3 +264,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 });
+
+// A captured / page-translated tab closing (or being replaced by, e.g., a discard) must tear capture
+// down. content.js's pagehide only cleans the page side and never notifies the SW, so without this the
+// offscreen doc + bridge WS leak and the badge stays "ON" until the next start.
+async function onTabGone(tabId) {
+  if (tabId == null) return;
+  const { capturedTabId, pageTabId, captioning } = await chrome.storage.session.get(["capturedTabId", "pageTabId", "captioning"]);
+  if (capturedTabId === tabId) { await cleanup(); return; }   // capture tab gone -> full teardown (both features share the offscreen WS via capturedTabId)
+  if (pageTabId === tabId) {
+    // page-translate tab gone; a capture may still be live on another tab -> clear only the page side
+    await chrome.storage.session.set({ pageTranslating: false, pageTabId: null, pageContext: null, pageUrl: null });
+    if (!captioning) {                                         // nothing else holds the offscreen WS -> close it too
+      try { if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument(); } catch (_) {}
+      await chrome.storage.session.set({ capturing: false, wsOpen: false });
+      chrome.action.setBadgeText({ text: "" });
+    }
+  }
+}
+chrome.tabs.onRemoved.addListener((tabId) => { onTabGone(tabId); });
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => { onTabGone(removedTabId); });

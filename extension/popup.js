@@ -5,6 +5,9 @@ let capturing = false;
 // Shared defaults live in protocol.js so popup/background/offscreen send the same bridge config.
 const DEFAULTS = globalThis.LCC_DEFAULT_SETTINGS;
 const BRIDGE_SETTING_KEYS = new Set(["targetLang", "asrEngine"]);
+// Range sliders the bridge tunes live (server re-applies on a `config` message without dropping
+// the in-flight utterance). Display-only ranges (font/position/delay/sync) stay local.
+const BRIDGE_RANGE_KEYS = new Set(["vadLevel", "sentSilenceMs"]);
 // 영상 종류 프리셋: 한 번 고르면 말투(register)+지연(latencyMode)을 콘텐츠에 맞춰 묶어 세팅 (개별 노출 X).
 const LCC_PRESETS = globalThis.LCC_CONTENT_PRESETS;
 const RANGES = { fontSize: "fontSize", bottomPct: "bottomPct", leftPct: "leftPct", delaySec: "delaySec",
@@ -405,7 +408,8 @@ for (const [key, id] of Object.entries(RANGES)) {
   document.getElementById(id).addEventListener("input", (e) => {
     settings[key] = Number(e.target.value);
     document.getElementById(id + "V").textContent = formatRangeValue(key, settings[key]);
-    saveSettings(BRIDGE_SETTING_KEYS.has(key));
+    saveSettings();
+    if (BRIDGE_RANGE_KEYS.has(key)) pushBridgeConfigDebounced();   // live-tune VAD / sentence-silence on the bridge
   });
 }
 document.getElementById("showSource").addEventListener("change", (e) => {
@@ -544,12 +548,12 @@ document.getElementById("clearTr").onclick = async () => {
 document.getElementById("exportMd").onclick = async () => {
   const res = document.getElementById("aiResult");
   const r = await chrome.storage.local.get(["lcc-transcript", "lcc-session"]);
-  const tr = r["lcc-transcript"] || [];
-  if (!tr.length) { res.textContent = tr("noRecord"); return; }
+  const rows = r["lcc-transcript"] || [];
+  if (!rows.length) { res.textContent = tr("noRecord"); return; }
   const sess = r["lcc-session"] || {};
-  const start = sess.start || (tr[0] && tr[0].t) || 0;
+  const start = sess.start || (rows[0] && rows[0].t) || 0;
   const out = ["# " + (sess.title || "Live Caption") + " — " + tr("transcriptTitleSuffix"), "", new Date().toLocaleString(), ""];
-  for (const e of tr) out.push("**[" + lccFmtClock(e.t - start) + "]** " + e.source, "", "> " + e.ko, "");
+  for (const e of rows) out.push("**[" + lccFmtClock(e.t - start) + "]** " + e.source, "", "> " + e.ko, "");
   const blob = new Blob([out.join("\n")], { type: "text/markdown;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
