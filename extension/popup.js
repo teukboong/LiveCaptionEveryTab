@@ -20,7 +20,7 @@ function formatRangeValue(key, value) {
 
 function setState(on) {
   capturing = on;
-  btn.textContent = on ? "■ 자막 중지" : "▶ 자막 시작";
+  btn.textContent = on ? "자막 중지" : "자막 시작";
   btn.className = on ? "stop" : "start";
 }
 
@@ -105,7 +105,7 @@ document.getElementById("contentType").addEventListener("change", (e) => {
 function setConn(capturing, wsOpen) {
   const el = document.getElementById("conn");
   if (!capturing) { el.textContent = ""; return; }
-  el.textContent = wsOpen ? "🟢 브릿지 연결됨" : "🔴 브릿지 재연결 중…";
+  el.textContent = wsOpen ? "브릿지 연결됨" : "브릿지 재연결 중…";
   el.style.color = wsOpen ? "#16a34a" : "#dc2626";
 }
 chrome.runtime.sendMessage({ type: "popup-status" }, (res) => {
@@ -129,13 +129,13 @@ btn.onclick = async () => {
       // B-2: delay.js captures the page <video> directly; routed via background so state+stop are tracked
       chrome.runtime.sendMessage({ type: "popup-start-video", tabId: tab.id, delaySec: settings.delaySec, pageContext });
       setState(true);
-      status.textContent = "🎬 영상 지연 모드 — 영상이 재생 중이어야 함";
+      status.textContent = "영상 지연 모드 — 영상이 재생 중이어야 함";
     } else {
       await chrome.runtime.sendMessage({ type: "popup-cleanup" });   // release stale stream before getMediaStreamId
       const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
       chrome.runtime.sendMessage({ type: "popup-start", streamId, tabId: tab.id, delaySec: settings.delaySec, pageContext });
       setState(true);
-      status.textContent = "✓ 캡처 시작됨 — 영상에서 발화 대기";
+      status.textContent = "캡처 시작됨 — 영상에서 발화 대기";
     }
   } catch (e) {
     status.textContent = "실패: " + (e && e.message || e);
@@ -166,7 +166,7 @@ async function renderHist() {
 function sendAsk(mode, question) {
   const res = document.getElementById("aiResult");
   if (!capturing) { res.textContent = "자막을 시작한 상태에서만 요약/질문이 됩니다."; return; }
-  res.textContent = (mode === "qa" ? "⏳ 답하는 중…" : "⏳ 요약 중…");
+  res.textContent = (mode === "qa" ? "답하는 중…" : "요약 중…");
   chrome.storage.local.get("lcc-transcript").then((r) => {
     const transcript = (r["lcc-transcript"] || []).map((e) => e.source || e.ko).join(" ").slice(-8000);   // match server window; keep the control msg small
     if (!transcript.trim()) { res.textContent = "(아직 자막 기록이 없어요)"; return; }
@@ -233,12 +233,12 @@ function setBridgeUI(state, text) {           // state: on | off | starting | no
   if (text != null) bridgeStatusEl.textContent = text;
   bridgeBtn.disabled = (state === "starting");
   bridgeStopBtn.style.display = (state === "on" || state === "starting") ? "" : "none";
-  bridgeBtn.textContent = state === "on" ? "✅ 브릿지 켜짐" : "🚀 브릿지 켜기";
+  bridgeBtn.textContent = state === "on" ? "브릿지 켜짐" : "브릿지 켜기";
 }
 async function refreshBridge() {
   const r = await nmSend({ cmd: "status" });
-  if (r.noHost) { setBridgeUI("nohost", "❌ 호스트 미설치"); return; }
-  setBridgeUI(r.running ? "on" : "off", r.running ? ("🟢 켜짐" + (r.pid ? " (pid " + r.pid + ")" : "")) : "꺼짐");
+  if (r.noHost) { setBridgeUI("nohost", "호스트 미설치"); return; }
+  setBridgeUI(r.running ? "on" : "off", r.running ? ("켜짐" + (r.pid ? " (pid " + r.pid + ")" : "")) : "꺼짐");
 }
 function pollBridgeUntilUp(maxSec) {
   if (bridgePoll) clearInterval(bridgePoll);
@@ -246,25 +246,25 @@ function pollBridgeUntilUp(maxSec) {
   bridgePoll = setInterval(async () => {
     t += 2;
     const r = await nmSend({ cmd: "status" });
-    if (r.running) { clearInterval(bridgePoll); bridgePoll = null; setBridgeUI("on", "🟢 켜짐"); }
-    else if (t >= maxSec) { clearInterval(bridgePoll); bridgePoll = null; setBridgeUI("off", "⌛ 응답 없음 — ~/.lcc-bridge.log 확인"); }
-    else setBridgeUI("starting", "⏳ 기동 중… (" + t + "s · 모델 로드 ~40s)");
+    if (r.running) { clearInterval(bridgePoll); bridgePoll = null; setBridgeUI("on", "켜짐"); }
+    else if (t >= maxSec) { clearInterval(bridgePoll); bridgePoll = null; setBridgeUI("off", "응답 없음 — ~/.lcc-bridge.log 확인"); }
+    else setBridgeUI("starting", "기동 중… (" + t + "s · 모델 로드 ~40s)");
   }, 2000);
 }
 bridgeBtn.onclick = async () => {
-  setBridgeUI("starting", "⏳ 시작 요청…");
+  setBridgeUI("starting", "시작 요청…");
   const r = await nmSend({ cmd: "start", asrEngine: settings.asrEngine || "granite" });
-  if (r.noHost) { setBridgeUI("nohost", "❌ 호스트 미설치 — install-host.sh 실행"); return; }
-  if (!r.ok) { setBridgeUI("off", "❌ " + (r.error || "실패")); return; }
-  if (r.already || r.running) { setBridgeUI("on", "🟢 이미 켜짐"); return; }
+  if (r.noHost) { setBridgeUI("nohost", "호스트 미설치 — install-host.sh 실행"); return; }
+  if (!r.ok) { setBridgeUI("off", "" + (r.error || "실패")); return; }
+  if (r.already || r.running) { setBridgeUI("on", "이미 켜짐"); return; }
   pollBridgeUntilUp(70);
 };
 bridgeStopBtn.onclick = async () => {
   if (bridgePoll) { clearInterval(bridgePoll); bridgePoll = null; }
-  setBridgeUI("starting", "⏳ 종료 중…");
+  setBridgeUI("starting", "종료 중…");
   const r = await nmSend({ cmd: "stop" });
-  if (r.noHost) { setBridgeUI("nohost", "❌ 호스트 미설치"); return; }
-  setBridgeUI(r.running ? "on" : "off", r.running ? "❌ 종료 실패" : "꺼짐");
+  if (r.noHost) { setBridgeUI("nohost", "호스트 미설치"); return; }
+  setBridgeUI(r.running ? "on" : "off", r.running ? "종료 실패" : "꺼짐");
 };
 refreshBridge();
 
@@ -303,24 +303,24 @@ function pollInstall() {
   setInstBusy(true);
   instPoll = setInterval(async () => {
     const r = await nmSend({ cmd: "install_status" });
-    if (r.noHost) { clearInterval(instPoll); instPoll = null; setInstBusy(false); setInstStatus("❌ 호스트 미설치", "#dc2626"); return; }
+    if (r.noHost) { clearInterval(instPoll); instPoll = null; setInstBusy(false); setInstStatus("호스트 미설치", "#dc2626"); return; }
     if (r.idle) return;
     if (r.done) {
       clearInterval(instPoll); instPoll = null; setInstBusy(false);
-      if (r.ok) setInstStatus("✅ " + (TIER_LABEL[r.tier] || r.tier || "") + " 설치 완료 — 브릿지 (재)시작 시 적용", "#16a34a");
-      else setInstStatus("❌ 실패: " + (r.error || "") + " (~/.lcc-install.log 확인)", "#dc2626");
+      if (r.ok) setInstStatus("" + (TIER_LABEL[r.tier] || r.tier || "") + " 설치 완료 — 브릿지 (재)시작 시 적용", "#16a34a");
+      else setInstStatus("실패: " + (r.error || "") + " (~/.lcc-install.log 확인)", "#dc2626");
       return;
     }
     const n = (r.index || 0) + 1, t = r.total || "?";
-    setInstStatus("⏳ " + (r.current || "다운로드 중") + "  (" + n + "/" + t + ")", "#666");
+    setInstStatus("" + (r.current || "다운로드 중") + "  (" + n + "/" + t + ")", "#666");
   }, 2000);
 }
 async function startInstall(tier) {
   setInstBusy(true);
-  setInstStatus("⏳ " + TIER_LABEL[tier] + " 설치 요청…", "#666");
+  setInstStatus("" + TIER_LABEL[tier] + " 설치 요청…", "#666");
   const r = await nmSend({ cmd: "install", tier });
-  if (r.noHost) { setInstBusy(false); setInstStatus("❌ 호스트 미설치 — install-host.sh 실행", "#dc2626"); return; }
-  if (!r.ok) { setInstBusy(false); setInstStatus("❌ " + (r.error || "실패"), "#dc2626"); return; }
+  if (r.noHost) { setInstBusy(false); setInstStatus("호스트 미설치 — install-host.sh 실행", "#dc2626"); return; }
+  if (!r.ok) { setInstBusy(false); setInstStatus("" + (r.error || "실패"), "#dc2626"); return; }
   pollInstall();
 }
 document.getElementById("instFull").onclick = () => startInstall("full");
@@ -330,5 +330,5 @@ document.getElementById("instLite").onclick = () => startInstall("lite");
 nmSend({ cmd: "install_status" }).then((r) => {
   if (!r || r.idle || r.noHost) return;
   if (!r.done) pollInstall();
-  else if (r.ok && r.current === "완료") setInstStatus("✅ " + (TIER_LABEL[r.tier] || r.tier || "") + " 설치됨", "#16a34a");
+  else if (r.ok && r.current === "완료") setInstStatus("" + (TIER_LABEL[r.tier] || r.tier || "") + " 설치됨", "#16a34a");
 });
