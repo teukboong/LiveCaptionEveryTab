@@ -57,5 +57,10 @@ assert.match(
   /if \(r\.idle\) \{[\s\S]*clearInterval\(instPoll\);[\s\S]*instPoll = null;[\s\S]*setInstBusy\(false\);/,
   "popup install polling unlocks buttons if native status goes idle",
 );
+assert.match(
+  popupJs,
+  /if \(!r\.done\) pollInstall\(\);[\s\S]*else \{[\s\S]*setInstBusy\(false\);[\s\S]*if \(r\.ok\)[\s\S]*else setInstStatus\(tr\("installFailed"/,
+  "popup install resume shows both completed and failed terminal status",
+);
 
 console.log("test_protocol: OK (target/UI language settings stay canonical through protocol.js)");

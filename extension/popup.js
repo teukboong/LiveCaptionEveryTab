@@ -756,7 +756,11 @@ document.getElementById("instLite").onclick = () => startInstall("lite");
 nmSend({ cmd: "install_status" }).then((r) => {
   if (!r || r.idle || r.noHost) return;
   if (!r.done) pollInstall();
-  else if (r.ok && r.current === "완료") setInstStatus(tr("installed", { tier: TIER_LABEL[r.tier] || r.tier || "" }), "#16a34a");
+  else {
+    setInstBusy(false);
+    if (r.ok) setInstStatus(tr("installed", { tier: TIER_LABEL[r.tier] || r.tier || "" }), "#16a34a");
+    else setInstStatus(tr("installFailed", { error: r.error || "" }), "#dc2626");
+  }
 });
 window.addEventListener("pagehide", () => {
   if (_pushCfgTimer) { clearTimeout(_pushCfgTimer); _pushCfgTimer = null; }
