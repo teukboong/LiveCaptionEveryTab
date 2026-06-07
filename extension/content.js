@@ -565,6 +565,16 @@ const lccBilingualOrig = new WeakMap();      // marked element -> its original (
 let lccBilingualGhost = null;
 let lccBilingualOver = null, lccBilingualOut = null, lccBilingualHide = null;
 const LCC_PAGE_BILINGUAL_MAX_CHARS = 1500;   // don't snapshot huge containers
+// cache-then-verify: cross-site label/seed hits show instantly, then re-translate in idle and quietly patch
+// if the model (with this page's context) disagrees. Best-effort, idle-only, deduped, opt-in (pageVerify).
+let lccPageVerifyReqSeq = 0;
+let lccPageVerifyTimer = 0;
+let lccPageVerifyInflight = "";
+const lccPageVerifySeen = new Set();          // sourceKeys already verified/queued this page
+const lccPageVerify = new Map();              // sourceKey -> { source, shown, nodes:Set<node> }
+const lccPageVerifyQueue = [];                // sourceKeys pending verify
+const lccPageVerifyRequests = new Map();      // requestId -> { keys, timer }
+const LCC_PAGE_VERIFY_BATCH = 6;
 // Time-sliced scan: a persistent TreeWalker advanced in idle chunks so a huge DOM never blocks the main
 // thread, plus a one-shot below-fold prefetch so scrolling lands on already-translated text.
 const LCC_PAGE_SCAN_SLICE_MS = 6;            // main-thread budget per scan chunk
@@ -759,18 +769,22 @@ function lccPageScheduleCachePersist() {
     } catch (_) {}
   }, 250);
 }
-function lccPageCachedTarget(source) {
+function lccPageCachedEntry(source) {
   const norm = lccPageSourceNorm(source);
   const key = lccPageSourceKey(norm);
-  if (lccPageTranslateCacheLoaded) {                       // this page's cache first (most context-specific)
+  if (lccPageTranslateCacheLoaded) {                       // this page's cache first (context-specific, trusted)
     const rec = lccPageTranslateCache.get(key);
-    if (rec && rec.source === norm) return rec.target;
+    if (rec && rec.source === norm) return { target: rec.target, kind: "url" };
   }
-  if (lccPageLabelLoaded) {                                // then the cross-site label cache + seed
+  if (lccPageLabelLoaded) {                                // then the cross-site label cache + seed (context-free)
     const rec = lccPageLabelCache.get(key);
-    if (rec && rec.source === norm) return rec.target;
+    if (rec && rec.source === norm) return { target: rec.target, kind: rec.seed ? "seed" : "label" };
   }
-  return "";
+  return null;
+}
+function lccPageCachedTarget(source) {
+  const e = lccPageCachedEntry(source);
+  return e ? e.target : "";
 }
 function lccPageRememberCache(source, target) {
   const norm = lccPageSourceNorm(source);
@@ -961,10 +975,11 @@ function lccPageQueueNode(node) {
     sourceFull = (state.originalFull || "") + expectedFull.slice(state.translatedFull.length);
   }
   const parts = lccPageTextParts(sourceFull);
-  const cachedTarget = lccPageCachedTarget(parts.core);
-  if (cachedTarget) {
-    lccPageApplyToNode(node, state, parts.core, cachedTarget, expectedFull, parts.pre, parts.post, sourceFull);
+  const cached = lccPageCachedEntry(parts.core);
+  if (cached) {
+    lccPageApplyToNode(node, state, parts.core, cached.target, expectedFull, parts.pre, parts.post, sourceFull);
     lccPageTranslateStats.applied += 1;
+    if (cached.kind !== "url") lccPageVerifyEnqueue(node, parts.core, cached.target);   // cross-site/seed -> re-check when idle
     return false;
   }
   state.source = parts.core;
@@ -1073,6 +1088,73 @@ function lccPageMaybePrefetch() {
     lccPageStartScan(true);                    // whole-doc relaxed scan -> off-screen text queued as cold
   }, 1500);
 }
+function lccPageVerifyEnabled() {
+  return lccPageTranslateSettings.pageVerify === true;   // opt-in (re-translates cached content)
+}
+function lccPageVerifyEnqueue(node, source, shown) {
+  if (!lccPageVerifyEnabled()) return;
+  const key = lccPageSourceKey(source);
+  const v = lccPageVerify.get(key);
+  if (v) { v.nodes.add(node); return; }      // already pending -> just collect the node for fan-out patch
+  if (lccPageVerifySeen.has(key)) return;    // already checked this page
+  lccPageVerifySeen.add(key);
+  lccPageVerify.set(key, { source, shown, nodes: new Set([node]) });
+  lccPageVerifyQueue.push(key);
+  lccPageVerifyScheduleIdle();
+}
+function lccPageVerifyScheduleIdle() {
+  if (lccPageVerifyTimer || !lccPageVerifyEnabled()) return;
+  lccPageVerifyTimer = lccPageRequestIdle(() => { lccPageVerifyTimer = 0; lccPageVerifyFlush(); }, 3000);
+}
+function lccPageVerifyFlush() {
+  if (!lccPageTranslateOn || !lccPageVerifyEnabled() || !lccPageVerifyQueue.length) return;
+  // never compete with visible translation — only when the whole pipeline is idle
+  if (lccPageVerifyInflight || lccPageHotQueue.length || lccPageColdQueue.length ||
+      lccPageTranslateRequests.size || lccPageScanCursor) { lccPageVerifyScheduleIdle(); return; }
+  const items = [];
+  while (lccPageVerifyQueue.length && items.length < LCC_PAGE_VERIFY_BATCH) {
+    const key = lccPageVerifyQueue.shift();
+    const v = lccPageVerify.get(key);
+    if (!v) continue;
+    for (const n of [...v.nodes]) {            // keep only nodes still showing the cached value
+      const st = lccPageTranslateState.get(n);
+      if (!n.isConnected || !st || n.nodeValue !== st.translatedFull) v.nodes.delete(n);
+    }
+    if (!v.nodes.size) { lccPageVerify.delete(key); continue; }
+    items.push({ id: key, text: v.source });
+  }
+  if (!items.length) return;
+  const requestId = "ptv" + lccPageTranslateEpoch + "-" + (++lccPageVerifyReqSeq);
+  const keys = items.map((it) => it.id);
+  const timer = setTimeout(() => lccPageVerifyDone(requestId), 30000);
+  lccPageVerifyRequests.set(requestId, { keys, timer });
+  lccPageVerifyInflight = requestId;
+  try { chrome.runtime.sendMessage({ type: "page-translate-batch", requestId, items }); } catch (_) {}
+}
+function lccPageVerifyApply(msg) {
+  const key = String(msg.item_id || "");
+  const v = lccPageVerify.get(key);
+  if (v) lccPageVerify.delete(key);
+  if (!v) return;
+  const source = String(msg.source || "");
+  const target = String(msg.target || "").trim();
+  if (!target || lccPageSourceNorm(source) !== lccPageSourceNorm(v.source)) return;
+  lccPageRememberCache(v.source, target);    // store the context-correct rendering for this page
+  if (target === v.shown) return;            // cache was right -> nothing to patch
+  for (const node of v.nodes) {              // quietly patch nodes still showing the superseded cached value
+    const st = lccPageTranslateState.get(node);
+    if (!node || !st || !node.isConnected || node.nodeValue !== st.translatedFull) continue;
+    lccPageApplyToNode(node, st, v.source, target, st.expectedFull, st.pre, st.post, st.originalFull);
+  }
+}
+function lccPageVerifyDone(requestId) {
+  const req = lccPageVerifyRequests.get(requestId);
+  if (req && req.timer) clearTimeout(req.timer);
+  lccPageVerifyRequests.delete(requestId);
+  if (lccPageVerifyInflight === requestId) lccPageVerifyInflight = "";
+  if (req) for (const k of req.keys) lccPageVerify.delete(k);   // drop any that got no result (best-effort)
+  if (lccPageVerifyQueue.length) lccPageVerifyScheduleIdle();
+}
 function lccPageScheduleScan(ms = 180) {
   if (lccPageTranslateScanTimer) clearTimeout(lccPageTranslateScanTimer);
   lccPageTranslateScanTimer = setTimeout(() => {
@@ -1158,6 +1240,13 @@ function lccPageClearTransient(restore) {
   lccPageTranslateNodes.clear();
   lccPageTranslateReqSeq = 0;
   lccPageTranslateEpoch += 1;
+  lccPageCancelIdle(lccPageVerifyTimer); lccPageVerifyTimer = 0;
+  for (const req of lccPageVerifyRequests.values()) { if (req && req.timer) clearTimeout(req.timer); }
+  lccPageVerifyRequests.clear();
+  lccPageVerify.clear();
+  lccPageVerifyQueue.length = 0;
+  lccPageVerifySeen.clear();
+  lccPageVerifyInflight = "";
 }
 function lccPageNotifyReady() {
   if (!LCC_IS_TOP) return;
@@ -1346,6 +1435,7 @@ function lccPageTranslateApply(msg) {
   lccPageTranslateStats.resultSeen += 1;
   const key = String(msg.item_id || "");
   const requestId = String(msg.request_id || "");
+  if (lccPageVerifyRequests.has(requestId)) { lccPageVerifyApply(msg); return; }   // cache-then-verify result
   if (!lccPageRequestOwns(requestId, key)) return;
   const source = String(msg.source || "");
   const sourceNorm = lccPageSourceNorm(source);
@@ -1383,7 +1473,9 @@ function lccPageTranslateApply(msg) {
 }
 function lccPageTranslateDrop(msg) {            // dom_translate_err for one item -> give up on it (no requeue)
   const key = String(msg.item_id || "");
-  if (!lccPageRequestOwns(String(msg.request_id || ""), key)) return;
+  const requestId = String(msg.request_id || "");
+  if (lccPageVerifyRequests.has(requestId)) { lccPageVerifyDone(requestId); return; }
+  if (!lccPageRequestOwns(requestId, key)) return;
   const work = lccPageWork.get(key);
   if (!work) return;
   for (const n of work.nodes) { const st = lccPageTranslateState.get(n); if (st) { lccPageRestorePartialNode(n, st); st.pending = false; } }
@@ -1399,6 +1491,7 @@ function lccPageRequeueKey(key) {
 }
 function lccPageTranslateDone(msg) {            // batch finished; any still-pending key got no result -> requeue
   const requestId = String(msg.request_id || "");
+  if (lccPageVerifyRequests.has(requestId)) { lccPageVerifyDone(requestId); return; }
   const req = lccPageTranslateRequests.get(requestId);
   if (req && req.timer) clearTimeout(req.timer);
   if (req) for (const key of req.keys) lccPageRequeueKey(key);
@@ -1408,6 +1501,7 @@ function lccPageTranslateDone(msg) {            // batch finished; any still-pen
 }
 function lccPageTranslateRetry(msg) {           // busy/timeout -> requeue the whole request with backoff
   const requestId = String(msg.request_id || "");
+  if (lccPageVerifyRequests.has(requestId)) { lccPageVerifyDone(requestId); return; }
   const req = lccPageTranslateRequests.get(requestId);
   if (req && req.timer) clearTimeout(req.timer);
   lccPageTranslateRequests.delete(requestId);
