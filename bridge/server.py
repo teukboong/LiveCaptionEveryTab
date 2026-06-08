@@ -1290,7 +1290,10 @@ def _page_marker_system(target: str, hint: str = "", glossary_pairs=(), recent_p
         "drop, reorder, or add segments. Preserve handles, subreddit/community names, URLs, code, IDs, numbers, "
         "timestamps, emoji, product names, and already-target-language text unchanged. Use short native wording "
         "for UI labels. Output only the @@n@@ markers and their translations — no JSON, markdown, comments, "
-        "quotes, or explanations. "
+        "quotes, or explanations. Some segments contain inline placeholders like ⟦1⟧ that mark where a "
+        "link or fixed element sits — echo every ⟦n⟧ placeholder verbatim, in ascending order, exactly "
+        "once each, and translate the text around them naturally; never translate, drop, reorder, or duplicate a "
+        "placeholder. "
     )
     s += _glossary_clause(glossary_pairs)
     if hint:
@@ -2683,8 +2686,10 @@ async def handle(ws):
                         page_hint = page_context_hint or context_hint
                         # short items ride the marker microbatch; long paragraphs take the sentence-chunked,
                         # context-preserving path (translated separately so the batch call never goes huge).
-                        short = [it for it in items if len(it["text"]) <= PAGE_LONG_CHARS]
-                        longs = [it for it in items if len(it["text"]) > PAGE_LONG_CHARS]
+                        # Policy-R items carry inline ⟦n⟧ placeholders; the long path sentence-chunks, which would
+                        # split a placeholder across chunks — keep them on the marker-batch (short) path regardless of length.
+                        short = [it for it in items if len(it["text"]) <= PAGE_LONG_CHARS or "⟦" in it["text"]]
+                        longs = [it for it in items if len(it["text"]) > PAGE_LONG_CHARS and "⟦" not in it["text"]]
                         partial_requested = bool(d.get("partial"))
                         print(f"[dom-tx] request={request_id} items={len(items)} short={len(short)} long={len(longs)} partial={int(partial_requested)}", flush=True)
                         sent = [0]

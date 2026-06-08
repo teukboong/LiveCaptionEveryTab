@@ -1282,6 +1282,7 @@ function lccPageQueueBlockUnit(unit) {
   return true;
 }
 function lccPageApplyBlockResult(key, work, source, target) {
+  if (work.block.kind === "R") { lccPageApplyBlockResultR(key, work, target); return; }
   const { anchor, members } = work.block;
   if (!target) {
     for (const m of members) { const st = lccPageTranslateState.get(m); if (st) st.pending = false; }
@@ -1293,13 +1294,157 @@ function lccPageApplyBlockResult(key, work, source, target) {
   }
   lccPageWork.delete(key);
 }
+// ---- semantic block batching (Policy R: placeholder-preserving inline translation) -------------------
+// A block holding interactive/identifier nodes (links, buttons, code) can't be collapsed — those must keep
+// their DOM position and never be translated. Policy R serializes the block with each preserved node as an
+// inline ⟦n⟧ placeholder, so the model translates the surrounding text as one sentence and the placeholders
+// ride along to wherever the target word order puts them. The model must echo every ⟦n⟧ verbatim, in
+// ascending order, exactly once (strict — like the @@n@@ markers); the result is split on the placeholders
+// back into per-gap text segments, each collapsed (Policy A) into its gap's first text node. If the model
+// corrupts the placeholders, the block opts out of block mode and re-queues per-node (existing behavior).
+const LCC_PAGE_PH_OPEN = "⟦", LCC_PAGE_PH_CLOSE = "⟧";   // ⟦ ⟧
+function lccPagePh(i) { return LCC_PAGE_PH_OPEN + i + LCC_PAGE_PH_CLOSE; }
+function lccPageAdvancePastSubtree(walker, root) {
+  let n = walker.nextNode();
+  while (n && root.contains(n)) n = walker.nextNode();   // skip the preserved subtree's descendants
+  return n;
+}
+function lccPageBlockUnitForR(node) {
+  if (!LCC_PAGE_BLOCK_UNIT) return null;
+  const st0 = lccPageTranslateState.get(node);
+  if (st0 && st0.blockOptOut) return null;               // a prior R attempt corrupted → stay per-node
+  if (node.parentElement && node.parentElement.closest(LCC_PAGE_OPAQUE_SELECTOR)) return null;   // link text etc. is a preserved node — translate it per-node in place, don't let it (re)trigger the block's R
+  let el = node.parentElement, hops = 0;
+  while (el && hops < 6 && !LCC_PAGE_BLOCK_TAGS.has(el.tagName)) { el = el.parentElement; hops += 1; }
+  if (!el || !LCC_PAGE_BLOCK_TAGS.has(el.tagName)) return null;
+  if (el.closest(LCC_PAGE_EXCLUDE_SELECTOR)) return null;
+  let full; try { full = el.textContent || ""; } catch (_) { return null; }
+  const fullNorm = lccPageSourceNorm(full);
+  if (full.length > LCC_PAGE_BLOCK_UNIT_MAX_CHARS || fullNorm.length < 2 || lccPageAlreadyTarget(fullNorm)) return null;
+  let opaque;
+  try {
+    if (el.querySelector(LCC_PAGE_NESTED_BLOCK_SELECTOR)) return null;   // not a leaf text block
+    opaque = el.querySelectorAll(LCC_PAGE_OPAQUE_SELECTOR);
+  } catch (_) { return null; }
+  if (!opaque || !opaque.length) return null;            // no preserved node → Policy A's territory
+  const opaqueEls = new Set(opaque);
+  const segs = [{ nodes: [] }];                          // gap 0 (before the first placeholder)
+  let serial = "", phCount = 0, hasText = false;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+  let cur = walker.nextNode();
+  while (cur) {
+    if (cur.nodeType === Node.ELEMENT_NODE) {
+      if (opaqueEls.has(cur)) {                          // preserved subtree → one inline placeholder, skip inside
+        phCount += 1;
+        serial += " " + lccPagePh(phCount) + " ";
+        segs.push({ nodes: [] });
+        cur = lccPageAdvancePastSubtree(walker, cur);
+        continue;
+      }
+      cur = walker.nextNode();
+      continue;
+    }
+    const parent = cur.parentElement;                    // text node
+    if (!parent || parent.closest(LCC_PAGE_EXCLUDE_SELECTOR)) return null;
+    const val = cur.nodeValue || "";
+    serial += val;
+    const core = lccPageTextParts(val).core;
+    if (core && lccPageHasLetters(core) && !/^[\d\s.,:%()+\-–—/\\]+$/.test(core)) {
+      segs[segs.length - 1].nodes.push(cur);             // translatable fragment in the current gap
+      hasText = true;
+    }
+    cur = walker.nextNode();
+  }
+  if (!hasText || phCount < 1) return null;
+  const members = [];
+  for (const seg of segs) { seg.anchor = seg.nodes[0] || null; for (const n of seg.nodes) members.push(n); }
+  const serialNorm = lccPageSourceNorm(serial);
+  if (!members.length || !serialNorm) return null;
+  return { el, segs, members, serial: serialNorm, phCount, hot: lccPageInViewport(el) };
+}
+function lccPageBindBlockMembersR(members, key) {
+  for (const m of members) {
+    const st = lccPageStateFor(m);
+    lccPageClearPartialState(st);
+    st.blockKey = key; st.emptied = false; st.blockOptOut = false;
+    st.expectedFull = m.nodeValue; st.originalFull = m.nodeValue; st.pending = true;
+  }
+}
+function lccPageQueueBlockUnitR(unit) {
+  const { el, members, segs, serial, phCount, hot } = unit;
+  lccPageBilingualCaptureEl(el);
+  const key = "blkr" + lccPageTranslateEpoch + "-" + (++lccPageBlockSeq);
+  lccPageBindBlockMembersR(members, key);
+  lccPageWork.set(key, {
+    text: serial, norm: lccPageSourceNorm(serial), ctx: "",
+    nodes: new Set(members), status: "queued", hot,
+    block: { kind: "R", el, segs, phCount, members },
+  });
+  (hot ? lccPageHotQueue : lccPageColdQueue).push(key);
+  lccPageTranslateStats.blockUnits += 1;
+  lccPageScheduleFlush();
+  return true;
+}
+function lccPageMapPhSegments(text, phCount) {
+  // Split on ⟦n⟧ placeholders, requiring them to appear as the strict ascending 1..phCount sequence exactly
+  // once each (a misordered/missing/duplicated placeholder would mis-map links → reject). Returns phCount+1
+  // gap strings (the text between/around placeholders), or null to trigger per-node fallback.
+  const re = /⟦\s*(\d+)\s*⟧/g;
+  const out = []; let m, segStart = 0, seen = 0;
+  while ((m = re.exec(text))) {
+    if (Number(m[1]) !== seen + 1) return null;
+    out.push(text.slice(segStart, m.index));
+    segStart = m.index + m[0].length;
+    seen += 1;
+  }
+  if (seen !== phCount) return null;
+  out.push(text.slice(segStart));
+  return out;
+}
+function lccPageApplySegCollapse(seg, target) {
+  let applied = 0;
+  for (let i = 0; i < seg.nodes.length; i += 1) {
+    const m = seg.nodes[i];
+    const st = lccPageTranslateState.get(m);
+    if (!m || !st || !m.isConnected || m.nodeValue !== st.expectedFull) continue;   // changed under us → skip
+    st.pending = false; st.pre = ""; st.post = ""; st.source = "";
+    if (i === 0 && target) { st.translatedFull = target; st.emptied = false; m.nodeValue = target; }
+    else { st.translatedFull = ""; st.emptied = true; m.nodeValue = ""; }   // folded into the gap's first node, or word order emptied it
+    applied += 1;
+  }
+  return applied;
+}
+function lccPageBlockOptOutAndRequeue(work) {
+  for (const m of work.block.members) {
+    const st = lccPageTranslateState.get(m);
+    if (st) { st.blockOptOut = true; st.blockKey = ""; st.pending = false; }   // never block-batch these nodes again
+  }
+  lccPageScheduleScan(0);                                                       // re-queue them via the per-node path
+}
+function lccPageApplyBlockResultR(key, work, target) {
+  const { segs, phCount } = work.block;
+  if (!target) { lccPageBlockOptOutAndRequeue(work); lccPageTranslateStats.dropEmpty += 1; lccPageWork.delete(key); return; }
+  const segTexts = lccPageMapPhSegments(String(target), phCount);
+  if (!segTexts || segTexts.length !== segs.length) {
+    lccPageBlockOptOutAndRequeue(work);                  // model broke the placeholders → per-node fallback
+    lccPageTranslateStats.dropChanged += 1;
+    lccPageWork.delete(key);
+    return;
+  }
+  let applied = 0;
+  for (let i = 0; i < segs.length; i += 1) applied += lccPageApplySegCollapse(segs[i], segTexts[i].trim());
+  lccPageTranslateStats.applied += applied;
+  lccPageWork.delete(key);
+}
 function lccPageQueueNode(node) {
   if (!lccPageNodeAllowed(node)) return false;
   const prior = lccPageTranslateState.get(node);
   if (prior && prior.blockKey && lccPageWork.has(prior.blockKey)) return false;   // already claimed by a live block unit
   if (LCC_PAGE_BLOCK_UNIT) {
-    const unit = lccPageBlockUnitFor(node);
+    const unit = lccPageBlockUnitFor(node);             // Policy A: pure style-split block → collapse to anchor
     if (unit) return lccPageQueueBlockUnit(unit);
+    const unitR = lccPageBlockUnitForR(node);           // Policy R: block with links/buttons → placeholder-preserving
+    if (unitR) return lccPageQueueBlockUnitR(unitR);
   }
   const state = lccPageStateFor(node);
   lccPageBilingualCapture(node);   // snapshot the parent's original text before any partial/final mutates it

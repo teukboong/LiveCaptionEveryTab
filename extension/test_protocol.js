@@ -243,6 +243,32 @@ assert.match(
   /const isEmptied = state\.emptied && node\.nodeValue === "";[\s\S]*if \(isFinal \|\| isPartial \|\| isEmptied\) node\.nodeValue = state\.originalFull/,
   "restore reverts fragments that were collapsed into a block anchor",
 );
+// ---- semantic block batching (Policy R: placeholder-preserving inline translation) -------------------
+assert.match(
+  contentJs,
+  /function lccPageBlockUnitForR\(node\) \{[\s\S]*if \(st0 && st0\.blockOptOut\) return null;[\s\S]*el\.querySelectorAll\(LCC_PAGE_OPAQUE_SELECTOR\)[\s\S]*if \(!opaque \|\| !opaque\.length\) return null;[\s\S]*serial \+= " " \+ lccPagePh\(phCount\) \+ " ";/,
+  "Policy R needs a preserved (link/button/code) node and serializes it as an inline ⟦n⟧ placeholder; opted-out blocks stay per-node",
+);
+assert.match(
+  contentJs,
+  /const unitR = lccPageBlockUnitForR\(node\);[\s\S]*if \(unitR\) return lccPageQueueBlockUnitR\(unitR\);/,
+  "lccPageQueueNode falls through Policy A to Policy R before the per-node path",
+);
+assert.match(
+  contentJs,
+  /function lccPageMapPhSegments\(text, phCount\) \{[\s\S]*if \(Number\(m\[1\]\) !== seen \+ 1\) return null;[\s\S]*if \(seen !== phCount\) return null;/,
+  "placeholder mapping requires the strict ascending 1..phCount sequence (misorder/missing/dup → reject)",
+);
+assert.match(
+  contentJs,
+  /function lccPageApplyBlockResultR\(key, work, target\) \{[\s\S]*if \(!segTexts \|\| segTexts\.length !== segs\.length\) \{[\s\S]*lccPageBlockOptOutAndRequeue\(work\);/,
+  "a corrupted-placeholder Policy R result opts the block out and re-queues per-node",
+);
+assert.match(
+  contentJs,
+  /function lccPageBlockOptOutAndRequeue\(work\) \{[\s\S]*st\.blockOptOut = true;[\s\S]*lccPageScheduleScan\(0\);/,
+  "opt-out marks members so block paths skip them, then re-scans for the per-node path",
+);
 assert.match(
   backgroundJs,
   /async function ensureContentScript\(tabId\) \{[\s\S]*return \{ ok: false \};[\s\S]*return \{ ok: true \};[\s\S]*return contentScriptFailure\(tabId, tab, e\);[\s\S]*\}/,
