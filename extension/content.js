@@ -761,12 +761,12 @@ const lccPageTranslateStats = {
   dropNoNode: 0, dropSource: 0, dropChanged: 0, dropEmpty: 0, blockUnits: 0,
 };
 const LCC_PAGE_PARTIAL_MAX_CHARS = 420;      // speculative DOM streaming is only for short visible text
-// A single text node up to this many chars is queued; the bridge sentence-chunks anything over its
-// PAGE_LONG_CHARS threshold (translate_page_long_once), so long paragraphs are NOT dropped here — only a
-// pathologically huge single node (e.g. a whole article collapsed into one node) is skipped. (The old
-// pageTranslateMaxChars gate capped this at ~4000 and silently dropped longer paragraphs the server could
-// have handled.)
-const LCC_PAGE_NODE_MAX_CHARS = 8000;
+// The bridge sentence-chunks any item over PAGE_LONG_CHARS (translate_page_long_once) and the flush timeout
+// below scales with item length, so paragraph length is NOT the limiter. This ceiling is only a sanity bound
+// against a pathological single node (a whole article or code/data blob collapsed into one text node), where
+// chunking would tie the GPU up too long — it is NOT a translation-capacity limit, so it doesn't need to grow
+// with content. (The old pageTranslateMaxChars gate at ~4000 dropped long paragraphs the server could handle.)
+const LCC_PAGE_NODE_MAX_CHARS = 32000;
 // Bilingual ghost: keep each element's pre-translation text so hover/focus reveals the original.
 const lccBilingualOrig = new WeakMap();      // marked element -> its original (pre-translation) text
 let lccBilingualGhost = null;
@@ -1126,14 +1126,17 @@ function lccPageApplyToNode(node, state, source, target, expectedFull, pre, post
 }
 // Speculative partial streaming: paint the model's in-progress translation into the node; a later final
 // (dom_translate_result) confirms it, and busy/err/clear restores the original. Partials are never cached.
-function lccPagePartialAllowed(node, target) {
-  if (!node || !node.parentElement || !target || target.length > LCC_PAGE_PARTIAL_MAX_CHARS) return false;
+function lccPagePartialAllowed(node, target, srcLen) {
+  if (!node || !node.parentElement || !target) return false;
+  // Short nodes never get a huge speculative blob painted; a long node (server sentence-chunks + streams it)
+  // may stream its growing cumulative translation in even though it's long.
+  if (target.length > LCC_PAGE_PARTIAL_MAX_CHARS && (srcLen || 0) <= LCC_PAGE_PARTIAL_MAX_CHARS) return false;
   if (document.hidden || !lccPageInViewport(node.parentElement)) return false;
   try { if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return false; } catch (_) {}
   return true;
 }
 function lccPageApplyPartialToNode(node, state, source, target, requestId, sourceNorm) {
-  if (!lccPagePartialAllowed(node, target)) return false;
+  if (!lccPagePartialAllowed(node, target, (source || state.source || "").length)) return false;
   const current = node.nodeValue;
   const isExpected = current === state.expectedFull;
   const isPartial = !!state.partialFull && current === state.partialFull;
@@ -1702,8 +1705,13 @@ function lccPageFlush() {
   if (items.length) {
     const requestId = "ptr" + lccPageTranslateEpoch + "-" + (++lccPageTranslateReqSeq);
     const keys = items.map((it) => it.id);
-    const timer = setTimeout(() => lccPageTranslateRetry({ request_id: requestId, retry_ms: 500 }), 30000);
-    lccPageTranslateRequests.set(requestId, { keys, timer });
+    let maxLen = 0;
+    for (const it of items) maxLen = Math.max(maxLen, (it.text || "").length);
+    // Long items are sentence-chunked server-side; budget ~2s per ~500-char chunk on top of the base so a
+    // genuinely long paragraph isn't declared timed-out mid-translation. Incremental partials also re-arm this.
+    const timeoutMs = Math.min(180000, 30000 + Math.floor(maxLen / 500) * 2000);
+    const timer = setTimeout(() => lccPageTranslateRetry({ request_id: requestId, retry_ms: 500 }), timeoutMs);
+    lccPageTranslateRequests.set(requestId, { keys, timer, timeoutMs });
     lccPageSendBatch(requestId, items);
   }
   if ((lccPageHotQueue.length || lccPageColdQueue.length) && lccPageTranslateRequests.size < policy.maxInflight) {
@@ -1933,6 +1941,11 @@ function lccPageTranslatePartial(msg) {
   const key = String(msg.item_id || "");
   const requestId = String(msg.request_id || "");
   if (!lccPageRequestOwns(requestId, key)) return;          // late/foreign result must not paint current work
+  const reqRec = lccPageTranslateRequests.get(requestId);   // a streaming partial means the long request is alive → re-arm its timeout
+  if (reqRec && reqRec.timer) {
+    clearTimeout(reqRec.timer);
+    reqRec.timer = setTimeout(() => lccPageTranslateRetry({ request_id: requestId, retry_ms: 500 }), reqRec.timeoutMs || 30000);
+  }
   const source = String(msg.source || "");
   const sourceNorm = lccPageSourceNorm(source);
   const target = String(msg.target || "").trim();

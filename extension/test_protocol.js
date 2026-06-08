@@ -269,6 +269,22 @@ assert.match(
   /function lccPageBlockOptOutAndRequeue\(work\) \{[\s\S]*st\.blockOptOut = true;[\s\S]*lccPageScheduleScan\(0\);/,
   "opt-out marks members so block paths skip them, then re-scans for the per-node path",
 );
+// ---- long paragraphs: server-chunked, length-scaled timeout + incremental streaming -------------------
+assert.match(
+  contentJs,
+  /const timeoutMs = Math\.min\(180000, 30000 \+ Math\.floor\(maxLen \/ 500\) \* 2000\);/,
+  "page batch timeout scales with item length so a long server-chunked paragraph isn't declared timed-out mid-translation",
+);
+assert.match(
+  contentJs,
+  /const reqRec = lccPageTranslateRequests\.get\(requestId\);[\s\S]*reqRec\.timer = setTimeout\([\s\S]*reqRec\.timeoutMs/,
+  "a streaming partial re-arms the request timeout (long paragraph stays alive while chunks arrive)",
+);
+assert.match(
+  contentJs,
+  /if \(target\.length > LCC_PAGE_PARTIAL_MAX_CHARS && \(srcLen \|\| 0\) <= LCC_PAGE_PARTIAL_MAX_CHARS\) return false;/,
+  "short nodes never get a huge speculative paint, but a long (server-chunked) node may stream its growing translation",
+);
 assert.match(
   backgroundJs,
   /async function ensureContentScript\(tabId\) \{[\s\S]*return \{ ok: false \};[\s\S]*return \{ ok: true \};[\s\S]*return contentScriptFailure\(tabId, tab, e\);[\s\S]*\}/,

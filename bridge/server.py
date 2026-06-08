@@ -126,8 +126,8 @@ def _config_bool(value, default=False):
 
 
 DOM_TX_MAX_ITEMS = int(os.environ.get("LCC_DOM_TX_MAX_ITEMS", "8"))
-DOM_TX_MAX_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_CHARS", "8000"))        # per-item ceiling; long paragraphs are sentence-chunked (translate_page_long_once), not dropped
-DOM_TX_MAX_TOTAL_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_TOTAL_CHARS", "12000"))   # whole-batch ceiling (one long item + short ones)
+DOM_TX_MAX_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_CHARS", "32000"))       # per-item sanity bound; long paragraphs are sentence-chunked (translate_page_long_once) + streamed, not truncated in practice
+DOM_TX_MAX_TOTAL_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_TOTAL_CHARS", "36000"))   # whole-batch ceiling (one long item + short ones)
 PAGE_LONG_CHARS = max(200, int(os.environ.get("LCC_PAGE_LONG_CHARS", "600")))   # items longer than this take the sentence-chunked, context-preserving path
 PAGE_CHUNK_CHARS = max(200, int(os.environ.get("LCC_PAGE_CHUNK_CHARS", "500"))) # target size per chunk in that path
 PAGE_TX_BATCH_MIN_TOKENS = max(64, int(os.environ.get("LCC_PAGE_TX_BATCH_MIN_TOKENS", "128")))
@@ -1819,10 +1819,12 @@ def _chunk_text(text: str, max_chars: int = None):
 
 
 def translate_page_long_once(text, recent_pairs=(), target: str = "Korean", hint: str = "",
-                             register: str = "casual", glossary_pairs=()):
+                             register: str = "casual", glossary_pairs=(), on_progress=None):
     """Translate a long DOM paragraph by sentence-chunking and translating chunks sequentially, each
     conditioned on the paragraph's already-translated chunks (running context). Every model call stays
-    small (clean translation, no truncation); the joined result is one string for the node."""
+    small (clean translation, no truncation); the joined result is one string for the node. on_progress, if
+    given, is called with the cumulative translation after each chunk so the caller can stream it into the
+    node incrementally (and re-arm its timeout) instead of waiting for the whole paragraph."""
     text = str(text or "")
     chunks = _chunk_text(text)
 
@@ -1840,6 +1842,11 @@ def translate_page_long_once(text, recent_pairs=(), target: str = "Korean", hint
         out.append(t)
         if t and t != ch:
             ctx = (ctx + [(ch[:160], t[:160])])[-4:]    # running paragraph context for the next chunk
+        if on_progress is not None:
+            try:
+                on_progress(" ".join(p for p in out if p))   # cumulative translation so far
+            except Exception:
+                pass
     return " ".join(p for p in out if p)
 
 
@@ -2842,15 +2849,39 @@ async def handle(ws):
                                     print("[dom-tx defer] live caption backlog has priority", flush=True)
                                     break
                                 source = item["text"]
+                                lp_q = asyncio.Queue()
+                                _LP_DONE = object()
+
+                                def _lp_progress(cum, _q=lp_q):                 # called from the model thread per chunk
+                                    if partial_requested:
+                                        loop.call_soon_threadsafe(_q.put_nowait, cum)
+
+                                async def _lp_pump(_q=lp_q, _done=_LP_DONE, _id=item["id"], _src=source):
+                                    last = ""
+                                    while True:                                  # stream the cumulative paragraph as it grows
+                                        cum = await _q.get()
+                                        if cum is _done:
+                                            break
+                                        if _id in sent_ids or not cum or cum == last:
+                                            continue
+                                        last = cum
+                                        await _send_partial(_id, _src, cum)
                                 try:
                                     page_long = functools.partial(
                                         translate_page_long_once, source, list(dom_recent_pairs),
                                         target=target_lang, hint=page_hint, register=page_register,
                                         glossary_pairs=list(page_glossary),
+                                        on_progress=(_lp_progress if partial_requested else None),
                                     )
+                                    lp_task = asyncio.create_task(_lp_pump()) if partial_requested else None
                                     t0 = time.perf_counter()
-                                    async with mlx_lock:
-                                        out = await loop.run_in_executor(_mlx_pool, page_long)
+                                    try:
+                                        async with mlx_lock:
+                                            out = await loop.run_in_executor(_mlx_pool, page_long)
+                                    finally:
+                                        if lp_task is not None:
+                                            lp_q.put_nowait(_LP_DONE)
+                                            await asyncio.gather(lp_task, return_exceptions=True)
                                     sent_ids.add(item["id"])
                                     await _send_seg(item["id"], source, out)
                                     print(f"[dom-tx long ok] request={request_id} chars={len(source)} ms={int((time.perf_counter()-t0)*1000)}", flush=True)
