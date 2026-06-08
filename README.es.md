@@ -24,6 +24,7 @@ Las herramientas de subtitulado/traducción en tiempo real se dividen en dos gru
 
 - **Las extensiones basadas en Whisper** capturan bien la pestaña, pero Whisper tiende a alucinar subtítulos sobre silencio/música, y la traducción suele estar ausente, ser literal o en la nube. → Aquí se resuelve distinto: ASR con puntuación nativa + filtrado de silencio + traducción por significado con Gemma local.
 - **Los reproductores de escritorio** tienen muy buena traducción con LLM local, pero hay que descargar el vídeo o meterlo en el reproductor, lo que no encaja con directos / sitios arbitrarios. → Aquí, sin descargas — se superpone **directamente sobre cualquier pestaña que emita sonido**.
+- **No solo el sonido, también el texto.** El cuerpo de la página (DOM) de la misma pestaña también suele necesitar traducción, pero la traducción de página integrada del navegador o en la nube envía el texto fuera y tiende a lo literal. → Aquí se aplica a la página el *mismo Gemma local, glosario y contexto* que mueven los subtítulos, reemplazando el DOM del cuerpo en su sitio y sin superposición. El objetivo era manejar el **sonido y el texto de una pestaña con un solo traductor local**.
 
 Todo es **local y gratuito**. A cambio hay un mínimo de hardware (ver requisitos en [SETUP.md](SETUP.md)). En máquinas más modestas el modelo de traducción ajusta su nivel automáticamente a la memoria (full/mid/lite).
 

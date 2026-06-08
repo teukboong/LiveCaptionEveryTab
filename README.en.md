@@ -24,6 +24,7 @@ Realtime captioning/translation tools mostly split into two camps, and the combi
 
 - **Whisper-based extensions** capture the tab well, but Whisper tends to hallucinate captions over silence/music, and translation is often absent, literal, or cloud-based. → Here it's solved differently: punctuation-native ASR + silence gating + local Gemma by-meaning translation.
 - **Desktop players** have great local-LLM translation, but you must download the video or feed it into the player, which doesn't fit live streams / arbitrary sites. → Here, no downloading — it overlays **right on any tab that makes sound**.
+- **Not just sound — text too.** The page body (DOM) in the same tab often needs translating as well, but the browser's built-in / cloud page translation ships the text out and leans literal. → Here the *same local Gemma, glossary, and context* that run the captions are applied to the page too, swapping the body DOM in place with no overlay. The goal was to handle a tab's **sound and text with one local translator**.
 
 Everything is **local and free**. The trade-off is a hardware floor (see requirements in [SETUP.md](SETUP.md)). On lighter machines the translation model auto-tiers to fit memory (full/mid/lite).
 
