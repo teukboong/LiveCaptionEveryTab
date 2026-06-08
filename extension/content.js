@@ -761,6 +761,12 @@ const lccPageTranslateStats = {
   dropNoNode: 0, dropSource: 0, dropChanged: 0, dropEmpty: 0, blockUnits: 0,
 };
 const LCC_PAGE_PARTIAL_MAX_CHARS = 420;      // speculative DOM streaming is only for short visible text
+// A single text node up to this many chars is queued; the bridge sentence-chunks anything over its
+// PAGE_LONG_CHARS threshold (translate_page_long_once), so long paragraphs are NOT dropped here — only a
+// pathologically huge single node (e.g. a whole article collapsed into one node) is skipped. (The old
+// pageTranslateMaxChars gate capped this at ~4000 and silently dropped longer paragraphs the server could
+// have handled.)
+const LCC_PAGE_NODE_MAX_CHARS = 8000;
 // Bilingual ghost: keep each element's pre-translation text so hover/focus reveals the original.
 const lccBilingualOrig = new WeakMap();      // marked element -> its original (pre-translation) text
 let lccBilingualGhost = null;
@@ -1067,8 +1073,7 @@ function lccPageNodeAllowed(node) {
   if (!lccPagePrefetchScanning && !lccPageNearViewport(parent)) return false;   // prefetch relaxes the window
   const { core } = lccPageTextParts(node.nodeValue);
   const minChars = Number(lccPageTranslateSettings.pageTranslateMinChars) || 2;
-  const maxChars = Number(lccPageTranslateSettings.pageTranslateMaxChars) || 900;
-  if (core.length < minChars || core.length > maxChars) return false;
+  if (core.length < minChars || core.length > LCC_PAGE_NODE_MAX_CHARS) return false;   // long paragraphs flow to the server's sentence-chunked path; only huge nodes are skipped
   if (!lccPageHasLetters(core)) return false;
   if (/^[\d\s.,:%()+\-–—/\\]+$/.test(core)) return false;
   if (lccPageAlreadyTarget(core)) return false;     // already in a distinctive-script target -> no round-trip
@@ -1166,7 +1171,7 @@ const LCC_PAGE_BLOCK_CTX_MAX = 600;
 // code) are NOT eligible — those need positional preservation (Policy R, future) — and fall through to the
 // per-node path unchanged. Strict node-identity checks make every result idempotent and fully restorable.
 const LCC_PAGE_BLOCK_UNIT = true;                       // kill switch for Policy A
-const LCC_PAGE_BLOCK_UNIT_MAX_CHARS = 1200;             // never collapse a block bigger than this
+const LCC_PAGE_BLOCK_UNIT_MAX_CHARS = 4000;             // never collapse a block bigger than this (server sentence-chunks it as one long item)
 const LCC_PAGE_NESTED_BLOCK_SELECTOR = [...LCC_PAGE_BLOCK_TAGS].map((t) => t.toLowerCase()).join(",");
 const LCC_PAGE_OPAQUE_SELECTOR = [     // a descendant of any of these makes a block ineligible for collapse
   "a", "button", "code", "kbd", "samp", "input", "textarea", "select", "label",
