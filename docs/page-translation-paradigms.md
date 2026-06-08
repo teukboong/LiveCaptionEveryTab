@@ -70,10 +70,14 @@ source DOM node + page context + target + register + glossary
 
 이 프로젝트는 이미 hot/cold queue, dedup fan-out, idle prefetch 구조를 갖고 있으므로, Living DOM Translation과 잘 맞는다.
 
-## 6. 다음 단계 후보
+## 6. 진행 상태와 다음 단계
 
-가장 강한 다음 단계는 **Bilingual Ghost Mode**다. 최종 번역된 text node 옆이나 hover overlay에 원문을 아주 가볍게 보존하면, 사용자는 번역을 신뢰하되 원문을 잃지 않는다. DOM 치환의 장점은 유지하고, "번역이 페이지를 망가뜨렸다"는 느낌을 줄일 수 있다.
+이미 들어간 것:
 
-두 번째는 **semantic block batching**이다. 지금은 text node 중심으로 microbatch를 만들지만, paragraph/list/card 단위로 주변 sibling text를 함께 hint로 보내면 긴 글 번역 품질이 오른다. 실제 replacement는 node별로 하되, prompt에는 block context를 준다.
+- **Bilingual Ghost Mode (hover)** — 팝업 `원문 보기 (번역 위에 마우스)`(`pageBilingual`). 번역된 text node에 마우스를 올리면 원문을 가볍게 되살려, 번역을 신뢰하되 원문을 잃지 않는다.
+- **cache-then-verify** — 팝업 `캐시 번역 idle 재확인`(`pageVerify`). 캐시된 번역은 즉시 표시하고, idle time에 모델이 다시 확인해서 바뀐 경우에만 조용히 patch한다.
 
-세 번째는 **cache-then-verify**다. UI label cache는 즉시 표시하고, idle time에 모델이 다시 확인해서 바뀐 경우에만 조용히 patch한다. 그러면 사이트 전체가 즉시 번역된 것처럼 보인다.
+남은 다음 단계 후보:
+
+- **Inline ghost** — 지금 ghost는 hover overlay뿐이다. 최종 번역 text node *옆*에 원문을 항상 아주 가볍게 보존하는 inline 변형을 더하면, hover 없이도 원문이 보인다.
+- **semantic block batching** — 지금은 text node 중심으로 microbatch를 만들지만, paragraph/list/card 단위로 주변 sibling text를 함께 hint로 보내면 긴 글 번역 품질이 오른다. 실제 replacement는 node별로 하되, prompt에는 block context를 준다.
