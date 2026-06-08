@@ -758,7 +758,7 @@ const lccPageTranslateState = new WeakMap(); // node -> per-node DOM state
 const lccPageTranslateRequests = new Map();  // requestId -> { keys:[sourceKey], timer }
 const lccPageTranslateStats = {
   resultSeen: 0, partialSeen: 0, applied: 0, partialApplied: 0,
-  dropNoNode: 0, dropSource: 0, dropChanged: 0, dropEmpty: 0,
+  dropNoNode: 0, dropSource: 0, dropChanged: 0, dropEmpty: 0, blockUnits: 0,
 };
 const LCC_PAGE_PARTIAL_MAX_CHARS = 420;      // speculative DOM streaming is only for short visible text
 // Bilingual ghost: keep each element's pre-translation text so hover/focus reveals the original.
@@ -1156,6 +1156,23 @@ const LCC_PAGE_BLOCK_TAGS = new Set([
   "H1", "H2", "H3", "H4", "H5", "H6", "ARTICLE", "SECTION", "ASIDE", "MAIN", "DETAILS", "SUMMARY",
 ]);
 const LCC_PAGE_BLOCK_CTX_MAX = 600;
+// ---- semantic block batching (Policy A: anchor-collapse) ----------------------------------------------
+// A leaf text block split by inline STYLE elements (b/i/em/span…) reads as ONE sentence but reaches us as
+// several text nodes, each translated on its own — which scrambles word order in reordering languages
+// (KO/JA: "Click <b>here</b> to continue" → fragments land in English order). Policy A translates the whole
+// block as a single segment and collapses the result into the first fragment node, blanking the others. It
+// reuses the existing @@n@@ marker-batch path verbatim (the block is just a longer segment), so there is NO
+// new server / sentinel / guard surface. Blocks holding interactive or identifier nodes (links, buttons,
+// code) are NOT eligible — those need positional preservation (Policy R, future) — and fall through to the
+// per-node path unchanged. Strict node-identity checks make every result idempotent and fully restorable.
+const LCC_PAGE_BLOCK_UNIT = true;                       // kill switch for Policy A
+const LCC_PAGE_BLOCK_UNIT_MAX_CHARS = 1200;             // never collapse a block bigger than this
+const LCC_PAGE_NESTED_BLOCK_SELECTOR = [...LCC_PAGE_BLOCK_TAGS].map((t) => t.toLowerCase()).join(",");
+const LCC_PAGE_OPAQUE_SELECTOR = [     // a descendant of any of these makes a block ineligible for collapse
+  "a", "button", "code", "kbd", "samp", "input", "textarea", "select", "label",
+  "[role='link']", "[role='button']", "[onclick]", "[contenteditable='true']", "[contenteditable='']",
+].join(",");
+let lccPageBlockSeq = 0;
 function lccPageBlockContext(node, core) {
   // Text of the nearest semantic block (p/li/td/heading/...): sent as reference-only context so a fragment
   // split out by inline elements is translated with its surrounding prose. "" when the node IS essentially
@@ -1168,8 +1185,117 @@ function lccPageBlockContext(node, core) {
   if (!txt || txt.length > LCC_PAGE_BLOCK_CTX_MAX || txt.length < core.length * 1.3) return "";
   return txt;
 }
+function lccPageBlockUnitFor(node) {
+  // Plan a Policy-A block from an allowed text node. Eligible only when the nearest semantic block is a
+  // LEAF text block (no nested block, no interactive/identifier/excluded descendant) split into >=2
+  // translatable text nodes. Returns { el, members, source, hot } or null (→ caller uses the per-node path).
+  if (!LCC_PAGE_BLOCK_UNIT) return null;
+  let el = node.parentElement, hops = 0;
+  while (el && hops < 6 && !LCC_PAGE_BLOCK_TAGS.has(el.tagName)) { el = el.parentElement; hops += 1; }
+  if (!el || !LCC_PAGE_BLOCK_TAGS.has(el.tagName)) return null;
+  if (el.closest(LCC_PAGE_EXCLUDE_SELECTOR)) return null;
+  let full;
+  try { full = el.textContent || ""; } catch (_) { return null; }
+  if (full.length > LCC_PAGE_BLOCK_UNIT_MAX_CHARS) return null;
+  const source = lccPageSourceNorm(full);
+  if (source.length < 2 || !lccPageHasLetters(source) || lccPageAlreadyTarget(source)) return null;
+  try {
+    if (el.querySelector(LCC_PAGE_NESTED_BLOCK_SELECTOR)) return null;   // container, not a leaf block → per-node
+    if (el.querySelector(LCC_PAGE_OPAQUE_SELECTOR)) return null;         // links/buttons/code → Policy R (future)
+  } catch (_) { return null; }
+  const members = [];
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    const parent = t.parentElement;
+    if (!parent || parent.closest(LCC_PAGE_EXCLUDE_SELECTOR)) return null;   // excluded text mixed in → bail to per-node
+    const core = lccPageTextParts(t.nodeValue).core;
+    if (!core || !lccPageHasLetters(core) || /^[\d\s.,:%()+\-–—/\\]+$/.test(core)) continue;
+    members.push(t);
+  }
+  if (members.length < 2) return null;        // single fragment → the existing per-node path handles it better
+  return { el, members, source, hot: lccPageInViewport(el) };
+}
+function lccPageBindBlockMembers(members, anchor, key) {
+  // Record each fragment's pre-translation value so the result is verifiable (node-identity) and restorable.
+  for (const m of members) {
+    const st = lccPageStateFor(m);
+    lccPageClearPartialState(st);
+    st.blockKey = key;
+    st.blockAnchor = (m === anchor);
+    st.emptied = false;
+    st.expectedFull = m.nodeValue;
+    st.originalFull = m.nodeValue;
+    st.pending = !!key;
+  }
+}
+function lccPageApplyBlockTarget(members, anchor, source, target) {
+  // Collapse: whole-block translation into the anchor, blank the rest. Each node is touched only if it still
+  // holds exactly its recorded source (else a later scan re-queues it) — never corrupts a node that changed.
+  let applied = 0;
+  for (const m of members) {
+    const st = lccPageTranslateState.get(m);
+    if (!m || !st || !m.isConnected || m.nodeValue !== st.expectedFull) continue;
+    if (m === anchor) {
+      st.source = source; st.sourceNorm = lccPageSourceNorm(source);
+      st.pre = ""; st.post = "";
+      st.translated = target; st.translatedFull = target;
+      st.emptied = false; st.pending = false;
+      m.nodeValue = target;                    // direct DOM replacement, not an overlay
+    } else {
+      st.translatedFull = ""; st.emptied = true; st.pending = false;
+      m.nodeValue = "";                        // fragment folded into the anchor's full-block translation
+    }
+    applied += 1;
+  }
+  return applied;
+}
+function lccPageQueueBlockUnit(unit) {
+  const { el, members, source, hot } = unit;
+  const anchor = members[0];
+  const anchorState = lccPageStateFor(anchor);
+  if (anchorState.translatedFull && anchor.nodeValue === anchorState.translatedFull) return false;  // already done
+  lccPageBilingualCaptureEl(el);               // hover over the collapsed anchor reveals the whole block's original
+  const cached = lccPageCachedEntry(source);
+  if (cached) {
+    lccPageBindBlockMembers(members, anchor, "");
+    if (lccPageApplyBlockTarget(members, anchor, source, cached.target) > 0) {
+      lccPageTranslateStats.applied += 1;
+      if (cached.kind !== "url") lccPageVerifyEnqueue(anchor, source, cached.target);
+    }
+    return false;
+  }
+  const key = "blk" + lccPageTranslateEpoch + "-" + (++lccPageBlockSeq);
+  lccPageBindBlockMembers(members, anchor, key);
+  lccPageWork.set(key, {
+    text: source, norm: lccPageSourceNorm(source), ctx: "",
+    nodes: new Set(members), status: "queued", hot,
+    block: { el, anchor, members },
+  });
+  (hot ? lccPageHotQueue : lccPageColdQueue).push(key);
+  lccPageTranslateStats.blockUnits += 1;
+  lccPageScheduleFlush();
+  return true;
+}
+function lccPageApplyBlockResult(key, work, source, target) {
+  const { anchor, members } = work.block;
+  if (!target) {
+    for (const m of members) { const st = lccPageTranslateState.get(m); if (st) st.pending = false; }
+    lccPageTranslateStats.dropEmpty += 1;      // model rendered empty: keep source, next scan re-queues
+  } else {
+    const applied = lccPageApplyBlockTarget(members, anchor, source || work.text, target);
+    if (applied > 0) { lccPageRememberCache(work.text, target); lccPageTranslateStats.applied += applied; }
+    else lccPageTranslateStats.dropChanged += 1;
+  }
+  lccPageWork.delete(key);
+}
 function lccPageQueueNode(node) {
   if (!lccPageNodeAllowed(node)) return false;
+  const prior = lccPageTranslateState.get(node);
+  if (prior && prior.blockKey && lccPageWork.has(prior.blockKey)) return false;   // already claimed by a live block unit
+  if (LCC_PAGE_BLOCK_UNIT) {
+    const unit = lccPageBlockUnitFor(node);
+    if (unit) return lccPageQueueBlockUnit(unit);
+  }
   const state = lccPageStateFor(node);
   lccPageBilingualCapture(node);   // snapshot the parent's original text before any partial/final mutates it
   const expectedFull = node.nodeValue;
@@ -1455,7 +1581,8 @@ function lccPageClearTransient(restore) {
       if (state && node.isConnected) {
         const isFinal = state.translatedFull && node.nodeValue === state.translatedFull;
         const isPartial = state.partialFull && node.nodeValue === state.partialFull;
-        if (isFinal || isPartial) node.nodeValue = state.originalFull || state.expectedFull || node.nodeValue;
+        const isEmptied = state.emptied && node.nodeValue === "";   // a fragment collapsed into its block anchor
+        if (isFinal || isPartial || isEmptied) node.nodeValue = state.originalFull || state.expectedFull || node.nodeValue;
       }
       lccPageTranslateState.delete(node);
     }
@@ -1523,6 +1650,17 @@ function lccPageBilingualCapture(node) {
     if (!orig || !orig.trim() || orig.length > LCC_PAGE_BILINGUAL_MAX_CHARS) return;
     lccBilingualOrig.set(parent, orig);
     parent.classList.add("lcc-bi-src");
+  } catch (_) {}
+}
+function lccPageBilingualCaptureEl(el) {
+  // Block units collapse into the anchor, so snapshot the whole block element (not a single fragment's
+  // parent) — hover over the collapsed anchor then reveals the entire original block.
+  if (!lccPageBilingualEnabled() || !el || lccBilingualOrig.has(el)) return;
+  try {
+    const orig = el.textContent;
+    if (!orig || !orig.trim() || orig.length > LCC_PAGE_BILINGUAL_MAX_CHARS) return;
+    lccBilingualOrig.set(el, orig);
+    el.classList.add("lcc-bi-src");
   } catch (_) {}
 }
 function lccPageBilingualEnsureGhost() {
@@ -1650,7 +1788,8 @@ function lccPageTranslatePartial(msg) {
   const target = String(msg.target || "").trim();
   if (!target) return;
   const work = lccPageWork.get(key);
-  const nodes = work ? work.nodes : null;
+  if (!work || work.block) return;          // block units are final-only (no mid-stream collapse)
+  const nodes = work.nodes;
   if (!nodes || !nodes.size) return;
   let applied = 0;
   for (const node of nodes) {
@@ -1672,6 +1811,7 @@ function lccPageTranslateApply(msg) {
   const sourceNorm = lccPageSourceNorm(source);
   const target = String(msg.target || "").trim();
   const work = lccPageWork.get(key);
+  if (work && work.block) { lccPageApplyBlockResult(key, work, source, target); return; }   // Policy A collapse
   const nodes = work ? work.nodes : null;
   if (!nodes || !nodes.size) { lccPageTranslateStats.dropNoNode += 1; if (work) lccPageWork.delete(key); return; }
   if (!target) {

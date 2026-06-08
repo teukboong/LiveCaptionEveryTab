@@ -212,6 +212,37 @@ assert.match(
   /function lccPageWarnBatchRouteFailure\(requestId, reason\) \{[\s\S]*console\.warn\("\[lcc\] page batch routing failed:", requestId, lccPageRouteFailureReason\(reason\)\);[\s\S]*\}/,
   "content page batch sender keeps route failure reasons observable",
 );
+// ---- semantic block batching (Policy A: anchor-collapse) -----------------------------------------------
+assert.match(
+  contentJs,
+  /function lccPageBlockUnitFor\(node\) \{[\s\S]*el\.querySelector\(LCC_PAGE_NESTED_BLOCK_SELECTOR\)\) return null;[\s\S]*el\.querySelector\(LCC_PAGE_OPAQUE_SELECTOR\)\) return null;[\s\S]*if \(members\.length < 2\) return null;/,
+  "block units are leaf text blocks only — nested blocks, interactive/identifier nodes, and single fragments fall through to the per-node path",
+);
+assert.match(
+  contentJs,
+  /if \(LCC_PAGE_BLOCK_UNIT\) \{[\s\S]*const unit = lccPageBlockUnitFor\(node\);[\s\S]*if \(unit\) return lccPageQueueBlockUnit\(unit\);/,
+  "lccPageQueueNode routes eligible nodes through the block-unit path",
+);
+assert.match(
+  contentJs,
+  /function lccPageApplyBlockTarget\(members, anchor, source, target\) \{[\s\S]*m\.nodeValue !== st\.expectedFull\) continue;[\s\S]*m === anchor[\s\S]*m\.nodeValue = target;[\s\S]*st\.emptied = true;[\s\S]*m\.nodeValue = "";/,
+  "block collapse applies the whole-block translation to the anchor and blanks the rest, only when each node still holds its recorded source",
+);
+assert.match(
+  contentJs,
+  /if \(work && work\.block\) \{ lccPageApplyBlockResult\(key, work, source, target\); return; \}/,
+  "page result handler routes block-unit results to the collapse path",
+);
+assert.match(
+  contentJs,
+  /function lccPageTranslatePartial\(msg\) \{[\s\S]*if \(!work \|\| work\.block\) return;[\s\S]*block units are final-only/,
+  "block units never paint speculative partials (final-only collapse)",
+);
+assert.match(
+  contentJs,
+  /const isEmptied = state\.emptied && node\.nodeValue === "";[\s\S]*if \(isFinal \|\| isPartial \|\| isEmptied\) node\.nodeValue = state\.originalFull/,
+  "restore reverts fragments that were collapsed into a block anchor",
+);
 assert.match(
   backgroundJs,
   /async function ensureContentScript\(tabId\) \{[\s\S]*return \{ ok: false \};[\s\S]*return \{ ok: true \};[\s\S]*return contentScriptFailure\(tabId, tab, e\);[\s\S]*\}/,
