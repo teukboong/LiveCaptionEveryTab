@@ -5,7 +5,7 @@
 > 🤖 이 프로젝트는 코드부터 문서까지 **전부 바이브 코딩(AI 페어 프로그래밍)으로** 만들었습니다.
 
 유튜브·트위치·**X**·기타 어떤 사이트든, 브라우저 탭 오디오를 잡아 **로컬 Gemma-4**로 전사+번역해서 영상 위에 2줄 자막(원문/모국어)을 띄운다. (탭 캡처는 도메인 무관이라 소리 나는 탭이면 다 됨)
-전사는 **Granite Speech 4.1**(영어 강함)·**Qwen3-ASR**(일어·한국어 등 다국어) 중 팝업에서 고른다. 둘 다 구두점·대소문자를 직접 찍고, 말 없으면 `[no speech]`로 게이트한다.
+전사는 **Granite Speech 4.1**(영어 강함)·**Qwen3-ASR**(일어·한국어 등 다국어)·**Whisper Large v3**(다국어) 세 엔진 중 팝업에서 고른다. Granite/Qwen3는 구두점·대소문자를 직접 찍고, 말 없으면 `[no speech]`로 게이트한다.
 
 > 세상엔 셀 수 없는 영상·오디오 콘텐츠가 있지만, 언어 장벽이 아직 **콘텐츠 장벽**으로 남아 있습니다.
 > 그 벽에 **개구멍 하나 뚫는 마음**으로 만들었습니다.
@@ -17,7 +17,7 @@
 | | 이 프로젝트 | Whisper 기반 브라우저 확장 | 데스크탑 플레이어 (예: LLPlayer) |
 |---|---|---|---|
 | **입력** | 소리 나는 **아무 탭**(라이브 스트림 포함) | 탭 오디오 | 받아온 영상 / 플레이어에 넣은 파일·URL |
-| **전사(ASR)** | Granite / Qwen3 (구두점·truecasing 네이티브, 무음·음악은 `[no speech]` 게이트) | 주로 Whisper | 주로 Whisper |
+| **전사(ASR)** | Granite / Qwen3 (구두점·truecasing 네이티브, 무음·음악은 `[no speech]` 게이트) **또는 Whisper Large v3** | 주로 Whisper | 주로 Whisper |
 | **번역** | **로컬 LLM(Gemma-4)** 의미 번역 — 문맥·대명사 유지 | 없음 / 직역 MT / 클라우드 | 로컬 LLM 가능(Ollama 등) |
 | **실행** | 100% 로컬 (클라우드 0) | 로컬~혼합 | 로컬 |
 | **대상 언어** | 한국어 우선(+다국어) | 도구마다 | 다국어(언어별 최적화는 제각각) |
@@ -26,7 +26,7 @@
 - **데스크탑 플레이어**는 로컬 LLM 번역 품질이 좋지만 영상을 받아오거나 플레이어에 넣어야 해서 라이브 스트림·임의 사이트엔 잘 안 맞는다. → 여기선 받을 필요 없이 **소리 나는 탭이면 그 자리에서** 얹는다.
 - **소리뿐 아니라 글자도.** 같은 탭의 페이지 본문(DOM)도 번역이 필요한데, 브라우저 기본·클라우드 페이지 번역은 텍스트를 외부로 보내고 사전적 직역에 가깝다. → 여기선 자막을 돌리는 **그 로컬 Gemma·용어집·문맥을 그대로** 페이지에도 써서, 오버레이 없이 본문 DOM을 직접 갈아끼운다. 한 탭의 **소리와 글자를 한 로컬 번역기로** 다루는 게 목표였다.
 
-전부 **로컬·무료**다. 대신 하드웨어 바닥이 있다(아래 [SETUP.md](SETUP.md)의 요구 사항 참고). 가벼운 환경은 번역 모델을 메모리에 맞춰 자동 티어링한다(full/mid/lite).
+전부 **로컬·무료**다. 대신 하드웨어 바닥이 있다(아래 [SETUP.md](SETUP.md)의 요구 사항 참고). 번역·전사 모델은 팝업의 **드롭다운**에서 고른다 — **자동**(여유 메모리에 맞춰 번역 모델을 골라줌) + 큐레이션 목록 + 직접 입력(HF id). 가벼운 환경이면 "자동"이 메모리에 맞는 모델을 알아서 잡고, 안 받은 모델엔 다운로드 버튼이 뜬다.
 
 ## 플랫폼 — 두 런타임 (동등 지원)
 
@@ -34,24 +34,24 @@
 
 | 백엔드 | 환경 | 전사(ASR) | 번역 | 가이드 |
 |---|---|---|---|---|
-| **MLX** (`LCC_BACKEND=mlx`) | Apple Silicon | Granite/Qwen3 (mlx-audio, 인프로세스) | Gemma-4 · full/mid/lite (mlx-lm) | [SETUP.md](SETUP.md) |
-| **CUDA** (`LCC_BACKEND=cuda`) | Windows + NVIDIA (WSL2) | Granite/Qwen3 (transformers, `cuda/asr_server.py`) | llama.cpp · GGUF · full/mid/lite (OpenAI 호환 HTTP) | [SETUP-windows.md](SETUP-windows.md) |
+| **MLX** (`LCC_BACKEND=mlx`) | Apple Silicon | Granite/Qwen3 (mlx-audio) · Whisper (mlx_whisper) | Gemma-4 (26B/E4B/E2B · 선택 or 자동, mlx-lm) | [SETUP.md](SETUP.md) |
+| **CUDA** (`LCC_BACKEND=cuda`) | Windows + NVIDIA (WSL2) | Granite/Qwen3 (transformers, `cuda/asr_server.py`) · Whisper (whisper.cpp q6) | Gemma-4 (26B/E4B/E2B · 선택 or 자동, llama.cpp GGUF, OpenAI 호환 HTTP) | [SETUP-windows.md](SETUP-windows.md) |
 
-전사 엔진(영어=granite/다국어=qwen3) 선택은 양쪽 동일(`model` 필드 라우팅) — whisper는 안 쓴다. VAD·문장 조립·스케줄러·넘버가드·프롬프트 빌더는 **두 백엔드 공유**(순수 함수)이고, 런타임이 바뀌는 건 GPU 3함수(전사/번역/요약)뿐. 그 경계가 `bridge/backend_cuda.py`(HTTP)와 server.py의 "Backend seam". (코드 기본값은 `mlx`.)
+전사 엔진(영어=granite / 다국어=qwen3 / 범용=whisper) 선택은 양쪽 동일(`model` 필드 라우팅). VAD·문장 조립·스케줄러·넘버가드·프롬프트 빌더는 **두 백엔드 공유**(순수 함수)이고, 런타임이 바뀌는 건 GPU 3함수(전사/번역/요약)뿐. 그 경계가 `bridge/backend_cuda.py`(HTTP)와 server.py의 "Backend seam". (코드 기본값은 `mlx`.)
 
 ## 구조
 ```
 [Chrome 확장] tabCapture(탭 오디오) ──WS(PCM16 16k)──▶ [bridge/server.py]
                                                         VAD + soft-cut ASR atom
-                                                        → Granite / Qwen3-ASR 전사 (구두점·다국어)
+                                                        → Granite / Qwen3-ASR / Whisper 전사 (구두점·다국어)
                                                         → unit assembler
-                                                        → Gemma-4 (tier) 번역
+                                                        → Gemma-4 번역
    [content.js 오버레이 2줄] ◀──WS(JSON caption)────────┘
 ```
-- ASR은 **두 개의 mlx-audio 엔진** 중 팝업에서 선택(▸ 전사 엔진). **Granite Speech 4.1 2B**(`ibm-granite/granite-speech-4.1-2b` · 영어 충실, WER 0%대)와 **Qwen3-ASR 1.7B**(`Qwen/Qwen3-ASR-1.7B` · 일어·한국어 포함 52언어, 언어 자동감지). 둘 다 구두점·truecasing을 네이티브로 찍어 문장 청킹이 그대로 된다. 번역 모델과 같은 Apple GPU 공유(직렬). ⚠ granite는 mlx-audio **main의 conv 수정** 필요(SETUP 참고).
-- 영어 전용 저지연 Parakeet은 파워유저 탈출구 `LCC_ASR_ENGINE=parakeet`로만(CPU·번역과 병렬, 모델 `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`, `sherpa-onnx==1.13.2`). 팝업 셀렉터에는 granite/qwen3만 노출.
-- 번역: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — 기본 **quality 프롬프트**(expert interpreter·by-meaning·no-translationese + few-shot 3, KV-cache로 비용 amortize → 문어체보다 자연 구어체). 저지연은 `LCC_TX_PROFILE=fast`. **대상 언어 선택 가능**(45개 언어 — Gemma는 폭넓은 다국어), 소스 자동감지, 대상=소스면 스킵.
-- RAM ~26GB(full 티어 기준 가중치; mid~8·lite~6GB는 더 적음) + 청크당 소량 KV. 지연 ~2.9–3.4s/발화 청크(ASR ~0.7s + 번역 ~1.4s + 오디오 prefill + 절 경계 대기)
+- ASR은 **세 가지 전사 엔진** 중 팝업에서 선택(▸ 전사 엔진). **Granite Speech 4.1 2B**(`ibm-granite/granite-speech-4.1-2b` · 영어 충실, WER 0%대)와 **Qwen3-ASR 1.7B**(`Qwen/Qwen3-ASR-1.7B` · 일어·한국어 포함 52언어, 언어 자동감지)는 mlx-audio 오디오-LLM이라 구두점·truecasing을 네이티브로 찍어 문장 청킹이 그대로 되고, 번역 모델과 같은 Apple GPU를 공유한다(직렬). ⚠ granite는 mlx-audio **main의 conv 수정** 필요(SETUP 참고). **Whisper Large v3**(`mlx-community/whisper-large-v3-mlx` · 다국어)는 전용 디코더를 가진 별도 엔진(자체 디코드·무프롬프트)으로, Mac에선 받을 때 **MLX 6bit**로 자동 양자화하고 CUDA에선 whisper.cpp **q6**로 돈다(코드 완비, 미검증).
+- 영어 전용 저지연 Parakeet은 파워유저 탈출구 `LCC_ASR_ENGINE=parakeet`로만(CPU·번역과 병렬, 모델 `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`, `sherpa-onnx==1.13.2`). 팝업 셀렉터에는 granite/qwen3/whisper만 노출.
+- 번역: 선택 가능한 Gemma-4 모델 — `gemma-26b`(26B-A4B) / `gemma-e4b`(E4B) / `gemma-e2b`(E2B), 또는 "자동"이 여유 메모리에 맞춰 골라준다 (mlx-lm; E4B/E2B는 mlx_vlm로 로드). 기본 **quality 프롬프트**(expert interpreter·by-meaning·no-translationese + few-shot 3, KV-cache로 비용 amortize → 문어체보다 자연 구어체). 저지연은 `LCC_TX_PROFILE=fast`. **대상 언어 선택 가능**(45개 언어 — Gemma는 폭넓은 다국어), 소스 자동감지, 대상=소스면 스킵.
+- RAM ~26GB(26B 가중치 기준; E4B~8·E2B~6GB는 더 적음) + 청크당 소량 KV. 지연 ~2.9–3.4s/발화 청크(ASR ~0.7s + 번역 ~1.4s + 오디오 prefill + 절 경계 대기)
 - MTP는 이 하드웨어에서 무의미해 미사용(MoE·dense·E4B 전부 검증)
 - ⚠️ 정품 Chrome/Edge/Brave 필요 — ChatGPT Atlas 등 일부 Chromium 포크는 `chrome.tabCapture` 미구현
 
@@ -61,7 +61,7 @@
 - **macOS** — `install-mac.command` 더블클릭 (막히면 우클릭 → 열기). venv·의존성·팝업 호스트까지 한 번에.
 - **Windows** — `install-windows-oneclick.bat` 더블클릭 (WSL2+CUDA+모델까지 자동).
 
-이후엔 **확장 팝업이 전부** 합니다 — 브릿지 켜기, 그리고 **모델은 고른 티어만**(Full/Mid/Lite) 받아 디스크를 아낍니다. (터미널파는 `./setup.sh [--models --tier lite]`)
+이후엔 **확장 팝업이 전부** 합니다 — 브릿지 켜기, 그리고 번역·전사 모델을 **드롭다운에서 골라**(자동·큐레이션 목록·직접 입력) 안 받은 모델의 다운로드 버튼만 눌러 디스크를 아낍니다. (터미널파는 선택사항으로 `./setup.sh [--models --tier lite]` — 옛 티어명은 모델로 back-compat 매핑됨)
 
 ## 실행
 ### 1) 브릿지 서버
@@ -71,7 +71,7 @@ bash bridge/run_bridge.sh
 # "[bridge] ready  ws://127.0.0.1:8765" 뜨면 준비 완료 (첫 로드 ~40s)
 ```
 - 항상 켜두려면(옵트인, 크래시 자동재시작): `bash bridge/autostart.sh install` — ⚠ ~26GB RAM 상주. 끄기: `… uninstall`
-- 터미널 없이 **팝업 버튼**(`브릿지 켜기` · 모델 `Full/Mid/Lite`)으로 다 하려면 네이티브 메시징 호스트가 필요한데, **`./setup.sh`가 이미 설치**한다(브라우저 샌드박스가 직접 못 하는 1회 부트스트랩). 이후 확장 새로고침. detached로 떠서 브라우저 닫아도 유지 (SETUP 6.5)
+- 터미널 없이 **팝업 버튼**(`브릿지 켜기` · 모델 드롭다운에서 골라 다운로드)으로 다 하려면 네이티브 메시징 호스트가 필요한데, **`./setup.sh`가 이미 설치**한다(브라우저 샌드박스가 직접 못 하는 1회 부트스트랩). 이후 확장 새로고침. detached로 떠서 브라우저 닫아도 유지 (SETUP 6.5)
 - 브릿지가 재시작/끊겨도 확장이 **자동 재연결**(백오프)하고 최근 오디오를 최대 6초 버퍼링함. 그보다 긴 장애 동안의 발화는 유실될 수 있음
 ### 2) 확장 로드 (Chrome)
 1. `chrome://extensions` → 우측 상단 **개발자 모드** 켜기
@@ -85,6 +85,8 @@ bash bridge/run_bridge.sh
 - **페이지 번역 모드**: 팝업에서 `페이지 번역`만 켜면 오버레이 없이 현재 탭의 실제 DOM text node를 번역문으로 직접 교체한다. `페이지 번역` + `동영상 번역`을 같이 켜면 같은 브릿지 연결을 공유하고, 페이지 번역은 auxiliary lane이라 final/preview 자막 번역이 바쁘면 양보 후 재시도한다. 페이지 전용 말투·용어집·힌트를 따로 줄 수 있고, 출력은 `라이브 partial`/`확정만` 중 선택, 번역문 위에 마우스를 올리면 원문 보기(이중언어), `캐시 번역 idle 재확인`은 한가할 때 캐시된 번역을 다시 검증해 모델이 다르게 답하면 그 자리를 패치한다. 페이지 번역은 켠 탭에 고정돼 탭을 바꿔도 따라가지 않고(시작한 탭만 번역), 페이지 힌트·용어집을 비우면 영상 쪽 설정을 상속한다.
 - **영상 종류 프리셋**: 팝업에서 콘텐츠 유형(일반·잡담 / 컨퍼런스·강연 / 뉴스·인터뷰 / 개인 스트리밍)을 한 번 고르면 말투(register)와 지연 모드를 묶어서 맞춘다 — 강연=격식·안정, 뉴스=균형, 스트리밍=구어·즉각. 어조·종결어미·few-shot 앵커가 콘텐츠에 맞게 바뀌고, 소스 언어(EN/JA)도 자동감지해 맞는 예시를 고름
 - **용어집**: 팝업에 `이름=번역`(줄마다 하나)을 넣으면 그 용어를 전사 바이어싱 + 번역에서 항상 같게 렌더링(이름이 줄마다 다르게 번역되는 흔들림 제거). `용어 힌트`는 자유 텍스트 바이어싱. 페이지 위에서 **Alt+G**로 마지막 원문이 채워진 입력 바를 열어 바로 추가할 수도 있다
+- **커스텀 번역 프롬프트**: 번역 지시문의 서술부(번역 스타일)를 직접 쓴 문장으로 덮어쓴다. 출력 형식·용어집 규칙은 그대로 유지되고, 자막과 페이지 번역 둘 다에 적용된다
+- **이름 붙은 프리셋**: 번역 설정 묶음(커스텀 프롬프트·말투·대상 언어·지연 모드·문맥 힌트·용어집)을 이름으로 저장해 두고, simple 화면에서도 골라서 한 번에 적용한다
 - **정확도 모드(2패스 재전사)**: 켜면 자연 종료(pause/eos)나 종결부호로 확정되는 다절(多節) 문장의 누적 오디오를 확정 직전 한 번 더 통째로 전사 → VAD 조각 이어붙임 경계 오류 제거. 확정이 ~0.7s 느려져 토글(기본 OFF). 오버랩/스플릿으로 정렬이 깨진 유닛은 자동 제외(`unit_pure` 가드)
 - **스트리밍 자막**: 원문은 ASR atom 단위로 먼저 뜨고, 번역 preview는 debounce/coalesce됨. 확정 자막은 final queue에서 우선 처리
 - **지연 모드 3단계**: `공격`은 ASR과 번역을 같은 GPU에서 겹쳐 돌리고(서로 다른 디바이스 락) 현재 unit preview를 latest-only로 미리 번역, `균형`은 GPU가 idle일 때만 preview, `안정`은 확정 번역만 표시. final 번역은 항상 preview보다 우선

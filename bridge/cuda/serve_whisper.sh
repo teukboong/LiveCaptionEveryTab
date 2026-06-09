@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Serve a q6 Whisper ggml via whisper.cpp's whisper-server, exposing the OpenAI-compatible
-# /v1/audio/transcriptions surface the bridge's CUDA backend posts to (model=whisper -> port 8001 by
+# /v1/audio/transcriptions surface the bridge's CUDA backend posts to (model=whisper -> port 8002 by
 # default, distinct from the granite/qwen3 transformers server on 8000). CODE-COMPLETE / unverified here.
 #
 #   serve_whisper.sh [model_gguf]
@@ -11,7 +11,7 @@ set -euo pipefail
 
 MODEL="${1:-${LCC_CUDA_ASR_WHISPER_GGUF:-$HOME/models/live-caption-cuda8/asr-gguf-q6/whisper/whisper-large-v3-q6_k.gguf}}"
 HOST="${LCC_CUDA_ASR_WHISPER_HOST:-127.0.0.1}"
-PORT="${LCC_CUDA_ASR_WHISPER_PORT:-8001}"
+PORT="${LCC_CUDA_ASR_WHISPER_PORT:-8002}"
 BIN="${LCC_WHISPER_SERVER_BIN:-whisper-server}"
 
 command -v "$BIN" >/dev/null 2>&1 || { echo "whisper-server not found: $BIN (build whisper.cpp with -DWHISPER_BUILD_SERVER=ON)" >&2; exit 1; }

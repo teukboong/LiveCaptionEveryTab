@@ -5,7 +5,7 @@
 > 🤖 Este proyecto se construyó **íntegramente mediante vibe coding (programación en pareja con IA)** — desde el código hasta la documentación.
 
 En YouTube, Twitch, **X** o cualquier sitio, captura el audio de la pestaña del navegador y usa un **Gemma-4 local** para transcribir + traducir, mostrando subtítulos de 2 líneas (original / tu idioma) sobre el vídeo. (La captura de pestaña es independiente del dominio, así que funciona en cualquier pestaña con sonido.)
-Para la transcripción eliges en el popup entre **Granite Speech 4.1** (fuerte en inglés) y **Qwen3-ASR** (multilingüe, incl. japonés/coreano). Ambos generan puntuación y mayúsculas de forma nativa, y filtran el silencio con `[no speech]`.
+Para la transcripción eliges en el popup entre tres motores: **Granite Speech 4.1** (fuerte en inglés), **Qwen3-ASR** (multilingüe, incl. japonés/coreano) y **Whisper Large v3** (multilingüe). Granite y Qwen3 generan puntuación y mayúsculas de forma nativa, y filtran el silencio con `[no speech]`; Whisper es un motor dedicado con su propia decodificación (sin prompt).
 
 > El mundo está lleno de incontables vídeos y audios, pero la barrera del idioma sigue siendo una **barrera de contenido**.
 > Esto se hizo con el ánimo de abrir un pequeño hueco en ese muro.
@@ -17,7 +17,7 @@ Las herramientas de subtitulado/traducción en tiempo real se dividen en dos gru
 | | Este proyecto | Extensiones basadas en Whisper | Reproductores de escritorio (p. ej. LLPlayer) |
 |---|---|---|---|
 | **Entrada** | **Cualquier pestaña** con sonido (incl. directos) | Audio de pestaña | Vídeo descargado / archivos·URLs metidos en un reproductor |
-| **ASR** | Granite / Qwen3 (puntuación·truecasing nativos; silencio·música filtrados con `[no speech]`) | Sobre todo Whisper | Sobre todo Whisper |
+| **ASR** | Granite / Qwen3 / Whisper (Whisper también es ahora una de **nuestras** opciones; Granite·Qwen3 con puntuación·truecasing nativos y silencio·música filtrados con `[no speech]`) | Sobre todo Whisper | Sobre todo Whisper |
 | **Traducción** | **LLM local (Gemma-4)** por significado — mantiene contexto·pronombres | Ninguna / MT literal / nube | LLM local posible (Ollama, etc.) |
 | **Ejecución** | 100% local (cero nube) | Local~mixta | Local |
 | **Idioma destino** | Coreano primero (+multilingüe) | Varía | Multilingüe (el ajuste por idioma varía) |
@@ -26,7 +26,7 @@ Las herramientas de subtitulado/traducción en tiempo real se dividen en dos gru
 - **Los reproductores de escritorio** tienen muy buena traducción con LLM local, pero hay que descargar el vídeo o meterlo en el reproductor, lo que no encaja con directos / sitios arbitrarios. → Aquí, sin descargas — se superpone **directamente sobre cualquier pestaña que emita sonido**.
 - **No solo el sonido, también el texto.** El cuerpo de la página (DOM) de la misma pestaña también suele necesitar traducción, pero la traducción de página integrada del navegador o en la nube envía el texto fuera y tiende a lo literal. → Aquí se aplica a la página el *mismo Gemma local, glosario y contexto* que mueven los subtítulos, reemplazando el DOM del cuerpo en su sitio y sin superposición. El objetivo era manejar el **sonido y el texto de una pestaña con un solo traductor local**.
 
-Todo es **local y gratuito**. A cambio hay un mínimo de hardware (ver requisitos en [SETUP.md](SETUP.md)). En máquinas más modestas el modelo de traducción ajusta su nivel automáticamente a la memoria (full/mid/lite).
+Todo es **local y gratuito**. A cambio hay un mínimo de hardware (ver requisitos en [SETUP.md](SETUP.md)). Los modelos de traducción y de transcripción se eligen en **menús desplegables** del popup: **Auto** (ajusta el modelo a la memoria libre, sobre un registro de modelos) + una lista curada + un id de HF personalizado. En máquinas más modestas, "Auto" ajusta el modelo de traducción a la memoria disponible.
 
 ## Plataforma — dos runtimes (con soporte equivalente)
 
@@ -34,24 +34,24 @@ El mismo bridge·la misma extensión corren en ambos backends. Elige el de tu eq
 
 | Backend | Entorno | Transcripción (ASR) | Traducción | Guía |
 |---|---|---|---|---|
-| **MLX** (`LCC_BACKEND=mlx`) | Apple Silicon | Granite/Qwen3 (mlx-audio, en proceso) | Gemma-4 · full/mid/lite (mlx-lm) | [SETUP.md](SETUP.md) |
-| **CUDA** (`LCC_BACKEND=cuda`) | Windows + NVIDIA (WSL2) | Granite/Qwen3 (transformers, `cuda/asr_server.py`) | llama.cpp · GGUF · full/mid/lite (HTTP compatible con OpenAI) | [SETUP-windows.md](SETUP-windows.md) |
+| **MLX** (`LCC_BACKEND=mlx`) | Apple Silicon | Granite/Qwen3/Whisper (mlx-audio + mlx_whisper; Whisper se auto-cuantiza a 6bit al descargar) | Gemma-4 (26B/E4B/E2B · elegir o Auto) (mlx-lm) | [SETUP.md](SETUP.md) |
+| **CUDA** (`LCC_BACKEND=cuda`) | Windows + NVIDIA (WSL2) | Granite/Qwen3 (transformers, `cuda/asr_server.py`) / Whisper (whisper.cpp q6) | llama.cpp · GGUF (26B/E4B/E2B · elegir o Auto) (HTTP compatible con OpenAI) | [SETUP-windows.md](SETUP-windows.md) |
 
-La elección del motor de transcripción (inglés=granite / multilingüe=qwen3) es idéntica en ambos (ruteada por el campo `model`) — sin whisper. VAD·ensamblado de frases·planificador·number-guard·constructor de prompts son **compartidos por ambos backends** (funciones puras); solo cambian las 3 funciones de GPU (transcribir/traducir/resumir) por runtime, y esa frontera es `bridge/backend_cuda.py` (HTTP) y el "Backend seam" en server.py. (El valor por defecto del código es `mlx`.)
+La elección del motor de transcripción (inglés=granite / multilingüe=qwen3 / multilingüe=whisper) es idéntica en ambos (ruteada por el campo `model`); Whisper también es ahora un motor disponible (MLX 6bit en Mac, whisper.cpp q6 en CUDA). VAD·ensamblado de frases·planificador·number-guard·constructor de prompts son **compartidos por ambos backends** (funciones puras); solo cambian las 3 funciones de GPU (transcribir/traducir/resumir) por runtime, y esa frontera es `bridge/backend_cuda.py` (HTTP) y el "Backend seam" en server.py. (El valor por defecto del código es `mlx`.)
 
 ## Arquitectura
 ```
 [Extensión Chrome] tabCapture (audio de pestaña) ──WS(PCM16 16k)──▶ [bridge/server.py]
                                                         VAD + soft-cut ASR atom
-                                                        → transcripción Granite / Qwen3-ASR (puntuación·multilingüe)
+                                                        → transcripción Granite / Qwen3-ASR / Whisper (puntuación·multilingüe)
                                                         → unit assembler
-                                                        → traducción Gemma-4 (tier)
+                                                        → traducción Gemma-4
    [overlay de 2 líneas content.js] ◀──WS(JSON caption)──┘
 ```
-- El ASR elige entre **dos motores mlx-audio** en el popup (▸ Motor de transcripción). **Granite Speech 4.1 2B** (`ibm-granite/granite-speech-4.1-2b` · fiel en inglés, WER ~0%) y **Qwen3-ASR 1.7B** (`Qwen/Qwen3-ASR-1.7B` · 52 idiomas incl. japonés/coreano, ID de idioma automático). Ambos generan puntuación·truecasing de forma nativa, así que el troceado por frases funciona tal cual. Comparte la GPU de Apple con el traductor (serializado). ⚠ granite necesita el **arreglo de conv en mlx-audio main** (ver SETUP).
-- Un Parakeet de baja latencia solo para inglés es una vía para usuarios avanzados, solo con `LCC_ASR_ENGINE=parakeet` (CPU, en paralelo a la traducción; modelo `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`, `sherpa-onnx==1.13.2`). El selector del popup solo muestra granite/qwen3.
-- Traducción: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — **prompt de calidad** por defecto (expert interpreter·by-meaning·no-translationese + 3 few-shots, coste amortizado por KV-cache → salida hablada natural en vez de un estilo escrito rígido). Baja latencia con `LCC_TX_PROFILE=fast`. **Idioma destino seleccionable** (45 idiomas — Gemma es ampliamente multilingüe), origen autodetectado, se omite cuando destino=origen.
-- RAM ~26GB (pesos del tier full; mid ~8 / lite ~6GB son menores) + un poco de KV por chunk. Latencia ~2.9–3.4s por chunk de habla (ASR ~0.7s + traducción ~1.4s + prefill de audio + espera de límite de cláusula).
+- El ASR elige entre **tres motores de transcripción** en el popup (▸ Motor de transcripción). **Granite Speech 4.1 2B** (`ibm-granite/granite-speech-4.1-2b` · fiel en inglés, WER ~0%) y **Qwen3-ASR 1.7B** (`Qwen/Qwen3-ASR-1.7B` · 52 idiomas incl. japonés/coreano, ID de idioma automático) corren vía **mlx-audio**; ambos generan puntuación·truecasing de forma nativa, así que el troceado por frases funciona tal cual. **Whisper Large v3** corre vía **mlx_whisper** — motor dedicado, 6bit, sin prompt (multilingüe). Comparte la GPU de Apple con el traductor (serializado). ⚠ granite necesita el **arreglo de conv en mlx-audio main** (ver SETUP).
+- Un Parakeet de baja latencia solo para inglés es una vía para usuarios avanzados, solo con `LCC_ASR_ENGINE=parakeet` (CPU, en paralelo a la traducción; modelo `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`, `sherpa-onnx==1.13.2`). El selector del popup solo muestra granite/qwen3/whisper.
+- Traducción: **Gemma-4 como modelo seleccionable** (`gemma-26b` = 26B-A4B / `gemma-e4b` = E4B / `gemma-e2b` = E2B; 26B vía mlx-lm, E4B/E2B vía mlx_vlm) o **Auto** — **prompt de calidad** por defecto (expert interpreter·by-meaning·no-translationese + 3 few-shots, coste amortizado por KV-cache → salida hablada natural en vez de un estilo escrito rígido). Baja latencia con `LCC_TX_PROFILE=fast`. **Idioma destino seleccionable** (45 idiomas — Gemma es ampliamente multilingüe), origen autodetectado, se omite cuando destino=origen.
+- RAM ~26GB (pesos de Gemma 26B; E4B ~8 / E2B ~6GB son menores) + un poco de KV por chunk. Latencia ~2.9–3.4s por chunk de habla (ASR ~0.7s + traducción ~1.4s + prefill de audio + espera de límite de cláusula).
 - MTP no aporta nada en este hardware, así que no se usa (verificado en MoE·dense·E4B).
 - ⚠️ Requiere Chrome/Edge/Brave genuinos — algunos forks de Chromium (p. ej. ChatGPT Atlas) no implementan `chrome.tabCapture`.
 
@@ -61,7 +61,7 @@ Si la terminal no es lo tuyo, **instala con doble clic**:
 - **macOS** — doble clic en `install-mac.command` (si se bloquea, clic derecho → Abrir). Configura venv, dependencias y el host del popup de una vez.
 - **Windows** — doble clic en `install-windows-oneclick.bat` (WSL2 + CUDA + modelo, automático).
 
-Después el **popup de la extensión hace todo** — iniciar el bridge y descargar **solo el tier que elijas** (Full/Mid/Lite) para ahorrar disco. (Para quien use terminal: `./setup.sh [--models --tier lite]`.)
+Después el **popup de la extensión hace todo** — iniciar el bridge y elegir/descargar **solo los modelos que selecciones** desde los menús desplegables de traducción y transcripción (un **botón de Descarga** aparece junto a los modelos aún no descargados) para ahorrar disco. (Para quien use terminal: `./setup.sh [--models --tier lite]` sigue funcionando — el tier se mapea al modelo correspondiente, por compatibilidad.)
 
 ## Ejecución
 ### 1) Servidor bridge
@@ -70,8 +70,8 @@ Después el **popup de la extensión hace todo** — iniciar el bridge y descarg
 bash bridge/run_bridge.sh
 # listo cuando aparece "[bridge] ready  ws://127.0.0.1:8765" (primera carga ~40s)
 ```
-- Para tenerlo siempre activo (opt-in, reinicio automático al fallar): `bash bridge/autostart.sh install` — ⚠ ~26GB de RAM residentes (tier full). Apagar: `… uninstall`
-- Sin terminal, los botones del popup (**Iniciar bridge** · modelos **Full/Mid/Lite**) hacen todo — necesitan el host de mensajería nativa, que **`./setup.sh` ya instala** (el único bootstrap que el sandbox de Chrome no puede hacer). Luego recarga la extensión. Corre desacoplado, sobrevive a cerrar el navegador (SETUP 6.5).
+- Para tenerlo siempre activo (opt-in, reinicio automático al fallar): `bash bridge/autostart.sh install` — ⚠ ~26GB de RAM residentes (Gemma 26B). Apagar: `… uninstall`
+- Sin terminal, los botones del popup (**Iniciar bridge** · elegir/descargar modelos desde los **menús de modelos**) hacen todo — necesitan el host de mensajería nativa, que **`./setup.sh` ya instala** (el único bootstrap que el sandbox de Chrome no puede hacer). Luego recarga la extensión. Corre desacoplado, sobrevive a cerrar el navegador (SETUP 6.5).
 - Si el bridge se reinicia/cae, la extensión **se reconecta automáticamente** (backoff) y almacena hasta 6s de audio reciente. El habla durante cortes más largos puede perderse.
 ### 2) Cargar la extensión (Chrome)
 1. `chrome://extensions` → activa el **Modo de desarrollador** (arriba a la derecha)
@@ -85,6 +85,8 @@ bash bridge/run_bridge.sh
 - **Modo de traducción de página**: si en el popup activas solo `traducción de página`, sin overlay, reemplaza directamente los nodos de texto reales (DOM) de la pestaña actual por la traducción. Si activas `traducción de página` + `traducción de vídeo` a la vez, comparten la misma conexión del bridge, y la traducción de página es un carril auxiliar: cuando la traducción de subtítulos final/preview está ocupada, cede y reintenta. Puedes dar un registro·glosario·pistas específicos para la página por separado; la salida es seleccionable entre `live partial` / `solo confirmado`; vista bilingüe (pasa el ratón por encima de la traducción para ver el original); y `re-verificación de la traducción en caché en reposo`, que cuando está ocioso vuelve a comprobar las traducciones cacheadas y parchea ese punto si el modelo ahora discrepa. La traducción de página queda fijada a la pestaña en la que la iniciaste y no sigue los cambios de pestaña (solo se traduce esa pestaña); deja en blanco la pista/glosario de página para heredar los ajustes del vídeo.
 - **Presets por tipo de contenido**: elige un tipo (general·charla / conferencia·ponencia / noticias·entrevista / streaming personal) una vez y agrupa el registro (tono) + el modo de latencia — ponencia=formal·estable, noticias=equilibrado, streaming=coloquial·inmediato. El tono·las terminaciones de frase·los anclajes few-shot se adaptan al contenido, y el idioma de origen (EN/JA) se autodetecta para elegir ejemplos acordes.
 - **Glosario**: introduce `nombre=traducción` (uno por línea) en el popup para sesgar la transcripción + renderizar siempre ese término igual en la traducción (elimina que un nombre se traduzca distinto en cada línea). `Pistas de términos` es sesgo de texto libre. También puedes añadir un término sobre la propia página con **Alt+G**, que abre una barra de entrada precargada con la última línea de origen.
+- **Prompt de traducción personalizado**: puedes reemplazar la parte descriptiva del prompt de traducción por tu propio texto; el formato de salida y el glosario se conservan, y se aplica tanto a los subtítulos como a la traducción de página.
+- **Presets con nombre**: guarda un paquete de traducción completo bajo un nombre y selecciónalo luego desde el modo Simple.
 - **Modo precisión (re-transcripción en 2 pasadas)**: al activarlo, las frases multicláusula que se confirman por un final natural (pause/eos) o por puntuación terminal se re-transcriben enteras una vez justo antes de confirmar → elimina errores de límite al unir fragmentos de VAD. La confirmación es ~0.7s más lenta, por eso es un interruptor (por defecto OFF). Las unidades cuya alineación se rompió por solape/división se excluyen automáticamente (guarda `unit_pure`).
 - **Subtítulos en streaming**: la línea original aparece primero por cada ASR atom; la vista previa traducida se debounce/coalesce. Los subtítulos confirmados tienen prioridad en la cola final.
 - **3 modos de latencia**: `aggressive` solapa la ASR y la traducción en la misma GPU (con locks de dispositivo separados) y pre-traduce la vista previa de la unidad actual en modo latest-only; `balanced` muestra vista previa solo cuando la GPU está libre; `stable` muestra solo traducciones confirmadas. La traducción final siempre tiene prioridad sobre la vista previa.

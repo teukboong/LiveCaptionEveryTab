@@ -49,12 +49,12 @@ TX_GEN_MAX = max(1, int(os.environ.get("LCC_TX_GEN_MAX_TOKENS", "64")))   # mirr
 # --- Per-engine ASR routing (granite=영어 / qwen3=다국어 / whisper=다국어, same models as MLX) ----------
 # The popup's 전사 엔진 choice is the ASR MODEL. On CUDA each engine maps to a (url, model). granite/qwen3
 # hit the transformers ASR server (cuda/asr_server.py, port 8000) and select the model by name. WHISPER is
-# served separately by whisper.cpp's whisper-server (q6 gguf, port 8001 by default) — a distinct binary, but
+# served separately by whisper.cpp's whisper-server (q6 gguf, port 8002 by default) — a distinct binary, but
 # the SAME OpenAI /v1/audio/transcriptions surface, so transcribe_pcm is unchanged. Whisper sends no prompt
 # (own decode/langID). Override any engine's URL/MODEL to point it at a different server.
 _ASR_ENGINES = ("granite", "qwen3", "whisper")
 # whisper.cpp whisper-server default endpoint (distinct from the granite/qwen3 server on 8000).
-WHISPER_URL = os.environ.get("LCC_CUDA_ASR_WHISPER_URL", "http://127.0.0.1:8001/v1/audio/transcriptions")
+WHISPER_URL = os.environ.get("LCC_CUDA_ASR_WHISPER_URL", "http://127.0.0.1:8002/v1/audio/transcriptions")
 
 
 def _engine_cfg(engine):

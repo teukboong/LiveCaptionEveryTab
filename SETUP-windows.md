@@ -1,7 +1,8 @@
 # Live Caption Every Tab — Windows + NVIDIA 설치 가이드 (WSL2)
 
 Mac(Apple MLX)와 **같은 확장프로그램**을, 이번엔 **NVIDIA GPU**로 돌린다. 전사도 Mac과 **같은 모델**
-(granite-speech-4.1=영어 / Qwen3-ASR=다국어)을 CUDA에서 쓴다(whisper 안 씀). 브라우저 쪽은 한 줄도 안 바뀌고,
+(granite-speech-4.1=영어 / Qwen3-ASR=다국어)을 CUDA에서 쓰고, 여기에 **Whisper Large v3(다국어)** 도 지원한다
+(CUDA에선 whisper.cpp q6 gguf로 서빙 — **코드완성·미검증**). 브라우저 쪽은 한 줄도 안 바뀌고,
 추론만 **WSL2 안의 llama.cpp(번역) + granite/qwen3(전사)** 가 맡는다. Windows Chrome → `ws://127.0.0.1:8765`
 는 WSL2의 **localhost 포워딩**으로 그대로 연결된다.
 
@@ -9,7 +10,8 @@ Mac(Apple MLX)와 **같은 확장프로그램**을, 이번엔 **NVIDIA GPU**로 
 [Windows Chrome 확장] ──WS(PCM16 16k)──▶ [WSL2: bridge/server.py  (LCC_BACKEND=cuda)]
                                             VAD + 문장 조립 + 스케줄러 (Mac과 동일 코드)
                                             ├─HTTP─▶ granite/qwen3 ASR :8000  (전사, Mac과 동일 모델)
-                                            └─HTTP─▶ llama.cpp Gemma-4 GGUF :8080  (모국어 번역, 티어별)
+                                            ├─HTTP─▶ whisper.cpp :8002  (Whisper Large v3 q6, 미검증)
+                                            └─HTTP─▶ llama.cpp Gemma-4 GGUF :8080  (모국어 번역)
    [content.js 오버레이 2줄] ◀──WS(JSON)────┘
 ```
 
@@ -23,7 +25,7 @@ Mac(Apple MLX)와 **같은 확장프로그램**을, 이번엔 **NVIDIA GPU**로 
 | 항목 | 필요 | 비고 |
 |---|---|---|
 | **Windows** | **11** (또는 WSL2 지원 10) | WSL2 GPU 패스스루 |
-| **GPU** | **NVIDIA** (티어 자동) | full(26B Q4 ~17GB)→24GB+(3090/4090) · mid(E4B)/lite(E2B)→16GB대 + granite/qwen3 ~2GB씩 |
+| **GPU** | **NVIDIA** (모델 선택/자동) | 26B Q4 ~17GB→24GB+(3090/4090) · E4B/E2B→16GB대 + granite/qwen3 ~2GB씩 |
 | **WSL2** | Ubuntu 22.04+ | `wsl --install` |
 | **NVIDIA 드라이버** | 최신 (Windows용 Game/Studio) | WSL2가 이걸 그대로 씀. WSL2 안엔 드라이버 설치 X |
 | **브라우저** | 정품 Chrome/Edge/Brave (Windows) | Atlas/Arc 등 포크는 탭 캡처 미지원 |
@@ -33,11 +35,12 @@ Mac(Apple MLX)와 **같은 확장프로그램**을, 이번엔 **NVIDIA GPU**로 
 
 ## 0.5. 빠른 설치 — 원클릭 (권장, 비전문가용)
 
-WSL2 + CUDA 툴킷 + llama.cpp 빌드 + 모델(고른 티어) + 팝업 호스트까지 **자동**으로 깔아준다:
+WSL2 + CUDA 툴킷 + llama.cpp 빌드 + 모델(선택/자동) + 팝업 호스트까지 **자동**으로 깔아준다:
 
 1. 이 저장소의 **`install-windows-oneclick.bat` 더블클릭** (관리자 권한 자동 요청). 처음엔 WSL2/CUDA/빌드 때문에 오래 걸린다.
 2. Windows Chrome → `chrome://extensions` → **개발자 모드** → **압축해제된 확장 프로그램을 로드** → 이 저장소의 `extension/`.
-3. 확장 팝업의 **`브릿지 켜기`** → **`자막 시작`**. 모델 티어는 팝업 **Full/Mid/Lite** 또는 자동.
+3. 확장 팝업의 **`브릿지 켜기`** → **`자막 시작`**. 번역 모델은 팝업 **`모델` 드롭다운**에서 선택/자동
+   (큐레이션 gemma-26b/gemma-e4b/gemma-e2b + 직접입력, 안 받은 모델엔 다운로드 버튼).
 
 > 아래 1~7은 **수동/고급** 설치다(원클릭이 내부에서 하는 일). 원클릭으로 됐으면 건너뛰어도 된다.
 
@@ -155,10 +158,14 @@ Mac과 **동일**. WSL2의 코드 폴더는 Windows 탐색기에서 `\\wsl$\Ubun
 
 ## 7.5. 전사 엔진 (영어 / 다국어) — Mac과 같은 모델
 
-팝업의 **▸ 전사 엔진** = **Granite (영어)** / **Qwen3-ASR (일어·다국어)** 가 Mac과 **동일한 ASR 모델**이고,
-CUDA에서도 그대로 먹는다. 선택값이 `model=granite|qwen3` 으로 ASR 서버에 전달돼 그 모델로 전사한다(granite는
-ASR 지시 프롬프트, qwen3는 무프롬프트 자동감지 — server.transcribe_pcm과 동일). 실행 중 바꾸면 **다음 발화부터**
-적용(브리지 로그 `cuda asr engine=… model=…`).
+팝업의 **▸ 전사 엔진** = **Granite (영어)** / **Qwen3-ASR (일어·다국어)** / **Whisper Large v3 (다국어)** 셋이다.
+앞의 둘은 Mac과 **동일한 ASR 모델**이고 CUDA에서도 그대로 먹는다. 선택값이 `model=granite|qwen3` 으로 ASR 서버에
+전달돼 그 모델로 전사한다(granite는 ASR 지시 프롬프트, qwen3는 무프롬프트 자동감지 — server.transcribe_pcm과 동일).
+실행 중 바꾸면 **다음 발화부터** 적용(브리지 로그 `cuda asr engine=… model=…`).
+
+Whisper Large v3은 CUDA에선 **whisper.cpp의 q6 gguf**로 별도 포트(:8002)에서 서빙한다 — `cuda/serve_whisper.sh`,
+준비된 q6 gguf가 없으면 `cuda/quantize_whisper_q6.sh`가 자동으로 양자화한다. **이 CUDA Whisper 경로는 코드완성
+상태이고 아직 미검증**(테스트 박스가 없어 실행 검증을 못 함)이다.
 
 `asr_server.py` 가 두 모델을 lazy 로드해 한 포트(:8000)에서 같이 서빙한다(24GB면 둘 다 상주 가능). 한 엔진을
 **다른 서버/포트**에 따로 꽂고 싶으면 엔진별 독립이다:
@@ -194,4 +201,4 @@ LCC_CUDA_ASR_QWEN3_URL=http://127.0.0.1:8001/v1/audio/transcriptions   # 별도 
 - 번역: 더 작은 GGUF 양자화(Q4_K_S / Q3_K_M). 품질 약간↓.
 - 26B(~17GB) + granite/qwen3(각 ~2GB) 라 24GB면 여유. 16GB면 ASR 한 엔진 + Q4_K_S 조합부터.
 
-라이선스: **Apache-2.0** (Gemma 4 · Granite · Qwen3 전부 Apache-2.0).
+라이선스: **Apache-2.0** (Gemma 4 · Granite · Qwen3 전부 Apache-2.0). Whisper large-v3은 **MIT**(OSS 호환).

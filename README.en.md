@@ -5,7 +5,7 @@
 > 🤖 This project was built **entirely through vibe coding (AI pair-programming)** — from the code to the documentation.
 
 On YouTube, Twitch, **X**, or any site, it captures the browser tab's audio and uses a **local Gemma-4** to transcribe + translate, showing 2-line captions (source / your language) over the video. (Tab capture is domain-agnostic, so any tab with sound works.)
-For transcription you pick in the popup between **Granite Speech 4.1** (strong English) and **Qwen3-ASR** (multilingual incl. Japanese/Korean). Both emit punctuation and casing natively, and gate silence with `[no speech]`.
+For transcription you pick in the popup between **Granite Speech 4.1** (strong English), **Qwen3-ASR** (multilingual incl. Japanese/Korean), and **Whisper Large v3** (multilingual). Granite/Qwen3 emit punctuation and casing natively and gate silence with `[no speech]`; Whisper runs as a dedicated engine with its own decode (no prompt).
 
 > The world holds endless video and audio, yet the language barrier still stands as a **content barrier**.
 > This was built in the spirit of poking one small hole in that wall.
@@ -17,7 +17,7 @@ Realtime captioning/translation tools mostly split into two camps, and the combi
 | | This project | Whisper-based browser extensions | Desktop players (e.g. LLPlayer) |
 |---|---|---|---|
 | **Input** | **Any tab** with sound (incl. live streams) | Tab audio | Downloaded video / files·URLs fed into a player |
-| **ASR** | Granite / Qwen3 (native punctuation·truecasing; silence·music gated with `[no speech]`) | Mostly Whisper | Mostly Whisper |
+| **ASR** | Granite / Qwen3 / Whisper (Granite·Qwen3 do native punctuation·truecasing; silence·music gated with `[no speech]`) | Mostly Whisper | Mostly Whisper |
 | **Translation** | **Local LLM (Gemma-4)** by-meaning — keeps context·pronouns | None / literal MT / cloud | Local LLM possible (Ollama, etc.) |
 | **Execution** | 100% local (zero cloud) | Local~mixed | Local |
 | **Target language** | Korean-first (+multilingual) | Varies | Multilingual (per-language tuning varies) |
@@ -26,7 +26,7 @@ Realtime captioning/translation tools mostly split into two camps, and the combi
 - **Desktop players** have great local-LLM translation, but you must download the video or feed it into the player, which doesn't fit live streams / arbitrary sites. → Here, no downloading — it overlays **right on any tab that makes sound**.
 - **Not just sound — text too.** The page body (DOM) in the same tab often needs translating as well, but the browser's built-in / cloud page translation ships the text out and leans literal. → Here the *same local Gemma, glossary, and context* that run the captions are applied to the page too, swapping the body DOM in place with no overlay. The goal was to handle a tab's **sound and text with one local translator**.
 
-Everything is **local and free**. The trade-off is a hardware floor (see requirements in [SETUP.md](SETUP.md)). On lighter machines the translation model auto-tiers to fit memory (full/mid/lite).
+Everything is **local and free**. The trade-off is a hardware floor (see requirements in [SETUP.md](SETUP.md)). Translation and transcription models are now chosen from **dropdowns** in the popup — **Auto** (fits the model to free memory, now over a model registry), a curated list, or a custom HF id; models you haven't downloaded show a **Download button**.
 
 ## Platform — two runtimes (equally supported)
 
@@ -34,24 +34,24 @@ The same bridge·same extension run on both backends. Pick the one for your mach
 
 | Backend | Environment | Transcription (ASR) | Translation | Guide |
 |---|---|---|---|---|
-| **MLX** (`LCC_BACKEND=mlx`) | Apple Silicon | Granite/Qwen3 (mlx-audio, in-process) | Gemma-4 · full/mid/lite (mlx-lm) | [SETUP.md](SETUP.md) |
-| **CUDA** (`LCC_BACKEND=cuda`) | Windows + NVIDIA (WSL2) | Granite/Qwen3 (transformers, `cuda/asr_server.py`) | llama.cpp · GGUF · full/mid/lite (OpenAI-compatible HTTP) | [SETUP-windows.md](SETUP-windows.md) |
+| **MLX** (`LCC_BACKEND=mlx`) | Apple Silicon | Granite/Qwen3 (mlx-audio, in-process) / Whisper (mlx_whisper, 6bit) | Gemma-4 (26B/E4B/E2B · pick or Auto) (mlx-lm) | [SETUP.md](SETUP.md) |
+| **CUDA** (`LCC_BACKEND=cuda`) | Windows + NVIDIA (WSL2) | Granite/Qwen3 (transformers, `cuda/asr_server.py`) / Whisper (whisper.cpp q6, unverified) | llama.cpp · GGUF (26B/E4B/E2B · pick or Auto) (OpenAI-compatible HTTP) | [SETUP-windows.md](SETUP-windows.md) |
 
-The transcription-engine choice (English=granite / multilingual=qwen3) is identical on both (routed via the `model` field) — no whisper. VAD·sentence assembly·scheduler·number-guard·prompt builder are **shared across both backends** (pure functions); only the 3 GPU functions (transcribe/translate/summarize) change per runtime, and that boundary is `bridge/backend_cuda.py` (HTTP) and the "Backend seam" in server.py. (The code default is `mlx`.)
+The transcription-engine choice (English=granite / multilingual=qwen3 / multilingual=whisper) is identical on both (routed via the `model` field). VAD·sentence assembly·scheduler·number-guard·prompt builder are **shared across both backends** (pure functions); only the 3 GPU functions (transcribe/translate/summarize) change per runtime, and that boundary is `bridge/backend_cuda.py` (HTTP) and the "Backend seam" in server.py. (The code default is `mlx`.)
 
 ## Architecture
 ```
 [Chrome extension] tabCapture (tab audio) ──WS(PCM16 16k)──▶ [bridge/server.py]
                                                         VAD + soft-cut ASR atom
-                                                        → Granite / Qwen3-ASR transcription (punctuation·multilingual)
+                                                        → Granite / Qwen3-ASR / Whisper transcription (punctuation·multilingual)
                                                         → unit assembler
-                                                        → Gemma-4 (tier) translation
+                                                        → Gemma-4 translation
    [content.js 2-line overlay] ◀──WS(JSON caption)──────┘
 ```
-- ASR picks between **two mlx-audio engines** in the popup (▸ Transcription engine). **Granite Speech 4.1 2B** (`ibm-granite/granite-speech-4.1-2b` · faithful English, ~0% WER) and **Qwen3-ASR 1.7B** (`Qwen/Qwen3-ASR-1.7B` · 52 languages incl. Japanese/Korean, auto language ID). Both emit punctuation·truecasing natively so sentence chunking just works. Shares the Apple GPU with the translator (serialized). ⚠ granite needs the **conv fix on mlx-audio main** (see SETUP).
-- A low-latency English-only Parakeet is a power-user escape hatch via `LCC_ASR_ENGINE=parakeet` only (CPU, parallel to translation; model `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`, `sherpa-onnx==1.13.2`). The popup selector only exposes granite/qwen3.
-- Translation: `Gemma-4 (full=26B-A4B / mid=E4B / lite=E2B)` (mlx-lm) — default **quality prompt** (expert interpreter·by-meaning·no-translationese + 3 few-shots, cost amortized by KV-cache → natural spoken output rather than stiff written style). Low latency via `LCC_TX_PROFILE=fast`. **Target language is selectable** (45 languages — Gemma is broadly multilingual), source auto-detected, skipped when target=source.
-- RAM ~26GB (full-tier weights; mid ~8 / lite ~6GB are smaller) + a little KV per chunk. Latency ~2.9–3.4s per utterance chunk (ASR ~0.7s + translation ~1.4s + audio prefill + clause-boundary wait).
+- ASR picks between **three transcription engines** in the popup (▸ Transcription engine). **Granite Speech 4.1 2B** (`ibm-granite/granite-speech-4.1-2b` · faithful English, ~0% WER) and **Qwen3-ASR 1.7B** (`Qwen/Qwen3-ASR-1.7B` · 52 languages incl. Japanese/Korean, auto language ID) run via **mlx-audio**; both emit punctuation·truecasing natively so sentence chunking just works. **Whisper Large v3** (multilingual) runs via **mlx_whisper** as a dedicated engine (auto-quantized to **MLX 6bit** on download, own decode, no prompt). Shares the Apple GPU with the translator (serialized). ⚠ granite needs the **conv fix on mlx-audio main** (see SETUP).
+- A low-latency English-only Parakeet is a power-user escape hatch via `LCC_ASR_ENGINE=parakeet` only (CPU, parallel to translation; model `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`, `sherpa-onnx==1.13.2`). The popup selector only exposes granite/qwen3/whisper.
+- Translation: a **selectable Gemma-4 model** — `gemma-26b` (26B-A4B, mlx-lm), `gemma-e4b` (E4B) and `gemma-e2b` (E2B) (E4B/E2B load via mlx_vlm), or **Auto** to fit free memory — default **quality prompt** (expert interpreter·by-meaning·no-translationese + 3 few-shots, cost amortized by KV-cache → natural spoken output rather than stiff written style). Low latency via `LCC_TX_PROFILE=fast`. **Target language is selectable** (45 languages — Gemma is broadly multilingual), source auto-detected, skipped when target=source.
+- RAM ~26GB (gemma-26b weights; gemma-e4b ~8 / gemma-e2b ~6GB are smaller) + a little KV per chunk. Latency ~2.9–3.4s per utterance chunk (ASR ~0.7s + translation ~1.4s + audio prefill + clause-boundary wait).
 - MTP is pointless on this hardware, so unused (verified across MoE·dense·E4B).
 - ⚠️ Needs genuine Chrome/Edge/Brave — some Chromium forks (e.g. ChatGPT Atlas) don't implement `chrome.tabCapture`.
 
@@ -61,7 +61,7 @@ If the terminal isn't your thing, **double-click to install**:
 - **macOS** — double-click `install-mac.command` (if blocked, right-click → Open). Sets up the venv, deps, and the popup host in one go.
 - **Windows** — double-click `install-windows-oneclick.bat` (WSL2 + CUDA + model, automatic).
 
-After that the **extension popup does everything** — start the bridge, and fetch **only the tier you pick** (Full/Mid/Lite) to save disk. (Terminal folks: `./setup.sh [--models --tier lite]`.)
+After that the **extension popup does everything** — start the bridge, and **pick & download** the translation and transcription models you want from the dropdowns (Download button on any you don't have yet) to save disk. (Terminal folks, optional: `./setup.sh [--models --tier lite]` still works — the tier flag maps to a model for back-compat.)
 
 ## Run
 ### 1) Bridge server
@@ -70,8 +70,8 @@ After that the **extension popup does everything** — start the bridge, and fet
 bash bridge/run_bridge.sh
 # ready when "[bridge] ready  ws://127.0.0.1:8765" appears (first load ~40s)
 ```
-- To keep it always on (opt-in, auto-restart on crash): `bash bridge/autostart.sh install` — ⚠ ~26GB RAM resident (full tier). Off: `… uninstall`
-- Without a terminal, the popup buttons (**Start bridge** · model **Full/Mid/Lite**) do it all — they need the native-messaging host, which **`./setup.sh` already installs** (the one bootstrap Chrome's sandbox can't do). Then reload the extension. Runs detached, survives closing the browser (SETUP 6.5).
+- To keep it always on (opt-in, auto-restart on crash): `bash bridge/autostart.sh install` — ⚠ ~26GB RAM resident (gemma-26b). Off: `… uninstall`
+- Without a terminal, the popup does it all (**Start bridge** · pick & **download** models from the dropdowns) — it needs the native-messaging host, which **`./setup.sh` already installs** (the one bootstrap Chrome's sandbox can't do). Then reload the extension. Runs detached, survives closing the browser (SETUP 6.5).
 - If the bridge restarts/drops, the extension **auto-reconnects** (backoff) and buffers up to 6s of recent audio. Speech during longer outages may be lost.
 ### 2) Load the extension (Chrome)
 1. `chrome://extensions` → turn on **Developer mode** (top right)
@@ -85,6 +85,8 @@ bash bridge/run_bridge.sh
 - **Page-translation mode**: enable `Page translation` alone in the popup and it replaces the current tab's actual DOM text nodes with the translation directly, no overlay. Turn on `Page translation` + `Video translation` together and they share the same bridge connection, with page translation running as an auxiliary lane that yields and retries when final/preview caption translation is busy. You can give it its own page-specific register/glossary/hints, choose output between `live partial` / `final only`, hover the translated text to see the original (bilingual view), and `idle re-verify of cached translation` re-checks cached translations while idle and patches that spot if the model now disagrees. Page translation binds to the tab you started it on and does not follow tab switches (only that tab is translated); leave the page hint/glossary blank to inherit the video settings.
 - **Content-type presets**: pick a content type once (general·chat / conference·lecture / news·interview / personal streaming) and it bundles register (tone) + latency mode — lecture=formal·stable, news=balanced, streaming=colloquial·instant. Tone·sentence-endings·few-shot anchors adapt to the content, and the source language (EN/JA) is auto-detected to pick matching examples.
 - **Glossary**: enter `name=translation` (one per line) in the popup to bias transcription + always render that term identically in translation (removes the wobble of a name translated differently each line). `Term hints` is free-text biasing. You can also add a term right on the page with **Alt+G**, which opens an input bar prefilled with the last source line.
+- **Custom translation prompt**: replace the descriptive part of the prompt with your own instructions while the output format + glossary are kept intact — applies to both captions and page translation.
+- **Named presets**: save a translation bundle under a name and pick it back from **Simple**, so you can switch your whole translation setup in one tap.
 - **Accuracy mode (2-pass re-transcription)**: when on, multi-clause sentences finalized by a natural end (pause/eos) or terminal punctuation get their accumulated audio re-transcribed once as a whole right before commit → removes boundary errors from stitching VAD fragments. Finalization is ~0.7s slower, so it's a toggle (default OFF). Units whose alignment broke from overlap/split are auto-excluded (`unit_pure` guard).
 - **Streaming captions**: the source line appears first per ASR atom; the translated preview is debounced/coalesced. Committed captions are prioritized in the final queue.
 - **3 latency modes**: `aggressive` overlaps ASR and translation on the same GPU (separate device locks) and pre-translates the current unit preview latest-only; `balanced` previews only when the GPU is idle; `stable` shows only committed translations. Final translation always takes priority over preview.
