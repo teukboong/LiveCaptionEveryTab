@@ -3,6 +3,9 @@
 and this routes to the matching model (lazy-loaded on first use, both can co-reside on a 24GB card: ~2GB each).
 Mirrors server.transcribe_pcm: granite gets an explicit ASR instruction; qwen3 transcribes with no prompt.
 
+Whisper is NOT served here — it runs on whisper.cpp's whisper-server (q6 gguf) via cuda/serve_whisper.sh on
+its own port (8001 by default); the bridge routes model=whisper there. This server stays granite/qwen3 only.
+
   pip install -U qwen-asr "transformers>=4.57" torch torchaudio accelerate soundfile fastapi "uvicorn[standard]" python-multipart
   python asr_server.py            # http://0.0.0.0:8000/v1/audio/transcriptions
 
