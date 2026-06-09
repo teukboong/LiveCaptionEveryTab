@@ -2974,6 +2974,7 @@ async def handle(ws):
                                         target=target_lang, hint=page_hint, register=page_register,
                                         glossary_pairs=list(page_glossary),
                                         on_progress=(_lp_progress if partial_requested else None),
+                                        custom=custom_prompt,
                                     )
                                     lp_task = asyncio.create_task(_lp_pump()) if partial_requested else None
                                     t0 = time.perf_counter()

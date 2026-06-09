@@ -20,7 +20,6 @@ auto-quantization is guaranteed for them.
 import glob
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
