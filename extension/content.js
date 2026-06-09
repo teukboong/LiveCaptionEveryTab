@@ -840,6 +840,7 @@ function lccPageCacheNamespace() {
     s.pageRegister || "",
     lccPageHash(s.pageContextHint || s.contextHint || ""),
     lccPageHash(s.pageGlossary || s.glossary || ""),
+    lccPageHash(s.customPrompt || ""),          // a custom-prompt change must re-translate the page (cache miss)
   ].join("|");
 }
 function lccPageSourceNorm(source) {
@@ -862,6 +863,7 @@ function lccPageConfigSignature() {
     String(s.pageTranslateMaxChars || ""),
     lccPageHash(s.pageContextHint || s.contextHint || ""),
     lccPageHash(s.pageGlossary || s.glossary || ""),
+    lccPageHash(s.customPrompt || ""),          // re-scan/re-translate the page when the custom prompt changes
   ].join("|");
 }
 function lccPageLooksLikeUiLabel(norm) {
