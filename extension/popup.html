@@ -105,14 +105,15 @@
   <h4 class="tight" data-i18n="sectionUi">UI</h4>
   <div class="row"><label for="uiLang" data-i18n="labelUiLang">UI 언어</label><select id="uiLang"></select></div>
 
-  <h4 data-i18n="sectionInstall">모델 설치 · 티어</h4>
-  <div class="row" style="gap:7px;">
-    <button id="instFull" class="instbtn">Full<small>26B · 32GB</small></button>
-    <button id="instMid" class="instbtn">Mid<small>E4B · 16GB</small></button>
-    <button id="instLite" class="instbtn">Lite<small>E2B · 8–16GB</small></button>
-  </div>
+  <h4 data-i18n="sectionModels">모델</h4>
+  <div class="row"><label data-i18n="labelLmModel">번역 모델</label><select id="lmModel"></select>
+    <button id="lmDownload" class="minibtn" data-i18n="download" hidden>다운로드</button></div>
+  <input type="text" id="lmModelCustom" placeholder="예: mlx-community/…" data-i18n-placeholder="customModelPlaceholder" hidden />
+  <div class="row"><label data-i18n="labelAsrModel">전사 모델</label><select id="asrEngine"></select>
+    <button id="asrDownload" class="minibtn" data-i18n="download" hidden>다운로드</button></div>
+  <input type="text" id="asrEngineCustom" placeholder="예: mlx-community/whisper-…" data-i18n-placeholder="customModelPlaceholder" hidden />
   <div id="instStatus" class="hint"></div>
-  <div class="hint" data-i18n="installHint">사양에 맞는 모델을 받아 번역 티어로 배선 (Apple Silicon). 안 눌러도 첫 실행 때 메모리에 맞춰 자동 선택됩니다.</div>
+  <div class="hint" data-i18n="modelsHint">자동=메모리에 맞춰 알아서. 안 받은 모델은 다운로드로 (Whisper는 받을 때 6bit 자동 양자화). 번역·전사 모델 변경은 다시 시작 시 적용.</div>
 
   <h4 data-i18n="sectionTranscript">자막 기록 · AI</h4>
   <div class="row" style="gap:7px;">
@@ -126,12 +127,9 @@
     <button id="clearTr" class="minibtn" data-i18n="clearTranscript">기록 지우기</button>
   </div>
 
-  <h4 data-i18n="sectionAsr">전사 엔진</h4>
-  <div class="row"><label data-i18n="labelAsr">ASR</label><select id="asrEngine">
-    <option value="granite" data-i18n="asrGranite">Granite (영어)</option>
-    <option value="qwen3" data-i18n="asrQwen">Qwen3-ASR (일어·다국어)</option>
-  </select></div>
-  <div class="hint" data-i18n="asrHint">Granite=영어 충실 · Qwen3=일어/한국어 등 다국어 구두점 · 실행 중이면 다음 발화부터</div>
+  <h4 data-i18n="sectionPreset">프리셋</h4>
+  <div class="row"><label data-i18n="labelUserPreset">내 프리셋</label><select id="userPreset"></select></div>
+  <div class="hint" data-i18n="userPresetHint">advanced에서 저장한 번역 설정 묶음을 골라 적용 (말투·대상 언어·용어집·커스텀 프롬프트).</div>
 
   <h4 data-i18n="sectionTranslation">번역</h4>
   <div class="row"><label data-i18n="labelTargetLang">대상 언어</label><select id="targetLang"></select></div>
@@ -180,6 +178,12 @@
     <div class="row"><label data-i18n="labelContextHint">용어 힌트</label><input type="text" id="contextHint" placeholder="자유 텍스트 바이어싱" data-i18n-placeholder="contextPlaceholder" /></div>
     <div class="row" style="align-items:flex-start;"><label data-i18n="labelGlossary">용어집</label><textarea id="glossary" rows="3" placeholder="이름=번역 (줄마다 하나)&#10;예: Blackwell=블랙웰" data-i18n-placeholder="glossaryPlaceholder"></textarea></div>
     <div class="hint" data-i18n="advancedApplyHint">용어집·용어 힌트는 다음 발화부터 / 정확도·음성 감지는 자막 다시 시작 시 적용</div>
+    <div class="row" style="align-items:flex-start;"><label data-i18n="labelCustomPrompt">커스텀 프롬프트</label><textarea id="customPrompt" rows="3" placeholder="번역 방식 직접 지시 (비우면 기본)" data-i18n-placeholder="customPromptPlaceholder"></textarea></div>
+    <div class="hint" data-i18n="customPromptHint">번역 지시문의 서술부를 덮어씀. 출력 형식·용어집은 유지. 자막·페이지 둘 다 적용 · 다음 발화부터.</div>
+    <div class="row" style="gap:7px;"><input type="text" id="presetName" placeholder="프리셋 이름" data-i18n-placeholder="presetNamePlaceholder" />
+      <button id="presetSave" class="minibtn" data-i18n="presetSave">프리셋 저장</button>
+      <button id="presetDelete" class="minibtn" data-i18n="presetDelete">삭제</button></div>
+    <div class="hint" data-i18n="presetSaveHint">지금 번역 설정(말투·대상 언어·용어집·커스텀 프롬프트)을 이름 붙여 저장. simple의 '내 프리셋'에서 꺼내 씀.</div>
     <h4 data-i18n="sectionPageAdvanced">페이지 번역</h4>
     <div class="row"><label data-i18n="labelPageRegister">페이지 말투</label><select id="pageRegister">
       <option value="casual" data-i18n="pageRegisterCasual">짧은 UI · 일반</option>

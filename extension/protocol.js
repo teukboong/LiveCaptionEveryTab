@@ -27,6 +27,7 @@ const LCC_DEFAULT_SETTINGS = Object.freeze({
   autoPrime: true,
   contextHint: "",
   glossary: "",
+  customPrompt: "",          // user custom translation prompt (advanced/preset); "" => default behavior
   pageContextHint: "",
   pageRegister: "casual",
   pageGlossary: "",
@@ -60,7 +61,7 @@ const LCC_UI_LANGS = Object.freeze([
   Object.freeze({ value: "ko", label: "한국어" }),
   Object.freeze({ value: "en", label: "English" }),
 ]);
-const LCC_ASR_ENGINES = Object.freeze(["granite", "qwen3"]);
+const LCC_ASR_ENGINES = Object.freeze(["granite", "qwen3", "whisper"]);
 const LCC_LATENCY_MODES = Object.freeze(["stable", "balanced", "aggressive"]);
 const LCC_PAGE_TRANSLATE_STREAMS = Object.freeze(["partial", "final"]);
 const LCC_UI_MODES = Object.freeze(["simple", "advanced"]);
@@ -141,6 +142,10 @@ globalThis.lccCanonicalPageTranslateStream = function lccCanonicalPageTranslateS
 globalThis.lccCanonicalUiMode = function lccCanonicalUiMode(value, fallback = "simple") {
   return lccCanonicalLowerToken(value, LCC_UI_MODES, fallback);
 };
+const LCC_CUSTOM_PROMPT_MAX = 4000;
+globalThis.lccCanonicalCustomPrompt = function lccCanonicalCustomPrompt(value) {
+  return String(value == null ? "" : value).slice(0, LCC_CUSTOM_PROMPT_MAX);
+};
 globalThis.lccBridgeHello = function lccBridgeHello(ws) {
   ws.send(JSON.stringify({ type: "hello", token: globalThis.LCC_WS_TOKEN }));
 };
@@ -177,6 +182,7 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   out.pageTranslateStream = globalThis.lccCanonicalPageTranslateStream(out.pageTranslateStream);
   out.pageBilingual = lccCanonicalBoolean(out.pageBilingual, LCC_DEFAULT_SETTINGS.pageBilingual);
   out.pageVerify = lccCanonicalBoolean(out.pageVerify, LCC_DEFAULT_SETTINGS.pageVerify);
+  out.customPrompt = lccCanonicalCustomPrompt(out.customPrompt);
   return out;
 };
 globalThis.lccRunModeIncludesPage = function lccRunModeIncludesPage(mode) {
@@ -202,6 +208,7 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
     latencyMode: globalThis.lccCanonicalLatencyMode(s.latencyMode),
     contextHint: hint,
     glossary: s.glossary || "",
+    customPrompt: lccCanonicalCustomPrompt(s.customPrompt),   // applies to caption + page translation in the bridge
     pageContextHint: pageHint,
     runMode: globalThis.lccCanonicalRunMode(s.runMode),                // content-only: lets the page translator pick the page vs both policy (it isn't a video tab)
     pageRegister: globalThis.lccCanonicalRegister(s.pageRegister),
@@ -213,4 +220,83 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
     accuracyMode: s.accuracyMode === true,
     autoPrime: s.autoPrime === true,
   };
+};
+
+// --- User translation presets (named, multiple) — SEPARATE from the built-in LCC_CONTENT_PRESETS ----------
+// A user preset saves the full translation-shaping bundle so it can be recalled later, including from Simple.
+// The actual persistence (chrome.storage 'lcc-user-presets') lives in the popup; protocol.js owns the pure
+// data model + canonicalization so popup / content / tests all share one source of truth.
+const LCC_USER_PRESETS_KEY = "lcc-user-presets";
+const LCC_PRESET_NAME_MAX = 60;
+const LCC_MAX_USER_PRESETS = 50;
+const LCC_PRESET_BUNDLE_KEYS = ["customPrompt", "register", "targetLang", "latencyMode", "contextHint", "glossary"];
+globalThis.LCC_USER_PRESETS_KEY = LCC_USER_PRESETS_KEY;
+globalThis.LCC_PRESET_BUNDLE_KEYS = LCC_PRESET_BUNDLE_KEYS;
+
+globalThis.lccCanonicalPresetName = function lccCanonicalPresetName(name) {
+  return String(name == null ? "" : name).replace(/\s+/g, " ").trim().slice(0, LCC_PRESET_NAME_MAX);
+};
+// The translation-shaping bundle pulled from a settings object, each field canonicalized.
+globalThis.lccUserPresetBundle = function lccUserPresetBundle(settings) {
+  const s = settings || {};
+  return {
+    customPrompt: globalThis.lccCanonicalCustomPrompt(s.customPrompt),
+    register: globalThis.lccCanonicalRegister(s.register),
+    targetLang: lccCanonicalTargetLang(s.targetLang),
+    latencyMode: globalThis.lccCanonicalLatencyMode(s.latencyMode),
+    contextHint: String(s.contextHint == null ? "" : s.contextHint).slice(0, 200),
+    glossary: String(s.glossary == null ? "" : s.glossary).slice(0, LCC_CUSTOM_PROMPT_MAX),
+  };
+};
+// One preset = { name, bundle }, fully canonicalized; null when the name is empty.
+globalThis.lccNormalizeUserPreset = function lccNormalizeUserPreset(preset) {
+  const name = globalThis.lccCanonicalPresetName(preset && preset.name);
+  if (!name) return null;
+  return { name, bundle: globalThis.lccUserPresetBundle((preset && preset.bundle) || {}) };
+};
+// Sanitize a stored array: drop invalid, dedupe by case-insensitive name (later wins), cap count.
+globalThis.lccNormalizeUserPresets = function lccNormalizeUserPresets(list) {
+  const out = [];
+  const idx = new Map();
+  for (const p of Array.isArray(list) ? list : []) {
+    const norm = globalThis.lccNormalizeUserPreset(p);
+    if (!norm) continue;
+    const key = norm.name.toLowerCase();
+    if (idx.has(key)) out[idx.get(key)] = norm;
+    else { idx.set(key, out.length); out.push(norm); }
+  }
+  return out.slice(0, LCC_MAX_USER_PRESETS);
+};
+// Apply a preset's bundle onto a settings object (new object; only known bundle keys merged).
+globalThis.lccApplyUserPreset = function lccApplyUserPreset(settings, preset) {
+  const bundle = (preset && preset.bundle) || {};
+  const merged = { ...(settings || {}) };
+  for (const k of LCC_PRESET_BUNDLE_KEYS) {
+    if (Object.hasOwn(bundle, k)) merged[k] = bundle[k];
+  }
+  return merged;
+};
+// Add or replace a named preset (case-insensitive). Returns a new normalized list.
+globalThis.lccUpsertUserPreset = function lccUpsertUserPreset(list, name, bundle) {
+  const norm = globalThis.lccNormalizeUserPreset({ name, bundle });
+  if (!norm) return globalThis.lccNormalizeUserPresets(list);
+  const kept = (Array.isArray(list) ? list : []).filter(
+    (p) => globalThis.lccCanonicalPresetName(p && p.name).toLowerCase() !== norm.name.toLowerCase());
+  return globalThis.lccNormalizeUserPresets([...kept, norm]);
+};
+// Remove a named preset (case-insensitive). Returns a new normalized list.
+globalThis.lccDeleteUserPreset = function lccDeleteUserPreset(list, name) {
+  const target = globalThis.lccCanonicalPresetName(name).toLowerCase();
+  return globalThis.lccNormalizeUserPresets(
+    (Array.isArray(list) ? list : []).filter(
+      (p) => globalThis.lccCanonicalPresetName(p && p.name).toLowerCase() !== target));
+};
+// Look up a preset by name (case-insensitive); null if absent.
+globalThis.lccFindUserPreset = function lccFindUserPreset(list, name) {
+  const target = globalThis.lccCanonicalPresetName(name).toLowerCase();
+  if (!target) return null;
+  for (const p of globalThis.lccNormalizeUserPresets(list)) {
+    if (p.name.toLowerCase() === target) return p;
+  }
+  return null;
 };

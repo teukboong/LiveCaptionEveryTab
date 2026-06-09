@@ -31,13 +31,20 @@ from backend_parakeet import ParakeetAsr
 # _is_sherpa_engine()/_is_mlxa_engine() — NOT scattered name tuples — are THE switch between families.
 _SHERPA_ENGINES = ("parakeet",)
 _MLXA_ENGINES = ("granite", "qwen3")
-_ASR_ENGINES = _MLXA_ENGINES + _SHERPA_ENGINES
+# Whisper (large-v3): a dedicated ASR (own decode, no prompt, returns segments) — NOT an audio-LLM,
+# so it gets its own family + loader (mlx_whisper on Mac / whisper.cpp q6 on CUDA), mirroring how
+# sherpa/parakeet is its own family. The _is_*_engine() helpers stay the single switch (no scattered tuples).
+_WHISPER_ENGINES = ("whisper",)
+_ASR_ENGINES = _MLXA_ENGINES + _SHERPA_ENGINES + _WHISPER_ENGINES
 
 def _is_sherpa_engine(engine) -> bool:
     return engine in _SHERPA_ENGINES
 
 def _is_mlxa_engine(engine) -> bool:
     return engine in _MLXA_ENGINES
+
+def _is_whisper_engine(engine) -> bool:
+    return engine in _WHISPER_ENGINES
 
 def _normalize_asr_engine(value, default="granite"):
     engine = str(value or default or "granite").strip().lower()
@@ -88,12 +95,15 @@ def _normalize_target_lang(value, default="Korean"):
             return lang
     return default if default in _TARGET_LANGS else "Korean"
 
-def _translation_context_signature(target, register, hint, glossary_pairs):
+def _translation_context_signature(target, register, hint, glossary_pairs, custom=""):
+    # custom is part of the signature (INV-9): change the custom prompt -> cache/epoch invalidates, so a
+    # prompt edit never leaves stale translations rendering. Trailing default keeps it backward-compatible.
     return (
         _normalize_target_lang(target),
         str(register or "casual"),
         str(hint or ""),
         tuple(glossary_pairs or ()),
+        str(custom or ""),
     )
 
 def _clamp_int(value, default, lo, hi):
@@ -182,45 +192,74 @@ except Exception:
 
 BACKEND = _normalize_backend(os.environ.get("LCC_BACKEND"), "mlx")   # mlx (Apple) | cuda (HTTP to llama.cpp/vLLM)
 
-# --- Translation-model tiering: size the translator to AVAILABLE memory, not total -------------------------------
+# --- Translation-model selection: size the translator to AVAILABLE memory, not total ----------------------------
 # The translator weights dominate the footprint, so picking by *total* RAM is blind to what's already resident and
 # has to assume the worst (over-conservative). Instead size to *free* memory (idle VRAM): on CUDA that's nvidia-smi
-# free VRAM; on MLX (unified memory) it's min(Metal working-set budget − active, OS-available). The largest tier
-# that fits with HEADROOM to spare wins — so a busy 32GB box correctly steps down to avoid swap, while an idle
-# 24GB box can still run full. Precedence:
-#   LCC_LM_MODEL (explicit id)  >  LCC_LM_TIER (full|mid|lite)  >  auto-detect by free memory.
+# free VRAM; on MLX (unified memory) it's min(Metal working-set budget − active, OS-available). The largest curated
+# model that fits with HEADROOM to spare wins — so a busy 32GB box correctly steps down to avoid swap, while an idle
+# 24GB box can still run the 26B. Precedence:
+#   LCC_LM_MODEL (explicit id)  >  "Auto" = memory-fit over the curated registry (_auto_lm_model).
 # Resolution is LAZY (done in load_models/_ensure_asr_loaded, NOT at import) so `import server` in tests never
 # probes hardware or prints. Effective on MLX (selects LM_MODEL); on CUDA the GGUF is chosen by cuda/serve_llama.sh
 # and the tier here only labels the OpenAI 'model' field + logs which GGUF tier to serve.
-_LM_TIERS = {
-    "mlx": {   # Gemma 4, Apache-2.0. full=mlx_lm. mid/lite are Gemma-4 nano (multimodal) → need mlx_vlm loader (pending).
-        "full": "mlx-community/gemma-4-26b-a4b-it-4bit",                              # ~14GB, mlx_lm
-        "mid":  os.environ.get("LCC_LM_MID_MLX",  "mlx-community/gemma-4-e4b-it-4bit"),   # ~5GB  (nano; mlx_vlm)
-        "lite": os.environ.get("LCC_LM_LITE_MLX", "mlx-community/gemma-4-e2b-it-4bit"),   # ~3.2GB (nano; mlx_vlm)
-    },
-    "cuda": {  # llama.cpp serves the .gguf chosen at launch; this is just the OpenAI 'model' label
-        "full": os.environ.get("LCC_LM_FULL_CUDA", "gemma-4-26b-a4b-it-qat-q4_0"),
-        "mid":  os.environ.get("LCC_LM_MID_CUDA",  "gemma-4-e4b-it-qat-q4_0"),
-        "lite": os.environ.get("LCC_LM_LITE_CUDA", "gemma-4-e2b-it-qat-q4_0"),
-    },
+# Curated model registry — SINGLE SOURCE OF TRUTH for both roles. install_models.py, the native host
+# (models_status), and the popup all read these (no model id duplicated). The old full/mid/lite TIER
+# vocabulary is gone: a translator is chosen by id/repo (explicit LCC_LM_MODEL) or by "Auto" = the
+# largest whose footprint+headroom fits free memory. nano (e4b/e2b) load via the mlx_vlm auto-fallback
+# in load_models() — they are fully loadable, just need mlx_vlm installed. (Gemma 4 / Whisper = OSS.)
+LM_MODELS = {   # translation. mlx: repo loaded in-process. cuda: 'repo' = HF GGUF source, 'served' = OpenAI model label.
+    "mlx": [
+        {"id": "gemma-26b", "label": "Gemma 26B", "repo": "mlx-community/gemma-4-26b-a4b-it-4bit",
+         "footprint_gb": _clamp_float(os.environ.get("LCC_LM_NEED_FULL"), 18.0, 4.0, 512.0)},
+        {"id": "gemma-e4b", "label": "Gemma E4B",
+         "repo": os.environ.get("LCC_LM_MID_MLX", "mlx-community/gemma-4-e4b-it-4bit"),
+         "footprint_gb": _clamp_float(os.environ.get("LCC_LM_NEED_MID"), 8.0, 2.0, 512.0)},
+        {"id": "gemma-e2b", "label": "Gemma E2B",
+         "repo": os.environ.get("LCC_LM_LITE_MLX", "mlx-community/gemma-4-e2b-it-4bit"),
+         "footprint_gb": _clamp_float(os.environ.get("LCC_LM_NEED_LITE"), 6.0, 1.0, 512.0)},
+    ],
+    "cuda": [
+        {"id": "gemma-26b", "label": "Gemma 26B", "repo": "google/gemma-4-26B-A4B-it-qat-q4_0-gguf",
+         "served": os.environ.get("LCC_LM_FULL_CUDA", "gemma-4-26b-a4b-it-qat-q4_0"),
+         "footprint_gb": _clamp_float(os.environ.get("LCC_LM_NEED_FULL"), 18.0, 4.0, 512.0)},
+        {"id": "gemma-e4b", "label": "Gemma E4B", "repo": "google/gemma-4-E4B-it-qat-q4_0-gguf",
+         "served": os.environ.get("LCC_LM_MID_CUDA", "gemma-4-e4b-it-qat-q4_0"),
+         "footprint_gb": _clamp_float(os.environ.get("LCC_LM_NEED_MID"), 8.0, 2.0, 512.0)},
+        {"id": "gemma-e2b", "label": "Gemma E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf",
+         "served": os.environ.get("LCC_LM_LITE_CUDA", "gemma-4-e2b-it-qat-q4_0"),
+         "footprint_gb": _clamp_float(os.environ.get("LCC_LM_NEED_LITE"), 6.0, 1.0, 512.0)},
+    ],
 }
-# Resident footprint per tier (GB) = translator + ASR + KV/activation slack. Conservative-ish; tune via env.
+# Curated transcription models. engine = loader family (granite/qwen3 audio-LLM, whisper, parakeet); one
+# engine may have variants (qwen3 1.7B/0.6B) split by repo — selection carries (engine, repo). needs_quant
+# tells install_models which quant target to produce when no prequant exists (whisper only).
+ASR_MODELS = {
+    "mlx": [
+        {"id": "granite", "label": "Granite", "engine": "granite", "repo": "ibm-granite/granite-speech-4.1-2b"},
+        {"id": "qwen3-1.7b", "label": "Qwen3-ASR 1.7B", "engine": "qwen3", "repo": "Qwen/Qwen3-ASR-1.7B"},
+        {"id": "qwen3-0.6b", "label": "Qwen3-ASR 0.6B", "engine": "qwen3", "repo": "Qwen/Qwen3-ASR-0.6B"},
+        {"id": "whisper-large-v3", "label": "Whisper Large v3", "engine": "whisper",
+         "repo": os.environ.get("LCC_WHISPER_MODEL", "mlx-community/whisper-large-v3-mlx"), "needs_quant": "mlx-6bit"},
+    ],
+    "cuda": [
+        {"id": "granite", "label": "Granite", "engine": "granite", "repo": "ibm-granite/granite-speech-4.1-2b"},
+        {"id": "qwen3-1.7b", "label": "Qwen3-ASR 1.7B", "engine": "qwen3", "repo": "Qwen/Qwen3-ASR-1.7B"},
+        {"id": "whisper-large-v3", "label": "Whisper Large v3", "engine": "whisper",
+         "repo": os.environ.get("LCC_WHISPER_GGUF_REPO", "ggerganov/whisper.cpp"), "needs_quant": "gguf-q6"},
+    ],
+}
 # HEADROOM = OS/browser slack kept free so a growing browser doesn't push the resident model into swap.
-_LM_TIER_NEED = {   # resident GB (translator + ASR + KV). measured translator-only: 26B ~14 / e4b 5.9 / e2b 4.3
-    "full": _clamp_float(os.environ.get("LCC_LM_NEED_FULL"), 18.0, 4.0, 512.0),
-    "mid":  _clamp_float(os.environ.get("LCC_LM_NEED_MID"),   8.0, 2.0, 512.0),
-    "lite": _clamp_float(os.environ.get("LCC_LM_NEED_LITE"),  6.0, 1.0, 512.0),
-}
-_LM_TIER_HEADROOM_GB = _clamp_float(os.environ.get("LCC_LM_HEADROOM_GB"), 4.0, 0.0, 64.0)
-_LM_TIER_ORDER = ("full", "mid", "lite")
-_ASR_QWEN3_FULL = "Qwen/Qwen3-ASR-1.7B"
-_ASR_QWEN3_LITE = "Qwen/Qwen3-ASR-0.6B"   # lite tier shrinks ASR too so the whole stack fits small machines
+_LM_HEADROOM_GB = _clamp_float(os.environ.get("LCC_LM_HEADROOM_GB"), 4.0, 0.0, 64.0)
+_ASR_QWEN3_DEFAULT = "Qwen/Qwen3-ASR-1.7B"   # qwen3 default when unset (tier-based ASR shrink is gone)
+WHISPER_REPO = os.environ.get("LCC_WHISPER_MODEL", "mlx-community/whisper-large-v3-mlx")
 
-def _normalize_tier(value):
-    t = str(value or "").strip().lower()
-    aliases = {"large": "full", "big": "full", "max": "full", "medium": "mid", "small": "lite", "min": "lite"}
-    t = aliases.get(t, t)
-    return t if t in _LM_TIER_ORDER else ""
+def lm_models(backend=None):
+    """Curated translation models for the backend (single source; popup/install/host read this)."""
+    return LM_MODELS.get(_normalize_backend(backend or BACKEND), LM_MODELS["mlx"])
+
+def asr_models(backend=None):
+    """Curated transcription models for the backend (single source)."""
+    return ASR_MODELS.get(_normalize_backend(backend or BACKEND), ASR_MODELS["mlx"])
 
 def _system_available_gb():
     """OS memory available without swapping (purgeable-inclusive). psutil if present, else vm_stat (macOS)."""
@@ -282,23 +321,26 @@ def _free_mem_gb_mlx():
     cands = [v for v in (budget_free, _system_available_gb()) if v is not None]
     return min(cands) if cands else None
 
-def _auto_tier():
-    """Largest tier whose footprint + headroom fits in free memory; falls back to lite, or full if unprobable."""
+def _auto_lm_model():
+    """Memory-fit auto: the largest curated translator whose footprint + headroom fits free memory; else
+    the smallest; else the largest when memory is unprobable. Returns a model dict from the registry.
+    Replaces the old tier auto-select (chooses a model, not a tier) — this is what keeps 'Auto' working
+    after the tier vocabulary was removed."""
+    models = lm_models()
     avail = _free_mem_gb_cuda() if BACKEND == "cuda" else _free_mem_gb_mlx()
     if avail is None:
-        print("[bridge] tier: free-memory probe failed -> 'full' (set LCC_LM_TIER to pin)", flush=True)
-        return "full"
-    for t in _LM_TIER_ORDER:
-        if avail >= _LM_TIER_NEED[t] + _LM_TIER_HEADROOM_GB:
-            print(f"[bridge] tier={t}  (avail≈{avail:.1f}GB ≥ {_LM_TIER_NEED[t]:.0f}+{_LM_TIER_HEADROOM_GB:.0f}GB headroom; "
-                  f"pin with LCC_LM_TIER)", flush=True)
-            return t
-    print(f"[bridge] tier=lite  (avail≈{avail:.1f}GB below mid threshold)", flush=True)
-    return "lite"
+        print("[bridge] model: free-memory probe failed -> largest (set LCC_LM_MODEL to pin)", flush=True)
+        return models[0]
+    for m in models:                                     # registry is largest-first
+        if avail >= m["footprint_gb"] + _LM_HEADROOM_GB:
+            print(f"[bridge] model={m['id']}  (avail≈{avail:.1f}GB ≥ {m['footprint_gb']:.0f}+{_LM_HEADROOM_GB:.0f}GB "
+                  f"headroom; pin with LCC_LM_MODEL)", flush=True)
+            return m
+    print(f"[bridge] model={models[-1]['id']}  (avail≈{avail:.1f}GB below all thresholds)", flush=True)
+    return models[-1]
 
 # Lazy-resolved config (empty at import; filled by _finalize_model_config at first warm — see note above).
-LM_TIER = _normalize_tier(os.environ.get("LCC_LM_TIER"))     # "" until resolved
-LM_MODEL = os.environ.get("LCC_LM_MODEL", "")               # "" -> derived from tier
+LM_MODEL = os.environ.get("LCC_LM_MODEL", "")               # "" -> memory-fit auto over the registry
 _LM_RESOLVED = False
 _LM_IS_VLM = False   # set True at load when the translator is a Gemma-4 nano (multimodal) loaded via mlx_vlm
 
@@ -308,25 +350,39 @@ MLXA_REPOS = {
     "qwen3":   os.environ.get("LCC_QWEN3_MODEL", ""),       # "" -> 1.7B (full/mid) or 0.6B (lite), set at warm
 }
 
+def _lm_select_value(m):
+    """The string the runtime loads for a registry entry: the served label on CUDA, else the HF repo."""
+    return m["served"] if (BACKEND == "cuda" and "served" in m) else m["repo"]
+
+
+def _resolve_lm_model(value):
+    """Map a curated registry id (e.g. 'gemma-26b') to its repo/served value; pass a raw repo through.
+    Lets the popup send a stable id as LCC_LM_MODEL without knowing the backend's repo vs served split."""
+    for m in lm_models():
+        if value == m["id"]:
+            return _lm_select_value(m)
+    return value
+
+
 def _finalize_model_config():
-    """Resolve translator tier+model and the ASR repo from available memory, once. Lazy (called at warm, not at
-    import) so tests that `import server` never probe hardware. Idempotent."""
-    global LM_TIER, LM_MODEL, _LM_RESOLVED
+    """Resolve the translator (explicit LCC_LM_MODEL > memory-fit auto) and the ASR repo, once. Lazy
+    (called at warm, NOT at import) so tests that `import server` never probe hardware. Idempotent.
+    The full/mid/lite tier vocabulary is gone — Auto picks a curated model by footprint (_auto_lm_model)."""
+    global LM_MODEL, _LM_RESOLVED
     if _LM_RESOLVED:
         return
     _LM_RESOLVED = True
-    if not LM_TIER:
-        LM_TIER = _auto_tier()
-    else:
-        print(f"[bridge] tier={LM_TIER} (LCC_LM_TIER)", flush=True)
     if not LM_MODEL:
-        LM_MODEL = _LM_TIERS[BACKEND][LM_TIER]
+        LM_MODEL = _lm_select_value(_auto_lm_model())
+    else:
+        LM_MODEL = _resolve_lm_model(LM_MODEL)
+        print(f"[bridge] model={LM_MODEL} (LCC_LM_MODEL)", flush=True)
     if not MLXA_REPOS["qwen3"]:
-        MLXA_REPOS["qwen3"] = _ASR_QWEN3_LITE if LM_TIER == "lite" else _ASR_QWEN3_FULL
-    print(f"[bridge] translate backend={BACKEND} tier={LM_TIER} model={LM_MODEL}", flush=True)
+        MLXA_REPOS["qwen3"] = _ASR_QWEN3_DEFAULT
+    print(f"[bridge] translate backend={BACKEND} model={LM_MODEL}", flush=True)
     if BACKEND == "cuda":
-        print(f"[bridge] (cuda) translation GGUF is chosen by cuda/serve_llama.sh — serve the '{LM_TIER}' tier "
-              f"({_LM_TIERS['cuda'][LM_TIER]})", flush=True)
+        print("[bridge] (cuda) translation GGUF is served by cuda/serve_llama.sh — model label "
+              f"{LM_MODEL!r}", flush=True)
 
 # Granite needs an explicit ASR instruction (it also does AST); Qwen3-ASR auto-detects + punctuates with no prompt.
 GRANITE_ASR_PROMPT = os.environ.get(
@@ -387,6 +443,7 @@ ASR_MAX_TOKENS = max(32, int(os.environ.get("LCC_ASR_MAX_TOKENS", "64")))   # pe
 lm_model = lm_tok = silero = _sampler = parakeet_asr = None
 mlxa_model = None            # mlx-audio ASR model instance (granite/qwen3); one at a time, reloaded on engine switch
 mlxa_loaded_engine = None
+whisper_loaded_repo = None   # the whisper repo whose model is warm (mlx_whisper caches the model by path)
 
 
 def _require_mlx():
@@ -397,8 +454,8 @@ def _require_mlx():
 
 
 def _ensure_asr_loaded(engine: str):
-    global parakeet_asr, mlxa_model, mlxa_loaded_engine
-    _finalize_model_config()   # resolve MLXA_REPOS (lite tier shrinks ASR) before the first load
+    global parakeet_asr, mlxa_model, mlxa_loaded_engine, whisper_loaded_repo
+    _finalize_model_config()   # resolve MLXA_REPOS / qwen3 default before the first load
     engine = _normalize_asr_engine(engine, ASR_ENGINE)
     if engine == "parakeet":
         if not PARAKEET_MODEL_DIR:
@@ -423,6 +480,19 @@ def _ensure_asr_loaded(engine: str):
             print(f"[bridge] loading {repo} ({engine} audio ASR)…", flush=True)
             mlxa_model = _mlxa_load(repo)
             mlxa_loaded_engine = engine
+        return engine
+
+    if _is_whisper_engine(engine):
+        # Whisper (large-v3) — dedicated ASR via mlx_whisper. The 6bit model is produced/fetched by
+        # install_models (prequant-first, else local quantize); here we just ensure mlx_whisper is present
+        # and record the repo. mlx_whisper.transcribe() lazily loads + caches the model by path, so the
+        # first real transcribe warms it. No prompt (own decode + langID) — INV-7.
+        _require_mlx()
+        repo = WHISPER_REPO
+        if whisper_loaded_repo != repo:
+            import mlx_whisper  # noqa: F401  — fail fast if the dep is missing (install ensures it)
+            print(f"[bridge] using {repo} (whisper ASR)…", flush=True)
+            whisper_loaded_repo = repo
         return engine
 
     raise RuntimeError(f"unknown ASR engine: {engine}")
@@ -453,7 +523,7 @@ def load_models(asr=True, lm=True, vad=True):
                 else:
                     raise
         if lm and lm_model is None:
-            print(f"[bridge] loading translator ({LM_TIER}: {LM_MODEL})…", flush=True)
+            print(f"[bridge] loading translator ({LM_MODEL})…", flush=True)
             try:
                 lm_model, lm_tok = lm_load(LM_MODEL)
                 _LM_IS_VLM = False
@@ -975,6 +1045,12 @@ def transcribe_pcm(pcm: bytes, hint: str = "", asr_engine=None):
         gen_kw = {"prompt": GRANITE_ASR_PROMPT} if engine == "granite" else {}
         res = mlxa_model.generate(audio, temperature=0.0, max_tokens=ASR_MAX_TOKENS, **gen_kw)
         raw = getattr(res, "text", None)
+    elif _is_whisper_engine(engine):                     # Whisper large-v3 — own decode, no prompt (INV-7)
+        import mlx_whisper
+        # Each VAD chunk is independent: don't condition on previous text (avoids cross-chunk drift).
+        res = mlx_whisper.transcribe(audio, path_or_hf_repo=WHISPER_REPO,
+                                     temperature=0.0, condition_on_previous_text=False, verbose=False)
+        raw = res.get("text") if isinstance(res, dict) else getattr(res, "text", None)
     else:
         raise RuntimeError(f"unknown ASR engine: {engine}")
     text = (raw if raw is not None else str(res)).strip()
@@ -1195,11 +1271,17 @@ _FAST_REGISTER_TONE = {
 }
 
 
-def _page_tx_system(target: str, hint: str = "", glossary_pairs=()) -> str:
+def _page_tx_system(target: str, hint: str = "", glossary_pairs=(), custom: str = "") -> str:
+    # DOM-preservation structure is ALWAYS kept (INV-10): a custom prompt layers translation STYLE on top
+    # of the mandatory structural rules (same-node replacement, handles/URLs/code unchanged, output-only) —
+    # it never removes them. So for page, custom augments; the structural guard prose stays verbatim.
+    custom = (custom or "").strip()
     if TX_COMPACT_PROMPT:
         s = (f"Translate visible web page text into concise {target}. Replace the same DOM node only. "
              "Keep handles, subreddit names, URLs, code, numbers, timestamps, emoji, and already-target-language text unchanged. "
              "Use label-like wording for UI text. ")
+        if custom:
+            s += f"Follow these translation instructions: {custom}. "
         s += _glossary_clause(glossary_pairs)
         if hint:
             s += f"Page context / terms: {hint}. "
@@ -1212,6 +1294,8 @@ def _page_tx_system(target: str, hint: str = "", glossary_pairs=()) -> str:
          "subreddit/community name, code, a URL, or not meaningful to translate, return it unchanged. For buttons, "
          "menus, labels, counts, and navigation text, use short native UI wording instead of conversational sentences. "
          "Do not add politeness, commentary, inferred context, or sentence endings that are not present in the source. ")
+    if custom:
+        s += f"Follow these translation instructions: {custom}. "
     s += _glossary_clause(glossary_pairs)
     if hint:
         s += f"Use this page context only to disambiguate names/terms: {hint}. "
@@ -1219,23 +1303,33 @@ def _page_tx_system(target: str, hint: str = "", glossary_pairs=()) -> str:
 
 
 def _tx_system(target: str, register: str = "casual", hint: str = "", glossary_pairs=(),
-               profile: str = "caption") -> str:
+               profile: str = "caption", custom: str = "") -> str:
+    # custom (when set) REPLACES the descriptive instruction + register tone (per "서술부만 교체"), but the
+    # structural guards stay: glossary clause, hint clause, and the final "Output ONLY the translation" guard
+    # (INV-10). Empty custom => byte-identical to the previous prompt (INV-11 / backward-compat).
     if profile == "page":
-        return _page_tx_system(target, hint, glossary_pairs)
+        return _page_tx_system(target, hint, glossary_pairs, custom)
+    custom = (custom or "").strip()
     if TX_COMPACT_PROMPT:
-        s = (f"Translate live speech into natural {target}. Preserve meaning, tone, and names. "
-             f"If the line is incomplete, translate only what is present. ")
-        s += _FAST_REGISTER_TONE.get(register, "")
+        if custom:
+            s = custom + " "
+        else:
+            s = (f"Translate live speech into natural {target}. Preserve meaning, tone, and names. "
+                 f"If the line is incomplete, translate only what is present. ")
+            s += _FAST_REGISTER_TONE.get(register, "")
         s += _glossary_clause(glossary_pairs)
         if hint:
             s += f"Consistent names/terms: {hint}. "
         return s + f"Output only {target}."
-    s = (f"You are an expert live interpreter turning a continuous talk/stream into natural, fluent {target}. "
-         f"Translate the user's line by MEANING into idiomatic {target} that a native speaker would actually "
-         f"say — never word-for-word, never transliterate, no translationese or foreign word order. Match the "
-         f"speaker's tone and register, and keep names/terms consistent with the running conversation above. "
-         f"The line may be cut off mid-sentence; translate what is there naturally without inventing the rest. ")
-    s += _REGISTER_TONE.get(target, {}).get(register, "")
+    if custom:
+        s = custom + " "
+    else:
+        s = (f"You are an expert live interpreter turning a continuous talk/stream into natural, fluent {target}. "
+             f"Translate the user's line by MEANING into idiomatic {target} that a native speaker would actually "
+             f"say — never word-for-word, never transliterate, no translationese or foreign word order. Match the "
+             f"speaker's tone and register, and keep names/terms consistent with the running conversation above. "
+             f"The line may be cut off mid-sentence; translate what is there naturally without inventing the rest. ")
+        s += _REGISTER_TONE.get(target, {}).get(register, "")
     s += _glossary_clause(glossary_pairs)
     if hint:
         s += f"Render these names/terms consistently: {hint}. "
@@ -1243,12 +1337,13 @@ def _tx_system(target: str, register: str = "casual", hint: str = "", glossary_p
 
 
 def _translate_messages(text, recent_pairs=(), target="Korean", hint="", register="casual", glossary_pairs=(),
-                        profile: str = "caption"):
+                        profile: str = "caption", custom: str = ""):
     """The chat-message list for one clause translation: register-aware system instruction + source-language-
     matched few-shot anchors + the model's recent (source->target) renderings (consistency) + the line itself.
     Shared by the MLX and CUDA backends so both produce byte-identical prompts (same translation regardless of
-    runtime). Each backend applies its own chat template (MLX: apply_chat_template; CUDA: server-side)."""
-    msgs = [{"role": "system", "content": _tx_system(target, register, hint, glossary_pairs, profile)}]
+    runtime — custom is threaded HERE, in the shared builder, not per-backend; INV-11). Each backend applies
+    its own chat template (MLX: apply_chat_template; CUDA: server-side)."""
+    msgs = [{"role": "system", "content": _tx_system(target, register, hint, glossary_pairs, profile, custom)}]
     fewshot_max = PAGE_TX_FEWSHOT_MAX if profile == "page" else TX_FEWSHOT_MAX
     for ex_src, ex_tgt in _fewshot(target, register, _src_lang(text), profile)[:fewshot_max]:   # source-lang-matched style anchors
         msgs += [{"role": "user", "content": ex_src}, {"role": "assistant", "content": ex_tgt}]
@@ -1281,7 +1376,7 @@ def _page_batch_max_tokens(items):
     return max(PAGE_TX_BATCH_MIN_TOKENS, min(PAGE_TX_BATCH_MAX_TOKENS, estimate))
 
 
-def _page_marker_system(target: str, hint: str = "", glossary_pairs=(), recent_pairs=()) -> str:
+def _page_marker_system(target: str, hint: str = "", glossary_pairs=(), recent_pairs=(), custom: str = "") -> str:
     s = (
         f"Translate visible web-page text into {target} for direct DOM replacement. The input has numbered "
         "segments — each a marker like @@1@@ on its own line followed by that segment's text. Output the SAME "
@@ -1295,6 +1390,8 @@ def _page_marker_system(target: str, hint: str = "", glossary_pairs=(), recent_p
         "once each, and translate the text around them naturally; never translate, drop, reorder, or duplicate a "
         "placeholder. "
     )
+    if (custom or "").strip():   # custom layers STYLE on top; the @@n@@/placeholder structure above stays (INV-10)
+        s += f"Follow these translation instructions: {custom.strip()}. "
     s += _glossary_clause(glossary_pairs)
     if hint:
         s += f"Page context/terms: {hint}. "
@@ -1333,12 +1430,12 @@ def _page_block_context_preamble(items):
 
 
 def _translate_page_batch_messages(items, recent_pairs=(), target="Korean", hint="", register="casual",
-                                   glossary_pairs=()):
+                                   glossary_pairs=(), custom: str = ""):
     """Prompt for page DOM microbatch translation. Output is @@n@@-marked segments so the content script can
     map every replacement back to its text node and the bridge can stream segments as they complete; a missing
     marker falls back to per-item translation. A marker-free block-context preamble (when items carry `ctx`)
     gives the model the surrounding prose for fragments split by inline elements."""
-    msgs = [{"role": "system", "content": _page_marker_system(target, hint, glossary_pairs, recent_pairs)}]
+    msgs = [{"role": "system", "content": _page_marker_system(target, hint, glossary_pairs, recent_pairs, custom)}]
     src_lang = _src_lang(" ".join(str(it.get("text", "")) for it in items))
     few = _fewshot(target, register, src_lang, "page")[:min(PAGE_TX_FEWSHOT_MAX, 4)]
     if few:
@@ -1602,14 +1699,14 @@ def _vlm_generate_text(msgs, gen_max, on_update=None):
 
 def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str = "",
                    register: str = "casual", glossary_pairs=(), on_update=None, kv_reuse=None,
-                   max_tokens=None, stream_every=None, profile: str = "caption"):
+                   max_tokens=None, stream_every=None, profile: str = "caption", custom: str = ""):
     """Stateless per-clause translation, primed for quality: a strong register-aware instruction,
     source-language-matched few-shot anchors, a pinned glossary, and the last few (source -> target)
     pairs as conversation context so terminology/tone stay consistent across the stream. Re-callable on
     a growing clause (EN->KO reverses word order, so we re-translate the whole clause). Runs on _mlx_pool
     (single worker -> the module-level _tx_cache has no race)."""
     global _tx_cache, _tx_cache_ids, _TX_KV_WINDOW
-    msgs = _translate_messages(text, recent_pairs, target, hint, register, glossary_pairs, profile)
+    msgs = _translate_messages(text, recent_pairs, target, hint, register, glossary_pairs, profile, custom)
     if _LM_IS_VLM:
         return _vlm_generate_text(msgs, max(1, int(max_tokens or _TX_GEN_MAX)), on_update)
     mx.set_default_device(mx.gpu)
@@ -1675,7 +1772,7 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
             print(f"[txkv] invariant breach: offset {actual} < prompt {len(prompt)} -> fresh retry", flush=True)
             return translate_once(
                 text, recent_pairs, target, hint, register, glossary_pairs, None, kv_reuse=False,
-                max_tokens=max_tokens, stream_every=stream_every, profile=profile,
+                max_tokens=max_tokens, stream_every=stream_every, profile=profile, custom=custom,
             )
         elif actual > len(prompt):
             if _tx_trim_or_reset(actual - len(prompt), len(prompt)):   # drop generated suffix -> prompt-only
@@ -1688,7 +1785,7 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
 
 def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hint: str = "",
                               register: str = "casual", glossary_pairs=(), max_tokens=None, kv_reuse=None,
-                              on_segment=None, on_partial=None):
+                              on_segment=None, on_partial=None, custom: str = ""):
     """Translate a DOM batch in one model call. Uses a page-only prefix KV cache so page DOM work never
     disturbs the live-caption translator cache. Output is @@n@@-marked; when on_segment is given each segment
     is streamed back the instant its following marker appears, and on_partial streams the still-growing
@@ -1703,7 +1800,7 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
     ]
     if not clean_items:
         return {}
-    msgs = _translate_page_batch_messages(clean_items, recent_pairs, target, hint, register, glossary_pairs)
+    msgs = _translate_page_batch_messages(clean_items, recent_pairs, target, hint, register, glossary_pairs, custom)
     gen_max = max(1, int(max_tokens or _page_batch_max_tokens(clean_items)))
     emitted = set()
     partial_state = {}
@@ -1778,7 +1875,7 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
             print(f"[pagekv] invariant breach: offset {actual} < prompt {len(prompt)} -> fresh retry", flush=True)
             return translate_page_batch_once(
                 clean_items, recent_pairs, target, hint, register, glossary_pairs,
-                max_tokens=max_tokens, kv_reuse=False, on_segment=on_segment, on_partial=on_partial,
+                max_tokens=max_tokens, kv_reuse=False, on_segment=on_segment, on_partial=on_partial, custom=custom,
             )
         elif actual > len(prompt):
             if _page_tx_trim_or_reset(actual - len(prompt), len(prompt)):
@@ -1819,7 +1916,7 @@ def _chunk_text(text: str, max_chars: int = None):
 
 
 def translate_page_long_once(text, recent_pairs=(), target: str = "Korean", hint: str = "",
-                             register: str = "casual", glossary_pairs=(), on_progress=None):
+                             register: str = "casual", glossary_pairs=(), on_progress=None, custom: str = ""):
     """Translate a long DOM paragraph by sentence-chunking and translating chunks sequentially, each
     conditioned on the paragraph's already-translated chunks (running context). Every model call stays
     small (clean translation, no truncation); the joined result is one string for the node. on_progress, if
@@ -1831,7 +1928,7 @@ def translate_page_long_once(text, recent_pairs=(), target: str = "Korean", hint
     def _tx(chunk, ctx):
         return _clean(translate_once(chunk, list(ctx), target=target, hint=hint, register=register,
                                      glossary_pairs=glossary_pairs, kv_reuse=False, profile="page",
-                                     max_tokens=_page_batch_max_tokens([{"text": chunk}])))
+                                     max_tokens=_page_batch_max_tokens([{"text": chunk}]), custom=custom))
 
     if len(chunks) <= 1:
         return _tx(text, list(recent_pairs)[-3:])
@@ -1942,6 +2039,7 @@ async def handle(ws):
     evs_level = 0               # EVS controller pressure (0 nominal / 1 pressured under backlog); see _evs_step
     register = "casual"         # tone preset (casual/lecture/news/chat) -> few-shot + tone instruction
     glossary_pairs = []         # [(source_term, target_rendering)] pinned for consistent translation + ASR biasing
+    custom_prompt = ""          # user custom translation prompt (advanced/preset) -> replaces the descriptive part in _tx_system; applies to caption + page
     page_register = "casual"    # page DOM translation has its own concise UI/text replacement prompt profile
     page_context_hint = ""      # if unset, page translation falls back to context_hint + page title auto-prime
     page_glossary_pairs = None  # None = inherit glossary_pairs; [] = intentionally no page-specific glossary
@@ -2316,7 +2414,7 @@ async def handle(ws):
                                     ko = await loop.run_in_executor(
                                         _mlx_pool, translate_once, source, recent_ctx,
                                         target_lang, context_hint, register, list(glossary_pairs), _on_tx,
-                                        None, tx_max_tokens_for(True), tx_stream_every_for(True))
+                                        None, tx_max_tokens_for(True), tx_stream_every_for(True), "caption", custom_prompt)
                                 except Exception as e:
                                     print(f"[trans err] {e}", flush=True); tx_ok = False   # never kill the loop
                                     _lp = _clean(tslot.get("ko", ""))
@@ -2333,7 +2431,7 @@ async def handle(ws):
                                     ko = await loop.run_in_executor(
                                         _mlx_pool, translate_once, source, recent_ctx,
                                         target_lang, context_hint, register, list(glossary_pairs), None,
-                                        None, tx_max_tokens_for(job["final"]), tx_stream_every_for(job["final"]))
+                                        None, tx_max_tokens_for(job["final"]), tx_stream_every_for(job["final"]), "caption", custom_prompt)
                                 except Exception as e:
                                     # preview is UX-only — leave ko unset and drop below; never flash the source
                                     print(f"[trans err] {e}", flush=True); tx_ok = False
@@ -2574,10 +2672,10 @@ async def handle(ws):
                         await ws.close(code=1008, reason="hello required")
                         break
                     elif d.get("type") == "config":
-                        prev_tx_sig = _translation_context_signature(target_lang, register, context_hint, glossary_pairs)
+                        prev_tx_sig = _translation_context_signature(target_lang, register, context_hint, glossary_pairs, custom_prompt)
                         prev_page_glossary = page_glossary_pairs if page_glossary_pairs is not None else glossary_pairs
                         prev_page_sig = _translation_context_signature(
-                            target_lang, page_register, page_context_hint or context_hint, prev_page_glossary)
+                            target_lang, page_register, page_context_hint or context_hint, prev_page_glossary, custom_prompt)
                         if d.get("latencyMode") is not None:
                             latency_mode = _normalize_latency_mode(d.get("latencyMode"), latency_mode)
                             sent_sil_windows = sent_windows_for(sent_silence_cfg_ms)
@@ -2612,6 +2710,8 @@ async def handle(ws):
                             register = str(d["register"]) if str(d["register"]) in _REGISTERS else "casual"
                         if d.get("glossary") is not None:
                             glossary_pairs = _parse_glossary(str(d["glossary"]))
+                        if d.get("customPrompt") is not None:
+                            custom_prompt = str(d["customPrompt"])[:4000]   # user custom translation prompt (advanced/preset)
                         if d.get("pageContextHint") is not None:
                             page_context_hint = str(d["pageContextHint"])[:240]
                         if d.get("pageRegister"):
@@ -2624,10 +2724,10 @@ async def handle(ws):
                         # ASR biasing hint = free-text context + glossary source terms (helps the model spell names)
                         _gloss_terms = ", ".join(s for s, _ in glossary_pairs)
                         asr_hint = "; ".join(x for x in (context_hint, _gloss_terms) if x)[:240]
-                        new_tx_sig = _translation_context_signature(target_lang, register, context_hint, glossary_pairs)
+                        new_tx_sig = _translation_context_signature(target_lang, register, context_hint, glossary_pairs, custom_prompt)
                         new_page_glossary = page_glossary_pairs if page_glossary_pairs is not None else glossary_pairs
                         new_page_sig = _translation_context_signature(
-                            target_lang, page_register, page_context_hint or context_hint, new_page_glossary)
+                            target_lang, page_register, page_context_hint or context_hint, new_page_glossary, custom_prompt)
                         if new_tx_sig != prev_tx_sig:
                             translation_epoch += 1
                             recent_pairs.clear()
@@ -2748,6 +2848,7 @@ async def handle(ws):
                                             target=target_lang, hint=page_hint, register=page_register,
                                             glossary_pairs=list(page_glossary), on_segment=_on_segment,
                                             on_partial=(_on_partial if partial_requested else None),
+                                            custom=custom_prompt,
                                         )
                                     finally:
                                         loop.call_soon_threadsafe(_q.put_nowait, _done)
@@ -2822,6 +2923,7 @@ async def handle(ws):
                                         on_update=(_single_partial if want_partial else None),
                                         kv_reuse=False, profile="page", stream_every=3,
                                         max_tokens=_page_batch_max_tokens([dict(item)]),   # _TX_GEN_MAX(64) would truncate
+                                        custom=custom_prompt,
                                     )
                                     if want_partial:
                                         partial_task = asyncio.create_task(_single_partial_pump())
@@ -2872,6 +2974,7 @@ async def handle(ws):
                                         target=target_lang, hint=page_hint, register=page_register,
                                         glossary_pairs=list(page_glossary),
                                         on_progress=(_lp_progress if partial_requested else None),
+                                        custom=custom_prompt,
                                     )
                                     lp_task = asyncio.create_task(_lp_pump()) if partial_requested else None
                                     t0 = time.perf_counter()

@@ -167,7 +167,7 @@ def _start_env(msg):
     # Chrome gives the host a minimal PATH; make sure the venv-resolver + common bins are reachable.
     env["PATH"] = ":".join([env.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]).strip(":")
     asr = str((msg or {}).get("asrEngine") or "").strip().lower()
-    if asr in ("granite", "qwen3", "parakeet"):
+    if asr in ("granite", "qwen3", "parakeet", "whisper"):
         env["LCC_ASR_ENGINE"] = asr
     if asr == "parakeet":
         env.setdefault(
@@ -176,12 +176,20 @@ def _start_env(msg):
         )
         env.setdefault("LCC_PARAKEET_THREADS", "4")
         env.setdefault("LCC_PARAKEET_PROVIDER", "cpu")
+    lm = str((msg or {}).get("lmModel") or "").strip()
+    if lm:                               # "" = Auto (server memory-fit); only pin when explicitly chosen (restart-applied)
+        env["LCC_LM_MODEL"] = lm
+    asr_repo = str((msg or {}).get("asrRepo") or "").strip()
+    if asr_repo and asr == "qwen3":      # variant repo (0.6B vs 1.7B) / custom — pins the engine's model
+        env["LCC_QWEN3_MODEL"] = asr_repo
+    elif asr_repo and asr == "whisper":
+        env["LCC_WHISPER_MODEL"] = asr_repo
     return env
 
 
 def _asr_engine(msg):
     asr = str((msg or {}).get("asrEngine") or os.environ.get("LCC_ASR_ENGINE") or "granite").strip().lower()
-    return asr if asr in ("granite", "qwen3", "parakeet") else "granite"
+    return asr if asr in ("granite", "qwen3", "parakeet", "whisper") else "granite"
 
 
 def _cuda_stack(args, timeout=180):
@@ -412,12 +420,15 @@ def _install_status_failure(st, error):
 
 
 def do_install(msg=None):
-    """Spawn the tier model downloader DETACHED (full/mid/lite). Returns immediately; popup polls
-    install_status. Sets LCC_LM_TIER in .env on success (handled by install_models.py)."""
-    tier = str((msg or {}).get("tier") or "").strip().lower()
-    if tier not in ("full", "mid", "lite"):
-        return {"ok": False, "error": f"unknown tier: {tier}"}
-    backend = "cuda" if CUDA_STACK_CMD else "mlx"   # tier downloader is backend-aware (MLX repos vs CUDA GGUF)
+    """Spawn the per-model downloader DETACHED for one (role, model). Returns immediately; popup polls
+    install_status. install_models.py pins LCC_LM_MODEL / LCC_WHISPER_MODEL and (Whisper) auto-quantizes."""
+    role = str((msg or {}).get("role") or "").strip().lower()
+    model = str((msg or {}).get("model") or "").strip()
+    if role not in ("asr", "lm"):
+        return {"ok": False, "error": f"unknown role: {role} (use asr|lm)"}
+    if not model:
+        return {"ok": False, "error": "missing model"}
+    backend = "cuda" if CUDA_STACK_CMD else "mlx"   # downloader is backend-aware (MLX repos vs CUDA GGUF)
     if _install_running():
         return {"ok": True, "started": False, "already": True, "msg": "이미 설치 중"}
     py = _venv_python()
@@ -425,20 +436,21 @@ def do_install(msg=None):
         return {"ok": False, "error": "Python 3.10+ 환경을 못 찾음 — 먼저 ./setup.sh 를 실행하세요"}
     if not os.path.exists(INSTALLER):
         return {"ok": False, "error": f"install_models.py 없음: {INSTALLER}"}
-    seed = {"tier": tier, "backend": backend, "done": False, "ok": True, "current": "시작 중…",
+    seed = {"role": role, "model": model, "backend": backend, "done": False, "ok": True, "current": "시작 중…",
             "index": 0, "total": 0, "ts": int(time.time())}
     _write_install_status(seed)                     # seed status so the poller sees progress instantly
     env = _start_env(msg or {})
     try:
         logf = open(INSTALL_LOG, "ab")
-        p = subprocess.Popen([py, INSTALLER, tier, "--backend", backend], stdin=subprocess.DEVNULL,
-                             stdout=logf, stderr=logf, start_new_session=True, env=env)
+        p = subprocess.Popen([py, INSTALLER, "--role", role, "--model", model, "--backend", backend],
+                             stdin=subprocess.DEVNULL, stdout=logf, stderr=logf, start_new_session=True, env=env)
     except Exception as e:
         hlog(f"install spawn err: {e}")
         _install_status_failure(seed, f"설치 시작 실패: {e}")
         return {"ok": False, "error": f"설치 시작 실패: {e}"}
     _write_install_status({**seed, "pid": p.pid, "ts": int(time.time())})  # record child pid for live polling
-    return {"ok": True, "started": True, "tier": tier, "backend": backend, "msg": "설치 시작 — 모델 다운로드(수 GB)"}
+    return {"ok": True, "started": True, "role": role, "model": model, "backend": backend,
+            "msg": "설치 시작 — 모델 다운로드(수 GB)"}
 
 
 def do_install_status():
@@ -460,6 +472,35 @@ def do_install_status():
     return {"ok": True, **st}
 
 
+def do_models_status(msg=None):
+    """Per-curated-model installed flags for the popup's download buttons. Runs in the bridge venv (the
+    host's own interpreter may lack the model deps) so server's registry + install_models.is_installed
+    are importable. Returns {ok, backend, asr:[{id,label,installed}], lm:[...]}."""
+    py = _venv_python()
+    if not py:
+        return {"ok": False, "error": "Python 환경을 못 찾음 — 먼저 ./setup.sh 를 실행하세요"}
+    backend = "cuda" if CUDA_STACK_CMD else "mlx"
+    bridge_dir = os.path.join(ROOT, "bridge")
+    code = (
+        "import json,sys; sys.path.insert(0, sys.argv[1]);"
+        "import server as s, install_models as im; b=sys.argv[2];"
+        "f=lambda role, ms:[{'id':m['id'],'label':m['label'],'engine':m.get('engine'),'repo':m.get('repo'),'installed':bool(im.is_installed(role,m['id'],b))} for m in ms];"
+        "print(json.dumps({'asr':f('asr',s.asr_models(b)),'lm':f('lm',s.lm_models(b))}))"
+    )
+    try:
+        out = subprocess.run([py, "-c", code, bridge_dir, backend], capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        return {"ok": False, "error": f"models_status 실행 실패: {e}"}
+    if out.returncode != 0:
+        hlog(f"models_status rc={out.returncode} stderr={out.stderr[-500:]}")
+        return {"ok": False, "error": (out.stderr.strip() or "models_status 실패")[-600:]}
+    try:
+        data = json.loads(out.stdout.strip().splitlines()[-1])
+    except Exception as e:
+        return {"ok": False, "error": f"models_status 파싱 실패: {e}"}
+    return {"ok": True, "backend": backend, **data}
+
+
 def handle_message(msg):
     cmd = str(msg.get("cmd") or "status").strip().lower()
     hlog(f"cmd={cmd}")
@@ -473,6 +514,8 @@ def handle_message(msg):
         return do_install(msg)
     if cmd == "install_status":
         return do_install_status()
+    if cmd == "models_status":
+        return do_models_status(msg)
     if cmd == "status" and CUDA_STACK_CMD:
         data = _cuda_stack(["status", _asr_engine(msg)], timeout=20) or {}
         return {

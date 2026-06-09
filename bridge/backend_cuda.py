@@ -11,8 +11,9 @@ imported from server.py LAZILY (no import cycle) so both backends emit identical
 Two endpoints, both OpenAI-compatible:
   - translate / ask : POST {CHAT_URL}  — llama.cpp llama-server or vLLM (chat.completions, streamed)
   - transcribe      : POST {ASR_URL}   — /v1/audio/transcriptions; the popup's engine (granite=영어 /
-                      qwen3=다국어) is sent as the ``model`` field, the SAME granite/qwen3 ASR models as the
-                      MLX path, served on CUDA (see cuda/asr_server.py). NO whisper.
+                      qwen3=다국어 / whisper=다국어) is sent as the ``model`` field. granite/qwen3 use the
+                      transformers ASR server (cuda/asr_server.py); whisper uses whisper.cpp's whisper-server
+                      (q6 gguf, cuda/serve_whisper.sh) on its own port — same OpenAI surface.
 
 Stdlib only (urllib) so a fresh WSL2 env needs nothing beyond the bridge's own deps.
 """
@@ -45,12 +46,15 @@ TIMEOUT = float(os.environ.get("LCC_CUDA_TIMEOUT", "60"))
 TX_GEN_MAX = max(1, int(os.environ.get("LCC_TX_GEN_MAX_TOKENS", "64")))   # mirror server.py default
 
 
-# --- Per-engine ASR routing (granite=영어 / qwen3=다국어, same models as MLX) --------------------------
-# The popup's 전사 엔진 choice is the ASR MODEL. On CUDA each engine maps to a (url, model) — by default both
-# hit the one ASR server (cuda/asr_server.py) and select the model by name ("granite" / "qwen3"); that server
-# loads the real granite-speech-4.1 / Qwen3-ASR weights and applies the right per-model prompt. Override an
-# engine's URL/MODEL to point it at a different server (a second vLLM, your own granite/qwen3 endpoint, …).
-_ASR_ENGINES = ("granite", "qwen3")
+# --- Per-engine ASR routing (granite=영어 / qwen3=다국어 / whisper=다국어, same models as MLX) ----------
+# The popup's 전사 엔진 choice is the ASR MODEL. On CUDA each engine maps to a (url, model). granite/qwen3
+# hit the transformers ASR server (cuda/asr_server.py, port 8000) and select the model by name. WHISPER is
+# served separately by whisper.cpp's whisper-server (q6 gguf, port 8001 by default) — a distinct binary, but
+# the SAME OpenAI /v1/audio/transcriptions surface, so transcribe_pcm is unchanged. Whisper sends no prompt
+# (own decode/langID). Override any engine's URL/MODEL to point it at a different server.
+_ASR_ENGINES = ("granite", "qwen3", "whisper")
+# whisper.cpp whisper-server default endpoint (distinct from the granite/qwen3 server on 8000).
+WHISPER_URL = os.environ.get("LCC_CUDA_ASR_WHISPER_URL", "http://127.0.0.1:8001/v1/audio/transcriptions")
 
 
 def _engine_cfg(engine):
@@ -60,9 +64,10 @@ def _engine_cfg(engine):
     if engine not in _ASR_ENGINES:
         engine = "qwen3"
     up = engine.upper()
+    default_url = WHISPER_URL if engine == "whisper" else ASR_URL
     return {
         "engine": engine,
-        "url": os.environ.get(f"LCC_CUDA_ASR_{up}_URL") or ASR_URL,
+        "url": os.environ.get(f"LCC_CUDA_ASR_{up}_URL") or default_url,
         "model": os.environ.get(f"LCC_CUDA_ASR_{up}_MODEL") or ASR_MODEL or ("local" if ASR_SWITCH_CMD else engine),
     }
 

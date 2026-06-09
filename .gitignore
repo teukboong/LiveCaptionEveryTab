@@ -10,3 +10,6 @@ extension/native-host/.crx-private-key.pem
 .env
 .env.policy
 .env.cuda
+
+# dryforge produce/run artifacts (3-doc, worktrees) — never tracked
+.dryforge/

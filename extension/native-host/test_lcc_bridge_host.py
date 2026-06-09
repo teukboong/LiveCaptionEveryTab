@@ -285,7 +285,7 @@ with tempfile.TemporaryDirectory() as tmp:
         def raise_popen(*_args, **_kwargs):
             raise OSError("boom")
         host.subprocess.Popen = raise_popen
-        spawn_fail = host.do_install({"tier": "lite"})
+        spawn_fail = host.do_install({"role": "lm", "model": "gemma-26b"})
         check("install.spawn_fail_ok", spawn_fail.get("ok"), False)
         failed_status = json.loads(status_path.read_text())
         check("install.spawn_fail_status_done", failed_status.get("done"), True)
@@ -302,7 +302,8 @@ with tempfile.TemporaryDirectory() as tmp:
 check("asr.granite", host._asr_engine({"asrEngine": "granite"}), "granite")
 check("asr.qwen3", host._asr_engine({"asrEngine": "qwen3"}), "qwen3")
 check("asr.parakeet", host._asr_engine({"asrEngine": "parakeet"}), "parakeet")
-check("asr.invalid", host._asr_engine({"asrEngine": "whisper"}), "granite")
+check("asr.whisper", host._asr_engine({"asrEngine": "whisper"}), "whisper")
+check("asr.invalid", host._asr_engine({"asrEngine": "bogus"}), "granite")
 
 check("cli.status", host._cli_msg(["status"]), {"cmd": "status"})
 check("cli.stop", host._cli_msg(["stop"]), {"cmd": "stop"})
@@ -333,7 +334,34 @@ env = host._start_env({"asrEngine": "parakeet"})
 check("start_env.parakeet", env.get("LCC_ASR_ENGINE"), "parakeet")
 ok("start_env.path_has_common_bins", "/opt/homebrew/bin" in env.get("PATH", ""))
 ok("start_env.parakeet_model", bool(env.get("LCC_PARAKEET_MODEL_DIR")))
-check("start_env.invalid_asr", host._start_env({"asrEngine": "whisper"}).get("LCC_ASR_ENGINE"), None)
+check("start_env.whisper", host._start_env({"asrEngine": "whisper"}).get("LCC_ASR_ENGINE"), "whisper")
+check("start_env.invalid_asr", host._start_env({"asrEngine": "bogus"}).get("LCC_ASR_ENGINE"), None)
+check("start_env.lm_model", host._start_env({"lmModel": "my/model"}).get("LCC_LM_MODEL"), "my/model")
+check("start_env.lm_model_auto_empty", host._start_env({"lmModel": ""}).get("LCC_LM_MODEL"), None)
+
+# install role/model validation returns before any side effect (no spawn, no status write)
+check("install.unknown_role", host.do_install({"role": "bogus", "model": "x"}).get("ok"), False)
+check("install.missing_model", host.do_install({"role": "lm"}).get("ok"), False)
+
+# models_status parses the bridge-venv subprocess JSON into per-model installed flags
+_old_vp = host._venv_python
+_old_run = host.subprocess.run
+try:
+    host._venv_python = lambda: "/usr/bin/python3"
+
+    class _FakeRun:
+        returncode = 0
+        stdout = '{"asr":[{"id":"granite","label":"Granite","installed":true}],"lm":[]}\n'
+        stderr = ""
+
+    host.subprocess.run = lambda *a, **k: _FakeRun()
+    _ms = host.do_models_status({})
+    check("models_status.ok", _ms.get("ok"), True)
+    check("models_status.asr_len", len(_ms.get("asr", [])), 1)
+    check("models_status.installed", _ms["asr"][0]["installed"], True)
+finally:
+    host._venv_python = _old_vp
+    host.subprocess.run = _old_run
 
 if fails:
     print(f"FAIL ({len(fails)} case(s)):")

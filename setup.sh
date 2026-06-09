@@ -2,8 +2,8 @@
 # One-shot setup: create a repo-local .venv and install dependencies for your platform.
 #   ./setup.sh                          # auto backend (mlx on Apple Silicon, cuda elsewhere)
 #   ./setup.sh mlx|cuda|parakeet        # force a backend extra
-#   ./setup.sh --models                 # also fetch models for the AUTO-detected tier (disk-frugal: one tier)
-#   ./setup.sh --models --tier lite     # fetch only that tier (full|mid|lite|auto)
+#   ./setup.sh --models                 # also fetch a memory-fit translation model + Granite ASR (disk-frugal)
+#   ./setup.sh --models --tier lite     # fetch a smaller translation model instead (full|mid|lite -> 26B|E4B|E2B)
 # Override the base interpreter with LCC_PYTHON_BASE=python3.13 ./setup.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -100,13 +100,21 @@ elif [ "$EXTRA" = "cuda" ] && [ -f extension/native-host/install-host-windows-ws
 fi
 
 if [ "$MODELS" = "1" ]; then
-  echo "[setup] fetching models for tier '$TIER' ($EXTRA) — only this tier, to save disk (resumable)…"
-  .venv/bin/python bridge/install_models.py "$TIER" --backend "$EXTRA"
+  # Pick the translation model: an explicit --tier maps to its model for back-compat, else memory-fit auto.
+  case "$TIER" in
+    full|large|max) LMMODEL="gemma-26b" ;;
+    mid|medium)     LMMODEL="gemma-e4b" ;;
+    lite|small|min) LMMODEL="gemma-e2b" ;;
+    *) LMMODEL="$(.venv/bin/python -c "import sys;sys.path.insert(0,'bridge');import server as s;s.BACKEND=s._normalize_backend('$EXTRA');print(s._auto_lm_model()['id'])" 2>/dev/null || echo gemma-26b)" ;;
+  esac
+  echo "[setup] fetching translation model '$LMMODEL' + Granite ASR ($EXTRA) — resumable…"
+  .venv/bin/python bridge/install_models.py --role lm --model "$LMMODEL" --backend "$EXTRA"
+  .venv/bin/python bridge/install_models.py --role asr --model granite --backend "$EXTRA"
 fi
 
 echo
 echo "[setup] done. next (no more terminal needed):"
 echo "  1) chrome://extensions -> Developer mode -> Load unpacked -> select extension/   (then reload it)"
-echo "  2) open the popup -> '브릿지 켜기' to start the bridge, and Full/Mid/Lite to fetch models"
+echo "  2) open the popup -> '브릿지 켜기' to start the bridge; pick/download models from the 모델 dropdowns"
 echo "     (terminal alternative: bash bridge/run_bridge.sh)"
 echo "  3) (optional) cp .env.example .env   # pin a tier / tweak knobs"

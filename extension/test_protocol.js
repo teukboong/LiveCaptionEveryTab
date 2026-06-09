@@ -10,7 +10,7 @@ vm.runInNewContext(fs.readFileSync(path.join(__dirname, "protocol.js"), "utf8"),
 
 assert.ok(context.LCC_TARGET_LANGS.includes("Hindi"), "target list exposes Hindi");
 assert.equal(JSON.stringify(context.LCC_UI_LANGS.map((lang) => lang.value)), JSON.stringify(["ko", "en"]));
-assert.equal(JSON.stringify(context.LCC_ASR_ENGINES), JSON.stringify(["granite", "qwen3"]));
+assert.equal(JSON.stringify(context.LCC_ASR_ENGINES), JSON.stringify(["granite", "qwen3", "whisper"]));
 assert.equal(JSON.stringify(context.LCC_RUN_MODE_VALUES), JSON.stringify(["video", "page", "both"]));
 assert.equal(JSON.stringify(context.LCC_CONTENT_TYPES), JSON.stringify(["general", "conference", "news", "streaming"]));
 assert.equal(JSON.stringify(context.LCC_LATENCY_MODES), JSON.stringify(["stable", "balanced", "aggressive"]));
@@ -122,6 +122,48 @@ assert.match(pageCfg.pageContextHint, /r\/SipsTea/);
 assert.equal(pageCfg.pageGlossary, "OP=원글쓴이");
 assert.equal(context.lccBuildBridgeConfig({ pageRegister: "bogus" }, "").pageRegister, "casual");
 assert.equal(context.lccBuildBridgeConfig({ pageRegister: "CHAT" }, "").pageRegister, "chat");
+
+// ---- custom translation prompt + user presets (advanced/preset feature) -------------------------------
+assert.equal(context.lccNormalizeSettings({}).customPrompt, "", "customPrompt default is empty");
+assert.equal(context.lccNormalizeSettings({ customPrompt: "  be terse  " }).customPrompt, "  be terse  ", "customPrompt preserved verbatim (whitespace may matter)");
+assert.equal(context.lccCanonicalCustomPrompt(null), "");
+assert.equal(context.lccCanonicalCustomPrompt("x".repeat(5000)).length, 4000, "customPrompt clamped to 4000");
+assert.equal(context.lccBuildBridgeConfig({ customPrompt: "pirate voice" }, "").customPrompt, "pirate voice", "customPrompt flows into the bridge config");
+assert.equal(context.lccBuildBridgeConfig({}, "").customPrompt, "", "bridge config customPrompt defaults empty");
+
+// bundle extraction picks only the translation-shaping fields, canonicalized
+const presetBundle = context.lccUserPresetBundle({ customPrompt: "p", register: "NEWS", targetLang: "hindi", latencyMode: "fast", contextHint: "ctx", glossary: "A=B", fontSize: 30 });
+assert.equal(JSON.stringify(Object.keys(presetBundle).sort()), JSON.stringify(["contextHint", "customPrompt", "glossary", "latencyMode", "register", "targetLang"]), "bundle has only the shaping keys");
+assert.equal(presetBundle.register, "news");
+assert.equal(presetBundle.targetLang, "Hindi");
+assert.equal(presetBundle.latencyMode, "aggressive");
+assert.equal(Object.hasOwn(presetBundle, "fontSize"), false, "bundle drops non-shaping keys");
+
+// upsert + name canonicalization + case-insensitive dedup
+let presets = context.lccUpsertUserPreset([], "  My Tone ", { customPrompt: "a", register: "news" });
+assert.equal(presets.length, 1);
+assert.equal(presets[0].name, "My Tone", "preset name trimmed/collapsed");
+assert.equal(presets[0].bundle.customPrompt, "a");
+presets = context.lccUpsertUserPreset(presets, "my tone", { customPrompt: "b" });
+assert.equal(presets.length, 1, "case-insensitive name dedup -> replace, not add");
+assert.equal(presets[0].bundle.customPrompt, "b", "upsert replaces the bundle");
+presets = context.lccUpsertUserPreset(presets, "Other", { customPrompt: "c" });
+assert.equal(presets.length, 2);
+assert.equal(context.lccUpsertUserPreset(presets, "   ", {}).length, 2, "empty preset name is rejected");
+
+// find (case-insensitive) + apply (only shaping keys override)
+const found = context.lccFindUserPreset(presets, "OTHER");
+assert.ok(found && found.bundle.customPrompt === "c", "find is case-insensitive");
+assert.equal(context.lccFindUserPreset(presets, "nope"), null);
+const applied = context.lccApplyUserPreset({ customPrompt: "old", fontSize: 22 }, found);
+assert.equal(applied.customPrompt, "c", "apply overrides shaping keys");
+assert.equal(applied.fontSize, 22, "apply leaves non-bundle settings intact");
+
+// delete + normalize (drop invalid)
+presets = context.lccDeleteUserPreset(presets, "my tone");
+assert.equal(presets.length, 1);
+assert.equal(presets[0].name, "Other");
+assert.equal(context.lccNormalizeUserPresets([{ name: "", bundle: {} }, { bundle: {} }, null, "x"]).length, 0, "invalid presets dropped");
 
 const popupHtml = fs.readFileSync(path.join(root, "extension", "popup.html"), "utf8");
 const popupJs = fs.readFileSync(path.join(root, "extension", "popup.js"), "utf8");

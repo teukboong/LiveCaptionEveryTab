@@ -178,12 +178,11 @@ bash bridge/run_bridge.sh
 | `mid`  | gemma-4-E4B nano (mlx_vlm) | ~5.9GB | ~12GB |
 | `lite` | gemma-4-E2B nano (+ASR 0.6B) | ~4.3GB | ~10GB |
 
-티어를 **고정**하려면(매 실행 동일) `.env`에 한 줄:
+번역 모델을 **고정**하려면(매 실행 동일) `.env`에 한 줄 — 비우면 메모리에 맞춰 자동:
 
 ```bash
 # .env  (cp .env.example .env)
-LCC_LM_TIER=mid          # full | mid | lite
-# 또는 특정 모델 직접: LCC_LM_MODEL=mlx-community/gemma-4-26b-a4b-it-6bit
+LCC_LM_MODEL=gemma-e4b   # 큐레이션 id (gemma-26b | gemma-e4b | gemma-e2b) 또는 임의 HF repo
 ```
 
 미리 받아두려면(4번) 해당 티어 모델 id를 받으면 됨. 자동감지 임계값은 `.env.example`의 `LCC_LM_NEED_*`로 조정 가능.
