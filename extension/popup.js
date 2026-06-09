@@ -10,6 +10,14 @@ const BRIDGE_SETTING_KEYS = new Set(["targetLang", "asrEngine"]);
 const BRIDGE_RANGE_KEYS = new Set(["vadLevel", "sentSilenceMs"]);
 // 영상 종류 프리셋: 한 번 고르면 말투(register)+지연(latencyMode)을 콘텐츠에 맞춰 묶어 세팅 (개별 노출 X).
 const LCC_PRESETS = globalThis.LCC_CONTENT_PRESETS;
+// Model selection + user-preset state (declared up top so loadSettings(), which runs before the model
+// section, can call renderModelSelects/populateUserPresets without a temporal-dead-zone error).
+let modelStatus = { asr: [], lm: [] };   // from the host models_status: [{id,label,engine,repo,installed}]
+let userPresets = [];                     // saved named translation bundles (chrome.storage 'lcc-user-presets')
+let instPoll = null;
+let instPollBusy = false;
+const LM_AUTO = "";
+const MODEL_CUSTOM = "__custom__";
 const RANGES = { fontSize: "fontSize", bottomPct: "bottomPct", leftPct: "leftPct", delaySec: "delaySec",
                  sentSilenceMs: "sentSilenceMs", vadLevel: "vadLevel", syncOffsetMs: "syncOffsetMs" };
 const UI_TEXT = Object.freeze({
@@ -31,6 +39,27 @@ const UI_TEXT = Object.freeze({
     labelUiLang: "UI 언어",
     sectionInstall: "모델 설치 · 티어",
     installHint: "사양에 맞는 모델을 받아 번역 티어로 배선 (Apple Silicon). 안 눌러도 첫 실행 때 메모리에 맞춰 자동 선택됩니다.",
+    sectionModels: "모델",
+    labelLmModel: "번역 모델",
+    labelAsrModel: "전사 모델",
+    download: "다운로드",
+    customModelPlaceholder: "HF 모델 id 직접 입력",
+    modelAuto: "자동 (메모리 맞춤)",
+    modelCustom: "직접 입력…",
+    modelsHint: "자동=메모리에 맞춰 알아서. 안 받은 모델은 다운로드로 (Whisper는 받을 때 6bit 자동 양자화). 번역·전사 모델 변경은 다시 시작 시 적용.",
+    sectionPreset: "프리셋",
+    labelUserPreset: "내 프리셋",
+    userPresetHint: "advanced에서 저장한 번역 설정 묶음을 골라 적용 (말투·대상 언어·용어집·커스텀 프롬프트).",
+    userPresetNone: "(저장된 프리셋 없음)",
+    labelCustomPrompt: "커스텀 프롬프트",
+    customPromptPlaceholder: "번역 방식 직접 지시 (비우면 기본)",
+    customPromptHint: "번역 지시문의 서술부를 덮어씀. 출력 형식·용어집은 유지. 자막·페이지 둘 다 적용 · 다음 발화부터.",
+    presetNamePlaceholder: "프리셋 이름",
+    presetSave: "프리셋 저장",
+    presetDelete: "삭제",
+    presetSaveHint: "지금 번역 설정(말투·대상 언어·용어집·커스텀 프롬프트)을 이름 붙여 저장. simple의 '내 프리셋'에서 꺼내 씀.",
+    presetSaved: "'{name}' 저장됨",
+    presetNeedName: "프리셋 이름을 입력하세요",
     sectionTranscript: "자막 기록 · AI",
     summary: "요약",
     askPlaceholder: "이 영상에 질문…",
@@ -129,11 +158,11 @@ const UI_TEXT = Object.freeze({
     stopFailed: "종료 실패",
     downloadingDefault: "다운로드 중",
     installIdle: "설치 진행 없음 — 다시 선택하세요",
-    installComplete: "{tier} 설치 완료 — 브릿지 (재)시작 시 적용",
+    installComplete: "{model} 설치 완료 — 브릿지 (재)시작 시 적용",
     installFailed: "실패: {error} (~/.lcc-install.log 확인)",
     downloading: "{name}  ({index}/{total})",
-    installRequest: "{tier} 설치 요청…",
-    installed: "{tier} 설치됨",
+    installRequest: "{model} 설치 요청…",
+    installed: "{model} 설치됨",
   }),
   en: Object.freeze({
     modeSimple: "Simple",
@@ -153,6 +182,27 @@ const UI_TEXT = Object.freeze({
     labelUiLang: "UI language",
     sectionInstall: "Model install · tier",
     installHint: "Download and wire the translation tier for this Mac. If untouched, the first run auto-selects by memory.",
+    sectionModels: "Models",
+    labelLmModel: "Translation model",
+    labelAsrModel: "Speech model",
+    download: "Download",
+    customModelPlaceholder: "Enter an HF model id",
+    modelAuto: "Auto (fit memory)",
+    modelCustom: "Custom…",
+    modelsHint: "Auto fits the model to free memory. Download any model that isn't installed (Whisper is auto-quantized to 6bit on download). Model changes apply after a bridge restart.",
+    sectionPreset: "Presets",
+    labelUserPreset: "My presets",
+    userPresetHint: "Apply a translation bundle you saved in Advanced (tone, target language, glossary, custom prompt).",
+    userPresetNone: "(no saved presets)",
+    labelCustomPrompt: "Custom prompt",
+    customPromptPlaceholder: "Your own translation instructions (empty = default)",
+    customPromptHint: "Replaces the descriptive part of the translation prompt; output format and glossary are kept. Applies to captions + page, from the next utterance.",
+    presetNamePlaceholder: "Preset name",
+    presetSave: "Save preset",
+    presetDelete: "Delete",
+    presetSaveHint: "Save the current translation settings (tone, target language, glossary, custom prompt) under a name. Pick it from 'My presets' in Simple.",
+    presetSaved: "Saved '{name}'",
+    presetNeedName: "Enter a preset name",
     sectionTranscript: "Transcript · AI",
     summary: "Summary",
     askPlaceholder: "Ask about this video…",
@@ -251,11 +301,11 @@ const UI_TEXT = Object.freeze({
     stopFailed: "Stop failed",
     downloadingDefault: "Downloading",
     installIdle: "No install in progress — choose a tier again",
-    installComplete: "{tier} installed — applies after bridge restart",
+    installComplete: "{model} installed — applies after bridge restart",
     installFailed: "Failed: {error} (check ~/.lcc-install.log)",
     downloading: "{name}  ({index}/{total})",
-    installRequest: "{tier} install requested…",
-    installed: "{tier} installed",
+    installRequest: "{model} install requested…",
+    installed: "{model} installed",
   }),
 });
 
@@ -365,7 +415,7 @@ async function loadSettings() {
   document.getElementById("videoDelay").checked = settings.videoDelay;
   applyRunModeToggles();
   document.getElementById("targetLang").value = settings.targetLang;
-  document.getElementById("asrEngine").value = settings.asrEngine;
+  document.getElementById("customPrompt").value = settings.customPrompt || "";
   document.getElementById("contentType").value = settings.contentType;
   document.getElementById("latencyMode").value = settings.latencyMode;
   document.getElementById("register").value = settings.register;
@@ -382,6 +432,8 @@ async function loadSettings() {
   document.getElementById("pageGlossary").value = settings.pageGlossary;
   setMode(settings.uiMode || "simple");
   applyUiLanguage();
+  renderModelSelects();
+  populateUserPresets();
 }
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -449,11 +501,7 @@ document.getElementById("uiLang").addEventListener("change", (e) => {
   saveSettings();
   refreshBridge();
 });
-document.getElementById("asrEngine").addEventListener("change", (e) => {
-  settings.asrEngine = globalThis.lccCanonicalAsrEngine(e.target.value);
-  e.target.value = settings.asrEngine;
-  saveSettings(true);
-});
+// asrEngine is now a model-id dropdown; its change handler lives in the model section below (onAsrModelChange).
 document.getElementById("contentType").addEventListener("change", (e) => {
   settings.contentType = globalThis.lccCanonicalContentType(e.target.value);
   e.target.value = settings.contentType;
@@ -694,7 +742,8 @@ function pollBridgeUntilUp(maxSec) {
 }
 bridgeBtn.onclick = async () => {
   setBridgeUI("starting", tr("startRequested"));
-  const r = await nmSend({ cmd: "start", asrEngine: settings.asrEngine || "granite" });
+  const r = await nmSend({ cmd: "start", asrEngine: settings.asrEngine || "granite",
+                           asrRepo: settings.asrRepo || "", lmModel: settings.lmModel || "" });
   if (r.noHost) { setBridgeUI("nohost", tr("setupHost")); return; }
   if (!r.ok || r.blocked) { setBridgeUI("blocked", bridgeErrorText(r, tr("failurePrefix").trim())); return; }
   if (r.running) { setBridgeUI("on", tr("alreadyOn")); return; }
@@ -752,18 +801,53 @@ document.getElementById("pageRegister").addEventListener("change", (e) => {
 document.getElementById("pageContextHint").addEventListener("input", (e) => { settings.pageContextHint = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, false); });
 document.getElementById("pageGlossary").addEventListener("input", (e) => { settings.pageGlossary = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, false); });
 
-// ---- model install (full/mid/lite): native host spawns the downloader; poll progress ----
-const TIER_LABEL = { full: "Full", mid: "Mid", lite: "Lite" };
-let instPoll = null;
-let instPollBusy = false;
-function setInstStatus(text, color) {
-  const el = document.getElementById("instStatus");
-  el.textContent = text;
-  el.style.color = color || "#999";
+// ---- models: dropdowns populated from the host registry (models_status); per-model download ----
+function optEl(value, label) { const o = document.createElement("option"); o.value = value; o.textContent = label; return o; }
+function asrEntry(id) { return modelStatus.asr.find((m) => m.id === id) || null; }
+function lmEntry(id) { return modelStatus.lm.find((m) => m.id === id) || null; }
+function isInstalled(role, id) { const e = (role === "asr" ? asrEntry : lmEntry)(id); return !!(e && e.installed); }
+function lmSelectValue() {
+  const v = settings.lmModel || LM_AUTO;
+  if (v === LM_AUTO) return LM_AUTO;
+  return lmEntry(v) ? v : MODEL_CUSTOM;           // a custom repo (not a registry id) -> the custom option
 }
-function setInstBusy(busy) {
-  for (const id of ["instFull", "instMid", "instLite"]) document.getElementById(id).disabled = busy;
+function asrSelectValue() {
+  const v = settings.asrModelId || (modelStatus.asr[0] && modelStatus.asr[0].id) || "granite";
+  if (v === MODEL_CUSTOM) return MODEL_CUSTOM;
+  return asrEntry(v) ? v : ((modelStatus.asr[0] && modelStatus.asr[0].id) || MODEL_CUSTOM);
 }
+function renderModelSelects() {
+  const lmSel = document.getElementById("lmModel");
+  const asrSel = document.getElementById("asrEngine");
+  lmSel.innerHTML = "";
+  lmSel.appendChild(optEl(LM_AUTO, tr("modelAuto")));
+  for (const m of modelStatus.lm) lmSel.appendChild(optEl(m.id, m.label + (m.installed ? "" : "  ⬇")));
+  lmSel.appendChild(optEl(MODEL_CUSTOM, tr("modelCustom")));
+  lmSel.value = lmSelectValue();
+  asrSel.innerHTML = "";
+  for (const m of modelStatus.asr) asrSel.appendChild(optEl(m.id, m.label + (m.installed ? "" : "  ⬇")));
+  asrSel.appendChild(optEl(MODEL_CUSTOM, tr("modelCustom")));
+  asrSel.value = asrSelectValue();
+  const lmCustom = document.getElementById("lmModelCustom"), asrCustom = document.getElementById("asrEngineCustom");
+  lmCustom.hidden = lmSel.value !== MODEL_CUSTOM;
+  if (lmSel.value === MODEL_CUSTOM && !lmCustom.value) lmCustom.value = settings.lmModel || "";
+  asrCustom.hidden = asrSel.value !== MODEL_CUSTOM;
+  if (asrSel.value === MODEL_CUSTOM && !asrCustom.value) asrCustom.value = settings.asrRepo || "";
+  updateDownloadButtons();
+}
+function updateDownloadButtons() {
+  const lmId = document.getElementById("lmModel").value, asrId = document.getElementById("asrEngine").value;
+  document.getElementById("lmDownload").hidden = !(lmId && lmId !== LM_AUTO && lmId !== MODEL_CUSTOM && !isInstalled("lm", lmId));
+  document.getElementById("asrDownload").hidden = !(asrId && asrId !== MODEL_CUSTOM && !isInstalled("asr", asrId));
+}
+async function refreshModelStatus() {
+  try {
+    const r = await nmSend({ cmd: "models_status" });
+    if (r && r.ok && Array.isArray(r.lm) && Array.isArray(r.asr)) { modelStatus = { asr: r.asr, lm: r.lm }; renderModelSelects(); }
+  } catch (_) { /* host not installed yet — selects keep the Auto/custom options */ }
+}
+function setInstStatus(text, color) { const el = document.getElementById("instStatus"); el.textContent = text; el.style.color = color || "#999"; }
+function setInstBusy(busy) { for (const id of ["lmDownload", "asrDownload"]) { const b = document.getElementById(id); if (b) b.disabled = busy; } }
 function pollInstall() {
   if (instPoll) clearInterval(instPoll);
   instPollBusy = false;
@@ -786,7 +870,7 @@ function pollInstall() {
       }
       if (r.done) {
         clearInterval(instPoll); instPoll = null; setInstBusy(false);
-        if (r.ok) setInstStatus(tr("installComplete", { tier: TIER_LABEL[r.tier] || r.tier || "" }), "#16a34a");
+        if (r.ok) { setInstStatus(tr("installComplete", { model: r.model || "" }), "#16a34a"); refreshModelStatus(); }
         else setInstStatus(tr("installFailed", { error: r.error || "" }), "#dc2626");
         return;
       }
@@ -797,24 +881,98 @@ function pollInstall() {
     }
   }, 2000);
 }
-async function startInstall(tier) {
+async function startInstall(role, model) {
+  if (!model) return;
   setInstBusy(true);
-  setInstStatus(tr("installRequest", { tier: TIER_LABEL[tier] }), "#666");
-  const r = await nmSend({ cmd: "install", tier });
+  setInstStatus(tr("installRequest", { model }), "#666");
+  const r = await nmSend({ cmd: "install", role, model });
   if (r.noHost) { setInstBusy(false); setInstStatus(tr("setupHost"), "#dc2626"); return; }
   if (!r.ok) { setInstBusy(false); setInstStatus("" + (r.error || tr("failurePrefix").trim()), "#dc2626"); return; }
   pollInstall();
 }
-document.getElementById("instFull").onclick = () => startInstall("full");
-document.getElementById("instMid").onclick = () => startInstall("mid");
-document.getElementById("instLite").onclick = () => startInstall("lite");
-// reflect any in-progress / last install when the popup opens
+function onLmModelChange(val) {
+  const customInput = document.getElementById("lmModelCustom");
+  if (val === MODEL_CUSTOM) { customInput.hidden = false; settings.lmModel = customInput.value.trim(); }
+  else if (val === LM_AUTO) { customInput.hidden = true; settings.lmModel = ""; }
+  else { customInput.hidden = true; settings.lmModel = val; }       // registry id; server resolves it to a repo
+  saveSettings();                                                    // translation model = restart-applied
+  updateDownloadButtons();
+}
+function onAsrModelChange(val) {
+  const customInput = document.getElementById("asrEngineCustom");
+  if (val === MODEL_CUSTOM) {
+    customInput.hidden = false;
+    settings.asrModelId = MODEL_CUSTOM;
+    settings.asrRepo = customInput.value.trim();
+    settings.asrEngine = "whisper";                                  // custom ASR loads via the whisper (any-HF) path
+  } else {
+    customInput.hidden = true;
+    const e = asrEntry(val);
+    settings.asrModelId = val;
+    settings.asrEngine = (e && e.engine) || globalThis.lccCanonicalAsrEngine(val);
+    settings.asrRepo = (e && e.repo) || "";
+  }
+  saveSettings(true);                                                // engine switch is live; the repo applies on restart
+  updateDownloadButtons();
+}
+document.getElementById("lmModel").addEventListener("change", (e) => onLmModelChange(e.target.value));
+document.getElementById("asrEngine").addEventListener("change", (e) => onAsrModelChange(e.target.value));
+document.getElementById("lmModelCustom").addEventListener("input", (e) => { settings.lmModel = e.target.value.trim(); saveSettings(); updateDownloadButtons(); });
+document.getElementById("asrEngineCustom").addEventListener("input", (e) => { settings.asrRepo = e.target.value.trim(); settings.asrEngine = "whisper"; saveSettings(true); });
+document.getElementById("lmDownload").onclick = () => { const id = document.getElementById("lmModel").value; if (id && id !== LM_AUTO) startInstall("lm", id === MODEL_CUSTOM ? (settings.lmModel || "") : id); };
+document.getElementById("asrDownload").onclick = () => { const id = document.getElementById("asrEngine").value; if (id) startInstall("asr", id === MODEL_CUSTOM ? (settings.asrRepo || "") : id); };
+
+// ---- custom translation prompt (live, like glossary/hint) ----
+document.getElementById("customPrompt").addEventListener("input", (e) => { settings.customPrompt = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });
+
+// ---- user presets (named translation bundles): save in Advanced, pick from Simple ----
+function populateUserPresets() {
+  const sel = document.getElementById("userPreset");
+  userPresets = globalThis.lccNormalizeUserPresets(userPresets);
+  sel.innerHTML = "";
+  sel.appendChild(optEl("", userPresets.length ? "—" : tr("userPresetNone")));
+  for (const p of userPresets) sel.appendChild(optEl(p.name, p.name));
+}
+async function loadUserPresets() {
+  const r = await chrome.storage.local.get(globalThis.LCC_USER_PRESETS_KEY);
+  userPresets = globalThis.lccNormalizeUserPresets(r[globalThis.LCC_USER_PRESETS_KEY] || []);
+  populateUserPresets();
+}
+async function saveUserPresets() { await chrome.storage.local.set({ [globalThis.LCC_USER_PRESETS_KEY]: userPresets }); }
+document.getElementById("presetSave").onclick = async () => {
+  const name = (document.getElementById("presetName").value || "").trim();
+  if (!name) { setInstStatus(tr("presetNeedName"), "#dc2626"); return; }
+  userPresets = globalThis.lccUpsertUserPreset(userPresets, name, globalThis.lccUserPresetBundle(settings));
+  await saveUserPresets();
+  populateUserPresets();
+  document.getElementById("userPreset").value = globalThis.lccCanonicalPresetName(name);
+  setInstStatus(tr("presetSaved", { name }), "#16a34a");
+};
+document.getElementById("presetDelete").onclick = async () => {
+  const name = document.getElementById("userPreset").value;
+  if (!name) return;
+  userPresets = globalThis.lccDeleteUserPreset(userPresets, name);
+  await saveUserPresets();
+  populateUserPresets();
+};
+document.getElementById("userPreset").addEventListener("change", async (e) => {
+  const p = globalThis.lccFindUserPreset(userPresets, e.target.value);
+  if (!p) return;
+  settings = globalThis.lccNormalizeSettings(globalThis.lccApplyUserPreset(settings, p));
+  await saveSettings(true, true);
+  await loadSettings();                          // re-apply the bundle to every control
+  document.getElementById("presetName").value = p.name;
+});
+
+// reflect any in-progress / last install + load model status & presets when the popup opens
+refreshModelStatus();
+loadUserPresets();
 nmSend({ cmd: "install_status" }).then((r) => {
   if (!r || r.idle || r.noHost) return;
   if (!r.done) pollInstall();
   else {
     setInstBusy(false);
-    if (r.ok) setInstStatus(tr("installed", { tier: TIER_LABEL[r.tier] || r.tier || "" }), "#16a34a");
+    if (r.ok) setInstStatus(tr("installed", { model: r.model || "" }), "#16a34a");
     else setInstStatus(tr("installFailed", { error: r.error || "" }), "#dc2626");
   }
 });

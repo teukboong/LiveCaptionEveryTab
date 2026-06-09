@@ -350,6 +350,20 @@ MLXA_REPOS = {
     "qwen3":   os.environ.get("LCC_QWEN3_MODEL", ""),       # "" -> 1.7B (full/mid) or 0.6B (lite), set at warm
 }
 
+def _lm_select_value(m):
+    """The string the runtime loads for a registry entry: the served label on CUDA, else the HF repo."""
+    return m["served"] if (BACKEND == "cuda" and "served" in m) else m["repo"]
+
+
+def _resolve_lm_model(value):
+    """Map a curated registry id (e.g. 'gemma-26b') to its repo/served value; pass a raw repo through.
+    Lets the popup send a stable id as LCC_LM_MODEL without knowing the backend's repo vs served split."""
+    for m in lm_models():
+        if value == m["id"]:
+            return _lm_select_value(m)
+    return value
+
+
 def _finalize_model_config():
     """Resolve the translator (explicit LCC_LM_MODEL > memory-fit auto) and the ASR repo, once. Lazy
     (called at warm, NOT at import) so tests that `import server` never probe hardware. Idempotent.
@@ -359,9 +373,9 @@ def _finalize_model_config():
         return
     _LM_RESOLVED = True
     if not LM_MODEL:
-        m = _auto_lm_model()
-        LM_MODEL = m["served"] if (BACKEND == "cuda" and "served" in m) else m["repo"]
+        LM_MODEL = _lm_select_value(_auto_lm_model())
     else:
+        LM_MODEL = _resolve_lm_model(LM_MODEL)
         print(f"[bridge] model={LM_MODEL} (LCC_LM_MODEL)", flush=True)
     if not MLXA_REPOS["qwen3"]:
         MLXA_REPOS["qwen3"] = _ASR_QWEN3_DEFAULT

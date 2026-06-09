@@ -179,6 +179,11 @@ def _start_env(msg):
     lm = str((msg or {}).get("lmModel") or "").strip()
     if lm:                               # "" = Auto (server memory-fit); only pin when explicitly chosen (restart-applied)
         env["LCC_LM_MODEL"] = lm
+    asr_repo = str((msg or {}).get("asrRepo") or "").strip()
+    if asr_repo and asr == "qwen3":      # variant repo (0.6B vs 1.7B) / custom — pins the engine's model
+        env["LCC_QWEN3_MODEL"] = asr_repo
+    elif asr_repo and asr == "whisper":
+        env["LCC_WHISPER_MODEL"] = asr_repo
     return env
 
 
@@ -479,7 +484,7 @@ def do_models_status(msg=None):
     code = (
         "import json,sys; sys.path.insert(0, sys.argv[1]);"
         "import server as s, install_models as im; b=sys.argv[2];"
-        "f=lambda role, ms:[{'id':m['id'],'label':m['label'],'installed':bool(im.is_installed(role,m['id'],b))} for m in ms];"
+        "f=lambda role, ms:[{'id':m['id'],'label':m['label'],'engine':m.get('engine'),'repo':m.get('repo'),'installed':bool(im.is_installed(role,m['id'],b))} for m in ms];"
         "print(json.dumps({'asr':f('asr',s.asr_models(b)),'lm':f('lm',s.lm_models(b))}))"
     )
     try:

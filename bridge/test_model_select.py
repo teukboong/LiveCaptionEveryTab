@@ -71,7 +71,14 @@ s._LM_RESOLVED = False
 s.LM_MODEL = "my/custom-model"
 s.MLXA_REPOS["qwen3"] = ""
 s._finalize_model_config()
-ok("explicit LM_MODEL preserved", s.LM_MODEL == "my/custom-model")
+ok("explicit LM_MODEL (custom repo) preserved", s.LM_MODEL == "my/custom-model")
+
+# a curated registry id resolves to its repo (the popup may send a stable id as LCC_LM_MODEL)
+s._LM_RESOLVED = False
+s.LM_MODEL = "gemma-e4b"
+s.MLXA_REPOS["qwen3"] = ""
+s._finalize_model_config()
+ok("LCC_LM_MODEL id resolves to repo", s.LM_MODEL == "mlx-community/gemma-4-e4b-it-4bit")
 
 # --- custom translation prompt: replace descriptive, keep guards (INV-9 / INV-10 / INV-11) -------------
 base = s._tx_system("Korean", "casual", "", ())

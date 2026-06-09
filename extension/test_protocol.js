@@ -10,7 +10,7 @@ vm.runInNewContext(fs.readFileSync(path.join(__dirname, "protocol.js"), "utf8"),
 
 assert.ok(context.LCC_TARGET_LANGS.includes("Hindi"), "target list exposes Hindi");
 assert.equal(JSON.stringify(context.LCC_UI_LANGS.map((lang) => lang.value)), JSON.stringify(["ko", "en"]));
-assert.equal(JSON.stringify(context.LCC_ASR_ENGINES), JSON.stringify(["granite", "qwen3"]));
+assert.equal(JSON.stringify(context.LCC_ASR_ENGINES), JSON.stringify(["granite", "qwen3", "whisper"]));
 assert.equal(JSON.stringify(context.LCC_RUN_MODE_VALUES), JSON.stringify(["video", "page", "both"]));
 assert.equal(JSON.stringify(context.LCC_CONTENT_TYPES), JSON.stringify(["general", "conference", "news", "streaming"]));
 assert.equal(JSON.stringify(context.LCC_LATENCY_MODES), JSON.stringify(["stable", "balanced", "aggressive"]));

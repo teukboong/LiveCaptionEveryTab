@@ -61,7 +61,7 @@ const LCC_UI_LANGS = Object.freeze([
   Object.freeze({ value: "ko", label: "한국어" }),
   Object.freeze({ value: "en", label: "English" }),
 ]);
-const LCC_ASR_ENGINES = Object.freeze(["granite", "qwen3"]);
+const LCC_ASR_ENGINES = Object.freeze(["granite", "qwen3", "whisper"]);
 const LCC_LATENCY_MODES = Object.freeze(["stable", "balanced", "aggressive"]);
 const LCC_PAGE_TRANSLATE_STREAMS = Object.freeze(["partial", "final"]);
 const LCC_UI_MODES = Object.freeze(["simple", "advanced"]);
