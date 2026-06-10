@@ -357,23 +357,23 @@ def translate_page_long_once(text, recent_pairs=(), target: str = "Korean", hint
 # backend_cuda imports the shared prompt builders from THIS module lazily (at call time) — no import cycle.
 if model_runtime.BACKEND == "cuda":
     import backend_cuda
-    transcribe_pcm = backend_cuda.transcribe_pcm
-    translate_once = backend_cuda.translate_once
-    translate_page_batch_once = backend_cuda.translate_page_batch_once
-    run_ask = backend_cuda.run_ask
-    warm_mlx_selected = backend_cuda.warm_selected      # name kept for call-site compatibility; impl is an HTTP ping
-    _ensure_asr_loaded = backend_cuda.ensure_asr_loaded
+    transcribe_pcm, translate_once, translate_page_batch_once, run_ask = (
+        backend_cuda.transcribe_pcm, backend_cuda.translate_once,
+        backend_cuda.translate_page_batch_once, backend_cuda.run_ask)
+    warm_mlx_selected, _ensure_asr_loaded = backend_cuda.warm_selected, backend_cuda.ensure_asr_loaded  # warm = HTTP ping
     print(f"[bridge] backend=cuda  chat={backend_cuda.CHAT_URL}  asr={backend_cuda.ASR_URL}", flush=True)
 elif model_runtime.BACKEND == "fake":
     import backend_fake
-    transcribe_pcm = backend_fake.transcribe_pcm
-    translate_once = backend_fake.translate_once
-    translate_page_batch_once = backend_fake.translate_page_batch_once
-    run_ask = backend_fake.run_ask
-    warm_mlx_selected = backend_fake.warm_selected
-    _ensure_asr_loaded = backend_fake.ensure_asr_loaded
+    transcribe_pcm, translate_once, translate_page_batch_once, run_ask = (
+        backend_fake.transcribe_pcm, backend_fake.translate_once,
+        backend_fake.translate_page_batch_once, backend_fake.run_ask)
+    warm_mlx_selected, _ensure_asr_loaded = backend_fake.warm_selected, backend_fake.ensure_asr_loaded
     VADIterator = backend_fake.FakeVADIterator
     print("[bridge] backend=fake (test-only)", flush=True)
+elif os.environ.get("LCC_TX_BACKEND") == "cuda":
+    import backend_cuda  # EXPERIMENTAL tx-only hybrid: translate/ask via HTTP, ASR stays MLX (see bind_tx_only)
+    translate_once, translate_page_batch_once, run_ask, warm_mlx_selected = backend_cuda.bind_tx_only(warm_mlx_selected)
+    print(f"[bridge] tx-backend=cuda (translate/ask only; asr stays mlx)  chat={backend_cuda.CHAT_URL}", flush=True)
 # ------------------------------------------------------------------------------------------------------
 
 

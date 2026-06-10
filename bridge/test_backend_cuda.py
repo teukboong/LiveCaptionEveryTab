@@ -55,7 +55,16 @@ sse = [
 ]
 check("sse_deltas_content", list(bc._iter_sse_deltas(sse)) == ["안", "녕"])
 msg_only = [b'data: {"choices":[{"message":{"content":"full"}}]}', b'data: [DONE]']
-check("sse_message_fallback", list(bc._iter_sse_deltas(msg_only)) == ["full"])
+check("sse_message_fallback", list(bc._iter_sse_deltas(msg_only)) == [("__final__", "full")])
+# draft-streaming server (diffusion-gemma-http): deltas are a best-effort draft; the finish chunk's
+# message.content is the authoritative text and REPLACES the accumulation instead of appending.
+drafty = [
+    b'data: {"choices":[{"delta":{"content":"draft "}}]}',
+    b'data: {"choices":[{"delta":{},"finish_reason":"stop","message":{"content":"final text"}}]}',
+    b'data: [DONE]',
+]
+check("sse_final_replaces_draft",
+      bc._collect_stream(bc._iter_sse_deltas(drafty), clean=lambda s: s) == "final text")
 
 
 # --- _collect_stream: assembly + on_update cadence ----------------------------------------------------

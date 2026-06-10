@@ -98,10 +98,15 @@ def _iter_sse_deltas(lines):
         choices = obj.get("choices") or [{}]
         ch = choices[0] if choices else {}
         piece = (ch.get("delta") or {}).get("content")
-        if piece is None:                       # non-streaming servers may echo the whole text under message
-            piece = (ch.get("message") or {}).get("content")
         if piece:
             yield piece
+        # message.content outside a delta is the AUTHORITATIVE full text: non-streaming servers echo it
+        # as the only payload, and draft-streaming servers (diffusion-gemma-http) attach it to the finish
+        # chunk because a denoise step may flip text after a draft delta already went out. Either way it
+        # REPLACES the accumulation rather than appending to it.
+        final = (ch.get("message") or {}).get("content")
+        if final is not None:
+            yield ("__final__", final)
 
 
 def _collect_stream(deltas, on_update=None, stream_every: int = 4, clean=None) -> str:
@@ -110,6 +115,9 @@ def _collect_stream(deltas, on_update=None, stream_every: int = 4, clean=None) -
     clean = clean or (lambda s: (s or "").strip())
     out, since = [], 0
     for piece in deltas:
+        if isinstance(piece, tuple) and piece and piece[0] == "__final__":
+            out = [piece[1] or ""]              # authoritative full text: replace, never append
+            continue
         out.append(piece)
         since += 1
         if on_update is not None and since >= max(1, stream_every):
@@ -243,6 +251,19 @@ def run_ask(mode, transcript_text, question="", target="Korean", on_partial=None
     import server as _srv
     msgs, max_toks = _srv._ask_messages(mode, transcript_text, question, target)
     return _chat(msgs, max_toks, 4, on_partial)
+
+
+def bind_tx_only(warm_native):
+    """EXPERIMENTAL hybrid seam (LCC_TX_BACKEND=cuda): translation/ask go to CHAT_URL while ASR stays on
+    the native MLX path. The lm warm becomes an HTTP ping so the MLX 26B translator never loads — RAM
+    stays free for an external local server (e.g. llama.cpp diffusion-gemma-http on Metal). Returns
+    (translate_once, translate_page_batch_once, run_ask, warm) for server.py's seam to rebind."""
+    def warm(asr=False, lm=False, asr_engine=None):
+        if asr:
+            warm_native(asr=True, lm=False, asr_engine=asr_engine)
+        if lm:
+            warm_selected(asr=False, lm=True)
+    return translate_once, translate_page_batch_once, run_ask, warm
 
 
 def transcribe_pcm(pcm, hint="", asr_engine=None):
