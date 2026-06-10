@@ -15,6 +15,11 @@ Per completed sentence: Gemma-4-26B-A4B MoE -> natural Korean (Korean source ski
 mlx on a single dedicated worker thread (model_runtime._mlx_pool) — inline-in-loop hangs; set_default_device(gpu)
 restores the stream. (asyncio.to_thread's default pool could hop threads between calls.)
 """
+# S3 module map: server keeps websocket orchestration, Unit, backend seam rebinding, warm/startup adapters,
+# repeat-cache adapters, and translate_page_long_once; text_helpers owns pure text utilities; policy owns
+# scheduler/latency/number-guard policy; prompts owns prompt/message builders; page_markers owns DOM marker
+# parsing/streaming; term_memory owns term mining/merge helpers; model_runtime owns lazy model/runtime state;
+# asr owns MLX ASR and glossary repair; translator owns KV caches plus translate/ask leaf implementations.
 import asyncio, base64, json, collections, difflib, functools, os, re, time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -25,43 +30,40 @@ import policy
 import model_runtime
 import translator
 import asr
+import text_helpers
+import page_markers
+import prompts
+import term_memory
 from policy import (
-    SR, WINDOW_SAMPLES, WINDOW_BYTES, WINDOW_MS, SEG_SILENCE_MS, SENT_SILENCE_MS, SPEECH_PAD_MS,
-    PREROLL_WINDOWS, SOFT_MAX_SEC, HARD_MAX_SEC, MIN_SEC, SOFT_OVERLAP_MS, LA_ON, LA_STEP_WINDOWS,
-    TWO_PASS_MIN_SEC, TWO_PASS_MAX_SEC, PENDING_CAP, PENDING_MAX_AGE_MS, PREVIEW_DEBOUNCE_MS,
-    PREVIEW_MIN_CHARS, PREVIEW_MIN_DELTA, AGG_PENDING_CAP, BAL_PENDING_CAP, BAL_PENDING_MAX_AGE_MS,
-    PREVIEW_PROMOTE_SIMILARITY, LatencyProfile, _lat_profile, _lat_tx_stream_every_for,
-    _lat_preview_debounce_ms, _evs_step, _lat_pending_cap, _lat_pending_max_age_ms,
-    _lat_effective_sent_silence_ms, _commit_decision, _two_pass_eligible, _sig_numbers,
-    _ko_number_forms, _missing_numbers, _guard_numbers, _source_risk, InterpretDecision, decide_commit,
-    _preview_is_stale, _stream_visible_chars, _stream_partial_substantial, _stream_partial_should_emit,
+    SR, WINDOW_BYTES, WINDOW_MS, SEG_SILENCE_MS, SENT_SILENCE_MS, SPEECH_PAD_MS,
+    PREROLL_WINDOWS, HARD_MAX_SEC, MIN_SEC, SOFT_OVERLAP_MS, LA_ON, LA_STEP_WINDOWS,
+    TWO_PASS_MAX_SEC, PENDING_CAP, AGG_PENDING_CAP, BAL_PENDING_CAP,
+    PREVIEW_PROMOTE_SIMILARITY, _lat_profile, _evs_step, _lat_effective_sent_silence_ms,
+    _two_pass_eligible, _guard_numbers, _source_risk, decide_commit, _preview_is_stale,
+    _stream_partial_should_emit,
 )
 from text_helpers import (
-    PAGE_CHUNK_CHARS, SENT_END, MIN_SENT_CHARS, WEAK_TAIL_WORDS, TX_REPEAT_MAX_CHARS, _CLEAN_RE,
-    _KANA_RE, _LATIN_RE, _HANGUL_RE, _SENT_SPLIT_RE,
-    _has_hangul, _lcp_words, _coalesce_batch, _next_sentence_cut, _norm_word, _norm_words,
-    _short_suffix_duplicate, _append_text_dedupe, _dedupe_commit_overlap, _weak_tail,
-    _repeat_cache_eligible, _repeat_key, _clean, _src_lang, _gr_norm, _split_sentences, _chunk_text,
+    _lcp_words, _coalesce_batch, _next_sentence_cut, _norm_words,
+    _short_suffix_duplicate, _append_text_dedupe, _dedupe_commit_overlap,
+    _repeat_cache_eligible, _repeat_key, _clean, _src_lang, _gr_norm, _chunk_text,
 )
 from page_markers import (
-    PAGE_TX_BATCH_MIN_TOKENS, PAGE_TX_BATCH_MAX_TOKENS, PAGE_BLOCK_CONTEXT, PAGE_BLOCK_CTX_MAX,
-    PAGE_BLOCK_CTX_TOTAL, _PAGE_MARKER_RE, _page_marker_input, _page_batch_max_tokens,
-    _page_marker_matches, _page_marker_sequence_ok, _page_marker_map, PAGE_TX_PARTIAL_SOURCE_MAX_CHARS,
-    PAGE_TX_PARTIAL_MIN_DELTA_CHARS, PAGE_TX_PARTIAL_MIN_INTERVAL_S, _page_strip_incomplete_marker_tail,
-    _page_partial_should_emit, _emit_page_markers, _parse_page_batch_result, _page_block_context_preamble,
+    PAGE_BLOCK_CTX_MAX, _page_batch_max_tokens, PAGE_TX_PARTIAL_SOURCE_MAX_CHARS,
+    _page_partial_should_emit,
 )
 from prompts import (
-    TX_PROFILE, TX_FEWSHOT_MAX, PAGE_TX_FEWSHOT_MAX, TX_COMPACT_PROMPT, _TARGET_LANGS, _normalize_target_lang,
-    _translation_context_signature, _TX_FEWSHOT, _PAGE_TX_FEWSHOT, _REGISTER_TONE, _REGISTERS,
-    _fewshot, _parse_glossary, _glossary_clause, _FAST_REGISTER_TONE, _page_tx_system,
-    _write_tx_system, _tx_system, _translate_messages, _page_marker_system, _translate_page_batch_messages,
-    _ask_messages,
+    _normalize_target_lang, _translation_context_signature, _REGISTERS, _parse_glossary,
 )
 from term_memory import (
-    TERM_MEMORY_ON, TERM_MEMORY_MAX, TERM_MEMORY_MIN_COUNT, TERM_MEMORY_UPDATE_EVERY,
-    TERM_MEMORY_STATS_MAX, _TERM_STOPWORDS, _TERM_CAND_RE, _TERM_SENT_LEAD_RE,
-    _mine_terms, _update_term_memory, _merge_auto_glossary,
+    TERM_MEMORY_ON, TERM_MEMORY_MIN_COUNT, TERM_MEMORY_UPDATE_EVERY,
+    _update_term_memory, _merge_auto_glossary,
 )
+
+_TEXT_HELPERS_DYNAMIC_EXPORTS = {
+    "MIN_SENT_CHARS", "_append_text_dedupe", "_chunk_text", "_clean", "_dedupe_commit_overlap",
+    "_gr_norm", "_next_sentence_cut", "_repeat_cache_eligible", "_repeat_key",
+    "_short_suffix_duplicate", "_split_sentences", "_src_lang", "_weak_tail",
+}
 
 _POLICY_DYNAMIC_EXPORTS = {
     "EVS_ON", "EVS_ENTER_MS", "EVS_EXIT_MS", "EVS_CAP_DROP", "EVS_AGE_DROP", "NUMGUARD_ON",
@@ -69,7 +71,29 @@ _POLICY_DYNAMIC_EXPORTS = {
     "AGG_PENDING_MAX_AGE_MS", "AGG_PREVIEW_DEBOUNCE_MS", "BAL_PREVIEW_DEBOUNCE_MS",
     "SPEC_PREVIEW_MIN_CHARS", "SPEC_PREVIEW_MIN_DELTA", "SPEC_PREVIEW_COOLDOWN_MS",
     "TX_FINAL_STREAM_EVERY", "TX_FINAL_STREAM_MIN_CHARS", "TX_FINAL_STREAM_MIN_WORDS",
-    "TX_FINAL_STREAM_DELTA_CHARS",
+    "TX_FINAL_STREAM_DELTA_CHARS", "SR", "WINDOW_MS", "SOFT_MAX_SEC", "TWO_PASS_MIN_SEC",
+    "PENDING_CAP", "PENDING_MAX_AGE_MS", "PREVIEW_DEBOUNCE_MS", "AGG_PENDING_CAP",
+    "BAL_PENDING_CAP", "BAL_PENDING_MAX_AGE_MS", "PREVIEW_MIN_CHARS", "PREVIEW_MIN_DELTA",
+    "_commit_decision", "_two_pass_eligible", "_lat_profile", "_lat_tx_stream_every_for",
+    "_lat_preview_debounce_ms", "_lat_pending_cap", "_lat_pending_max_age_ms",
+    "_lat_effective_sent_silence_ms", "_evs_step", "_sig_numbers", "_ko_number_forms",
+    "_missing_numbers", "_guard_numbers", "_source_risk", "decide_commit", "InterpretDecision",
+    "_preview_is_stale", "_stream_visible_chars", "_stream_partial_substantial",
+    "_stream_partial_should_emit",
+}
+
+_PAGE_MARKERS_DYNAMIC_EXPORTS = {
+    "_emit_page_markers", "_page_batch_max_tokens", "_parse_page_batch_result",
+}
+
+_PROMPTS_DYNAMIC_EXPORTS = {
+    "_TARGET_LANGS", "_REGISTERS", "_ask_messages", "_fewshot", "_normalize_target_lang",
+    "_page_tx_system", "_translation_context_signature", "_translate_messages",
+    "_translate_page_batch_messages", "_tx_system",
+}
+
+_TERM_MEMORY_DYNAMIC_EXPORTS = {
+    "TERM_MEMORY_STATS_MAX", "_merge_auto_glossary", "_mine_terms", "_update_term_memory",
 }
 
 _MODEL_RUNTIME_DYNAMIC_EXPORTS = {
@@ -90,7 +114,7 @@ _MODEL_RUNTIME_DYNAMIC_EXPORTS = {
 }
 
 _ASR_DYNAMIC_EXPORTS = {
-    "GLOSSARY_REPAIR_ON", "ASR_MAX_TOKENS",
+    "GLOSSARY_REPAIR_ON", "ASR_MAX_TOKENS", "_repair_glossary_terms",
 }
 
 _TRANSLATOR_DYNAMIC_EXPORTS = {
@@ -104,8 +128,16 @@ _TRANSLATOR_DYNAMIC_EXPORTS = {
 
 
 def __getattr__(name):
+    if name in _TEXT_HELPERS_DYNAMIC_EXPORTS:
+        return getattr(text_helpers, name)
     if name in _POLICY_DYNAMIC_EXPORTS:
         return getattr(policy, name)
+    if name in _PAGE_MARKERS_DYNAMIC_EXPORTS:
+        return getattr(page_markers, name)
+    if name in _PROMPTS_DYNAMIC_EXPORTS:
+        return getattr(prompts, name)
+    if name in _TERM_MEMORY_DYNAMIC_EXPORTS:
+        return getattr(term_memory, name)
     if name in _MODEL_RUNTIME_DYNAMIC_EXPORTS:
         return getattr(model_runtime, name)
     if name in _ASR_DYNAMIC_EXPORTS:

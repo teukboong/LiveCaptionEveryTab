@@ -11,15 +11,45 @@ from __future__ import annotations
 import json
 import re
 import sys
+import ast
 from dataclasses import dataclass
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 EXT = ROOT / "extension"
+BRIDGE = ROOT / "bridge"
 LIVE_BRIDGE_TESTS = {
     "bridge/test_stream_wav.py",
     "bridge/test_target.py",
+}
+BRIDGE_SPLIT_MODULES = (
+    "text_helpers",
+    "policy",
+    "prompts",
+    "page_markers",
+    "term_memory",
+    "model_runtime",
+    "asr",
+    "translator",
+)
+BRIDGE_ALLOWED_IMPORTS = {
+    "text_helpers": set(),
+    "policy": {"text_helpers"},
+    "page_markers": {"policy", "text_helpers"},
+    "prompts": {"page_markers", "text_helpers"},
+    "term_memory": {"text_helpers"},
+    "model_runtime": set(),
+    "asr": {"model_runtime", "text_helpers"},
+    "translator": {"model_runtime", "text_helpers", "page_markers", "prompts"},
+}
+BRIDGE_SEAM_NAMES = {
+    "transcribe_pcm",
+    "translate_once",
+    "translate_page_batch_once",
+    "run_ask",
+    "warm_mlx_selected",
+    "_ensure_asr_loaded",
 }
 
 
@@ -202,12 +232,89 @@ def assert_check_sh_covers_default_tests() -> None:
         fail(f"check.sh must keep live websocket/model tests out of the fast default gate: {live_in_default!r}")
 
 
+def assert_bridge_split_rules() -> None:
+    assert_bridge_file_sizes()
+    for module_name in BRIDGE_SPLIT_MODULES:
+        path = BRIDGE / f"{module_name}.py"
+        text = read(path)
+        if re.search(r"(?m)^\s*(?:import\s+server\b|from\s+server\s+import\b)", text):
+            fail(f"{rel(path)} must not import server")
+        imports = bridge_module_imports(path, text)
+        disallowed = sorted((imports & set(BRIDGE_SPLIT_MODULES)) - BRIDGE_ALLOWED_IMPORTS[module_name])
+        if disallowed:
+            fail(f"{rel(path)} has disallowed bridge import(s): {disallowed!r}")
+        assert_no_bare_bridge_seam_calls(path, text)
+
+
+def assert_bridge_file_sizes() -> None:
+    server_path = BRIDGE / "server.py"
+    server_lines = read(server_path).splitlines()
+    if len(server_lines) > 1900:
+        fail(f"{rel(server_path)} has {len(server_lines)} lines; max is 1900")
+    for module_name in BRIDGE_SPLIT_MODULES:
+        path = BRIDGE / f"{module_name}.py"
+        lines = read(path).splitlines()
+        if len(lines) > 900:
+            fail(f"{rel(path)} has {len(lines)} lines; max is 900")
+
+
+def bridge_module_imports(path: Path, text: str) -> set[str]:
+    try:
+        tree = ast.parse(text, filename=str(path))
+    except SyntaxError as exc:
+        fail(f"{rel(path)} is not valid Python: {exc}")
+    imports: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.add(alias.name.split(".", 1)[0])
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.add(node.module.split(".", 1)[0])
+    return imports
+
+
+def assert_no_bare_bridge_seam_calls(path: Path, text: str) -> None:
+    try:
+        tree = ast.parse(text, filename=str(path))
+    except SyntaxError as exc:
+        fail(f"{rel(path)} is not valid Python: {exc}")
+
+    stack: list[str] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            stack.append(node.name)
+            self.generic_visit(node)
+            stack.pop()
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            stack.append(node.name)
+            self.generic_visit(node)
+            stack.pop()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if isinstance(node.func, ast.Name) and node.func.id in BRIDGE_SEAM_NAMES:
+                name = node.func.id
+                current = stack[-1] if stack else ""
+                translator_self_retry = (
+                    path.name == "translator.py"
+                    and name == current
+                    and name in {"translate_once", "translate_page_batch_once"}
+                )
+                if not translator_self_retry:
+                    fail(f"{rel(path)}:{node.lineno}: bare seam call is forbidden: {name}(")
+            self.generic_visit(node)
+
+    Visitor().visit(tree)
+
+
 def main() -> None:
     assert_file_rules()
+    assert_bridge_split_rules()
     assert_injected_content_order()
     assert_protocol_loads_first()
     assert_check_sh_covers_default_tests()
-    print("quality_gate: OK (extension boundaries and SSOT load order pass)")
+    print("quality_gate: OK (extension boundaries, bridge split rules, and SSOT load order pass)")
 
 
 if __name__ == "__main__":
