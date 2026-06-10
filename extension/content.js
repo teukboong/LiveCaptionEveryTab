@@ -677,6 +677,8 @@ function lccHandleBridgeMessage(msg) {
     lccPageTranslateDrop(msg);
   } else if (msg.type === "input_translate_result" || msg.type === "input_translate_err") {
     lccWbHandleResult(msg);
+  } else if (msg.type === "ocr_translate_result" || msg.type === "ocr_translate_err") {
+    lccOcrHandleResult(msg);
   } else if (msg.type === "page-translate-wsstate") {
     // The page-translate tab's own bridge-state signal (captions use "wsstate"). In-flight requests
     // self-heal via their retry timers on a drop; on reconnect, kick a scan so pending nodes resume
@@ -2323,5 +2325,139 @@ try {
       if (lccWbField !== e.target) lccWbShowFor(e.target);
       lccWbTrigger();
     }
+  }, true);
+} catch (_) {}
+
+// ---- image OCR translation: Alt+hover an image -> local Vision OCR -> translated overlay ----
+// Top frame only (captureVisibleTab coordinates are top-viewport); opt-in (pageOcr). The chip appears
+// while Alt is held over a big-enough <img>; clicking it captures the image's RENDERED pixels (works
+// for CORS/auth-gated images too), the bridge OCRs them on the Apple Neural Engine, and the lines come
+// back as positioned overlay boxes. Results cache per image element; click the overlay (or scroll) to
+// dismiss, re-trigger to show instantly.
+let lccOcrChip = null;
+let lccOcrImg = null;
+let lccOcrSeq = 0;
+let lccOcrOverlay = null;
+const lccOcrRequests = new Map();   // requestId -> { img, timer }
+const lccOcrCache = new WeakMap();  // img element -> blocks
+
+function lccOcrEnabled() {
+  return LCC_IS_TOP && lccPageTranslateOn && lccPageTranslateSettings.pageOcr === true;
+}
+function lccOcrEligible(el) {
+  if (!el || el.tagName !== "IMG" || !el.isConnected) return false;
+  const r = el.getBoundingClientRect();
+  return r.width >= 80 && r.height >= 50;
+}
+function lccOcrChipText(text) {
+  if (lccOcrChip) lccOcrChip.textContent = text;
+}
+function lccOcrChipHide() {
+  if (lccOcrChip) lccOcrChip.style.display = "none";
+  lccOcrImg = null;
+}
+function lccOcrEnsureChip() {
+  if (lccOcrChip && lccOcrChip.isConnected) return lccOcrChip;
+  const b = document.createElement("button");
+  b.id = "lcc-ocr-chip";
+  b.type = "button";
+  b.style.cssText = "position:fixed;z-index:2147483647;display:none;padding:3px 9px;border:0;border-radius:7px;" +
+    "background:rgba(30,30,36,.94);color:#fff;font:12px/1.4 system-ui,-apple-system,sans-serif;cursor:pointer;" +
+    "box-shadow:0 2px 10px rgba(0,0,0,.4);";
+  b.addEventListener("mousedown", (e) => e.preventDefault());
+  b.addEventListener("click", (e) => { if (e.isTrusted) lccOcrTrigger(); });
+  (document.body || document.documentElement).appendChild(b);
+  lccOcrChip = b;
+  return b;
+}
+function lccOcrShowChipFor(img) {
+  const b = lccOcrEnsureChip();
+  const r = img.getBoundingClientRect();
+  lccOcrImg = img;
+  b.textContent = "이미지 번역";
+  b.style.display = "block";
+  b.style.left = Math.max(4, r.left + 6) + "px";
+  b.style.top = Math.max(4, r.top + 6) + "px";
+}
+function lccOcrHideOverlay() {
+  if (lccOcrOverlay) { try { lccOcrOverlay.remove(); } catch (_) {} lccOcrOverlay = null; }
+}
+function lccOcrShowOverlay(img, blocks) {
+  lccOcrHideOverlay();
+  const r = img.getBoundingClientRect();
+  const ov = document.createElement("div");
+  ov.id = "lcc-ocr-overlay";
+  ov.title = "클릭해서 닫기";
+  ov.style.cssText = "position:fixed;z-index:2147483646;cursor:pointer;" +
+    `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;`;
+  for (const b of blocks) {
+    if (!b || !Array.isArray(b.box) || b.box.length < 4 || !b.target) continue;
+    const bh = b.box[3] * r.height;
+    const d = document.createElement("div");
+    d.textContent = b.target;
+    d.title = b.source || "";
+    d.style.cssText = "position:absolute;background:rgba(10,10,14,.82);color:#fff;border-radius:3px;" +
+      "padding:0 3px;line-height:1.2;white-space:pre-wrap;overflow:visible;" +
+      `left:${(b.box[0] * 100).toFixed(2)}%;top:${(b.box[1] * 100).toFixed(2)}%;` +
+      `min-width:${(b.box[2] * 100).toFixed(2)}%;` +
+      `font-size:${Math.max(10, Math.min(26, Math.round(bh * 0.72)))}px;`;
+    ov.appendChild(d);
+  }
+  ov.addEventListener("click", () => lccOcrHideOverlay());
+  (document.body || document.documentElement).appendChild(ov);
+  lccOcrOverlay = ov;
+}
+function lccOcrTrigger() {
+  const img = lccOcrImg;
+  if (!img || !lccOcrEnabled()) return;
+  const cached = lccOcrCache.get(img);
+  if (cached) { lccOcrShowOverlay(img, cached); lccOcrChipHide(); return; }
+  const r = img.getBoundingClientRect();
+  const x = Math.max(0, r.left);
+  const y = Math.max(0, r.top);
+  const w = Math.min(r.right, window.innerWidth || 0) - x;
+  const h = Math.min(r.bottom, window.innerHeight || 0) - y;
+  if (w < 40 || h < 30) { lccOcrChipText("이미지를 화면에 더 보이게 해주세요"); return; }
+  const requestId = "ocr" + LCC_PAGE_FRAME_TAG + "-" + (++lccOcrSeq);
+  const timer = setTimeout(() => { lccOcrRequests.delete(requestId); lccOcrChipText("OCR 시간 초과"); }, 30000);
+  lccOcrRequests.set(requestId, { img, timer });
+  lccOcrChipText("읽는 중…");
+  try {
+    chrome.runtime.sendMessage(
+      { type: "ocr-capture", requestId, rect: { x, y, w, h }, dpr: window.devicePixelRatio || 1 },
+      (res) => {
+        if (chrome.runtime.lastError || (res && res.ok === false)) {
+          clearTimeout(timer);
+          lccOcrRequests.delete(requestId);
+          lccOcrChipText("실패: " + ((res && res.error) || "캡처 권한 — 팝업에서 다시 시작"));
+        }
+      });
+  } catch (_) {
+    clearTimeout(timer);
+    lccOcrRequests.delete(requestId);
+  }
+}
+function lccOcrHandleResult(msg) {
+  const requestId = String(msg.request_id || "");
+  const req = lccOcrRequests.get(requestId);
+  if (!req) return;                              // another frame's request, or expired
+  clearTimeout(req.timer);
+  lccOcrRequests.delete(requestId);
+  if (msg.type === "ocr_translate_err") { lccOcrChipText("OCR 실패: " + (msg.text || "")); return; }
+  const blocks = Array.isArray(msg.blocks) ? msg.blocks : [];
+  if (!blocks.length) { lccOcrChipText("글자를 못 찾았어요"); return; }
+  lccOcrCache.set(req.img, blocks);
+  if (req.img.isConnected) lccOcrShowOverlay(req.img, blocks);
+  lccOcrChipHide();
+}
+try {
+  document.addEventListener("mouseover", (e) => {
+    if (!lccOcrEnabled()) return;
+    if (e.altKey && lccOcrEligible(e.target)) lccOcrShowChipFor(e.target);
+    else if (lccOcrImg && e.target !== lccOcrChip && !lccOcrRequests.size) lccOcrChipHide();
+  }, true);
+  window.addEventListener("scroll", () => { lccOcrChipHide(); lccOcrHideOverlay(); }, { passive: true, capture: true });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && lccOcrOverlay) lccOcrHideOverlay();
   }, true);
 } catch (_) {}

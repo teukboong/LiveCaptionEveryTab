@@ -42,6 +42,7 @@ const LCC_DEFAULT_SETTINGS = Object.freeze({
   termMemory: true,          // session term memory + per-domain persistence (auto-glossary)
   writeBack: true,           // input write-back: translate my draft into the page's language on demand
   diarize: false,            // speaker tagging lite (bridge; model auto-downloads on first enable)
+  pageOcr: false,            // image OCR translation (content-only; macOS bridge required)
   syncOffsetMs: 0,
   debugSync: false,
   uiMode: "simple",
@@ -206,6 +207,7 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   out.termMemory = lccCanonicalBoolean(out.termMemory, LCC_DEFAULT_SETTINGS.termMemory);
   out.writeBack = lccCanonicalBoolean(out.writeBack, LCC_DEFAULT_SETTINGS.writeBack);
   out.diarize = lccCanonicalBoolean(out.diarize, LCC_DEFAULT_SETTINGS.diarize);
+  out.pageOcr = lccCanonicalBoolean(out.pageOcr, LCC_DEFAULT_SETTINGS.pageOcr);
   out.customPrompt = lccCanonicalCustomPrompt(out.customPrompt);
   return out;
 };

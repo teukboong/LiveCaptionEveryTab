@@ -38,6 +38,7 @@ for test_file in \
   test_latency_profile.py \
   test_model_select.py \
   test_number_guard.py \
+  test_ocr_geometry.py \
   test_policy.py \
   test_scheduler_staleness.py \
   test_term_memory.py \

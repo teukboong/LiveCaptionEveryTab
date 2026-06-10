@@ -95,6 +95,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sendResponse({ ok: false, error: errorText(e) });
     }
   }
+  else if (msg.cmd === "ocr-crop") runOffscreenCommand(sendResponse, "OCR 캡처 처리 실패: ", () => ocrCropAndSend(msg));
   else if (msg.cmd === "dom-translate-batch") {
     try {
       queueOrSendDomBatch(msg);
@@ -164,6 +165,7 @@ function connectWS() {
           d.type === "dom_translate_done" || d.type === "dom_translate_busy" || d.type === "dom_translate_err" ||
           d.type === "answer_partial" || d.type === "answer" || d.type === "term_memory" ||
           d.type === "input_translate_result" || d.type === "input_translate_err" ||
+          d.type === "ocr_translate_result" || d.type === "ocr_translate_err" ||
           d.type === "err" || d.type === "notice") {   // surface bridge diagnostics (e.g. ASR switch failure) — content.js renders them
         sendBackgroundBestEffort({ route: "background", ...d }, d.type || "bridge-message");
       }
@@ -273,6 +275,44 @@ function flushBufferedPcm() {
     notice("브릿지 재연결됨 — 최근 오디오 이어서 전송");
   }
   droppedPcmMs = 0;
+}
+
+const OCR_B64_MAX = 230000;   // the bridge closes the WS above MAX_WS_MSG_BYTES — keep the JPEG well under
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result || "").split(",")[1] || "");
+    fr.onerror = () => reject(new Error("base64 인코딩 실패"));
+    fr.readAsDataURL(blob);
+  });
+}
+
+// Crop the visible-tab screenshot to the hovered image's rect, downscale/re-encode until the JPEG
+// fits the bridge's control-message budget, and ship it as {type:"ocr_translate"}.
+async function ocrCropAndSend(msg) {
+  if (!pageActive || !ws || ws.readyState !== WebSocket.OPEN || !wsConfigured) throw new Error("브릿지 연결이 없습니다");
+  const rect = msg.rect || {};
+  const dpr = Number(msg.dpr) || 1;
+  const bmp = await createImageBitmap(await (await fetch(String(msg.dataUrl || ""))).blob());
+  const sx = Math.max(0, Math.round(Number(rect.x) * dpr));
+  const sy = Math.max(0, Math.round(Number(rect.y) * dpr));
+  const sw = Math.min(bmp.width - sx, Math.round(Number(rect.w) * dpr));
+  const sh = Math.min(bmp.height - sy, Math.round(Number(rect.h) * dpr));
+  if (!(sw >= 8 && sh >= 8)) throw new Error("이미지 영역이 화면 밖이에요");
+  let scale = Math.min(1, 1024 / Math.max(sw, sh));
+  let b64 = "";
+  for (const quality of [0.85, 0.7, 0.55]) {
+    const cw = Math.max(8, Math.round(sw * scale));
+    const ch = Math.max(8, Math.round(sh * scale));
+    const canvas = new OffscreenCanvas(cw, ch);
+    canvas.getContext("2d").drawImage(bmp, sx, sy, sw, sh, 0, 0, cw, ch);
+    b64 = await blobToBase64(await canvas.convertToBlob({ type: "image/jpeg", quality }));
+    if (b64.length <= OCR_B64_MAX) break;
+    scale *= 0.8;                                  // too big -> shrink and try the next quality step
+  }
+  if (b64.length > OCR_B64_MAX) throw new Error("이미지가 너무 큽니다");
+  ws.send(JSON.stringify({ type: "ocr_translate", request_id: String(msg.requestId || ""), image_b64: b64 }));
 }
 
 async function startPage(pageContext, config) {

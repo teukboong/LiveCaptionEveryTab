@@ -111,6 +111,7 @@ const UI_TEXT = Object.freeze({
     pageBilingualInline: "원문 같이 보기 (긴 문단 아래 원문 표시)",
     pageVerify: "캐시 번역 idle 재확인",
     writeBack: "입력창 번역 버튼 (내 글 → 페이지 언어 · Alt+T)",
+    pageOcr: "이미지 번역 (Alt+이미지에 마우스 · macOS)",
     labelSyncOffset: "싱크 보정",
     debugSync: "싱크 디버그 표시",
     labelContextHint: "용어 힌트",
@@ -258,6 +259,7 @@ const UI_TEXT = Object.freeze({
     pageBilingualInline: "Keep original under long paragraphs",
     pageVerify: "Re-check cached labels when idle",
     writeBack: "Input translate button (my draft → page language · Alt+T)",
+    pageOcr: "Image translation (Alt+hover an image · macOS)",
     labelSyncOffset: "Sync offset",
     debugSync: "Show sync debug",
     labelContextHint: "Term hint",
@@ -434,6 +436,7 @@ async function loadSettings() {
   document.getElementById("pageBilingualInline").checked = settings.pageBilingualInline === true;
   document.getElementById("pageVerify").checked = settings.pageVerify === true;
   document.getElementById("writeBack").checked = settings.writeBack !== false;
+  document.getElementById("pageOcr").checked = settings.pageOcr === true;
   document.getElementById("termMemory").checked = settings.termMemory !== false;
   document.getElementById("diarize").checked = settings.diarize === true;
   document.getElementById("debugSync").checked = settings.debugSync;
@@ -802,6 +805,7 @@ document.getElementById("pageBilingual").addEventListener("change", (e) => { set
 document.getElementById("pageBilingualInline").addEventListener("change", (e) => { settings.pageBilingualInline = e.target.checked; saveSettings(true); });
 document.getElementById("pageVerify").addEventListener("change", (e) => { settings.pageVerify = e.target.checked; saveSettings(true); });
 document.getElementById("writeBack").addEventListener("change", (e) => { settings.writeBack = e.target.checked; saveSettings(true); });
+document.getElementById("pageOcr").addEventListener("change", (e) => { settings.pageOcr = e.target.checked; saveSettings(true); });
 document.getElementById("termMemory").addEventListener("change", (e) => { settings.termMemory = e.target.checked; saveSettings(true); });
 document.getElementById("diarize").addEventListener("change", (e) => { settings.diarize = e.target.checked; saveSettings(true); });
 document.getElementById("debugSync").addEventListener("change", (e) => { settings.debugSync = e.target.checked; saveSettings(); });

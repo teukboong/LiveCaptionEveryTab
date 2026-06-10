@@ -57,6 +57,8 @@ cuda-asr = [
 ]
 # Power-user low-latency English ASR on CPU (off the GPU). Optional; pinned per backend_parakeet.py.
 parakeet = ["sherpa-onnx==1.13.2"]
+# Image OCR translation (이미지 번역, macOS only): Apple Vision via pyobjc — runs on the ANE, no model download.
+ocr = ["pyobjc-framework-Vision; sys_platform == 'darwin'", "pyobjc-framework-Quartz; sys_platform == 'darwin'"]
 
 [project.urls]
 Homepage = "https://github.com/teukboong/LiveCaptionEveryTab"

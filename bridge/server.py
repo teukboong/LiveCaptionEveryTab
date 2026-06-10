@@ -15,7 +15,7 @@ Per completed sentence: Gemma-4-26B-A4B MoE -> natural Korean (Korean source ski
 mlx on a single dedicated worker thread (_mlx_pool) — inline-in-loop hangs; set_default_device(gpu)
 restores the stream. (asyncio.to_thread's default pool could hop threads between calls.)
 """
-import asyncio, json, collections, difflib, functools, os, re, time
+import asyncio, base64, json, collections, difflib, functools, os, re, time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import numpy as np
@@ -3567,6 +3567,63 @@ async def handle(ws):
                         except Exception as e:
                             print(f"[input-tx err] {e}", flush=True)
                             await send_json({"type": "input_translate_err", "request_id": request_id, "text": str(e)[:240]})
+                    elif d.get("type") == "ocr_translate":
+                        # Image OCR translation: the extension ships a cropped JPEG of a hovered image;
+                        # Apple Vision (ANE, CPU pool) reads the lines and they ride the page-translation
+                        # path (aux when resident, else main with a brief caption yield). macOS only.
+                        request_id = str(d.get("request_id", ""))[:100]
+                        img_b64 = str(d.get("image_b64", ""))
+                        if not request_id:
+                            continue
+                        if not img_b64 or len(img_b64) > 240_000:
+                            await send_json({"type": "ocr_translate_err", "request_id": request_id,
+                                             "text": "이미지가 없거나 너무 큽니다"})
+                            continue
+                        t0 = time.perf_counter()
+                        try:
+                            ocr_img = base64.b64decode(img_b64)
+
+                            def _ocr(_img=ocr_img):
+                                import ocr_mac
+                                return ocr_mac.recognize(_img)
+
+                            ocr_lines = await loop.run_in_executor(_sherpa_pool, _ocr)
+                            ocr_lines = [l for l in ocr_lines if re.search(r"[^\W\d_]", l["text"])]
+                        except Exception as e:
+                            print(f"[ocr err] {e}", flush=True)
+                            await send_json({"type": "ocr_translate_err", "request_id": request_id, "text": str(e)[:240]})
+                            continue
+                        if not ocr_lines:
+                            await send_json({"type": "ocr_translate_result", "request_id": request_id, "blocks": []})
+                            continue
+                        ocr_glossary = effective_page_glossary()
+                        ocr_hint = page_context_hint or context_hint
+                        use_aux_ocr = aux_lm_ready()
+                        if not use_aux_ocr:
+                            await wait_aux_translation_slot(1500)   # user-initiated: yield briefly, then proceed
+                        ocr_lock = _AUX_LM_DEVICE_LOCK if use_aux_ocr else mlx_lock
+                        ocr_pool = _aux_lm_pool if use_aux_ocr else _mlx_pool
+                        try:
+                            ocr_out = {}
+                            for chunk_at in range(0, len(ocr_lines), DOM_TX_MAX_ITEMS):   # marker batches stay small
+                                chunk = ocr_lines[chunk_at:chunk_at + DOM_TX_MAX_ITEMS]
+                                items = [{"id": str(chunk_at + i + 1), "text": l["text"]} for i, l in enumerate(chunk)]
+                                ocr_tx = functools.partial(
+                                    translate_page_batch_once, items, [],
+                                    target=target_lang, hint=ocr_hint, register=page_register,
+                                    glossary_pairs=list(ocr_glossary), custom=custom_prompt,
+                                    runtime=(_aux_runtime() if use_aux_ocr else None))
+                                async with ocr_lock:
+                                    ocr_out.update(await loop.run_in_executor(ocr_pool, ocr_tx))
+                            blocks = []
+                            for i, l in enumerate(ocr_lines):
+                                tgt = _clean(str(ocr_out.get(str(i + 1), "")))
+                                blocks.append({"box": l["box"], "source": l["text"], "target": tgt or l["text"]})
+                            await send_json({"type": "ocr_translate_result", "request_id": request_id, "blocks": blocks})
+                            print(f"[ocr {time.perf_counter()-t0:.1f}s] lines={len(blocks)} engine={'aux' if use_aux_ocr else 'main'}", flush=True)
+                        except Exception as e:
+                            print(f"[ocr tx err] {e}", flush=True)
+                            await send_json({"type": "ocr_translate_err", "request_id": request_id, "text": str(e)[:240]})
                     elif d.get("type") == "warm":          # on-demand model warm-up (popup button)
                         t0 = time.perf_counter()
                         if not await wait_aux_translation_slot(1200):
