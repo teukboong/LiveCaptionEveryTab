@@ -271,7 +271,17 @@ def bind_tx_only(warm_native):
             warm_native(asr=True, lm=False, asr_engine=asr_engine)
         if lm:
             warm_selected(asr=False, lm=True)
-    return translate_once, translate_page_batch_once, run_ask, warm
+
+    def tx(text, recent_pairs=(), target="Korean", hint="", register="casual", glossary_pairs=(),
+           on_update=None, kv_reuse=None, max_tokens=None, stream_every=None, profile="caption",
+           custom="", runtime=None):
+        # the diffusion server streams stable WORD-PREFIX deltas (a handful per line), not tokens —
+        # the MLX-tuned cadence (every 4 deltas) starves the overlay to 0-1 paints per caption and the
+        # screen looks dead while a 2-5s final denoises. Paint every delta instead.
+        return translate_once(text, recent_pairs, target, hint, register, glossary_pairs,
+                              on_update, kv_reuse, max_tokens, 1, profile, custom, runtime)
+
+    return tx, translate_page_batch_once, run_ask, warm
 
 
 def transcribe_pcm(pcm, hint="", asr_engine=None):
