@@ -22,6 +22,13 @@ import numpy as np
 import websockets
 from silero_vad import load_silero_vad, VADIterator
 from backend_parakeet import ParakeetAsr
+from text_helpers import (
+    PAGE_CHUNK_CHARS, SENT_END, MIN_SENT_CHARS, WEAK_TAIL_WORDS, TX_REPEAT_MAX_CHARS, _CLEAN_RE,
+    _KANA_RE, _LATIN_RE, _HANGUL_RE, _SENT_SPLIT_RE,
+    _has_hangul, _lcp_words, _coalesce_batch, _next_sentence_cut, _norm_word, _norm_words,
+    _short_suffix_duplicate, _append_text_dedupe, _dedupe_commit_overlap, _weak_tail,
+    _repeat_cache_eligible, _repeat_key, _clean, _src_lang, _split_sentences, _chunk_text,
+)
 
 # ASR engine taxonomy (single source of truth). Two families:
 #   - "sherpa": Parakeet — runs on sherpa-onnx on a dedicated CPU pool, OFF the MLX device, so it never
@@ -139,7 +146,6 @@ DOM_TX_MAX_ITEMS = int(os.environ.get("LCC_DOM_TX_MAX_ITEMS", "8"))
 DOM_TX_MAX_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_CHARS", "32000"))       # per-item sanity bound; long paragraphs are sentence-chunked (translate_page_long_once) + streamed, not truncated in practice
 DOM_TX_MAX_TOTAL_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_TOTAL_CHARS", "36000"))   # whole-batch ceiling (one long item + short ones)
 PAGE_LONG_CHARS = max(200, int(os.environ.get("LCC_PAGE_LONG_CHARS", "600")))   # items longer than this take the sentence-chunked, context-preserving path
-PAGE_CHUNK_CHARS = max(200, int(os.environ.get("LCC_PAGE_CHUNK_CHARS", "500"))) # target size per chunk in that path
 PAGE_TX_BATCH_MIN_TOKENS = max(64, int(os.environ.get("LCC_PAGE_TX_BATCH_MIN_TOKENS", "128")))
 PAGE_TX_BATCH_MAX_TOKENS = max(PAGE_TX_BATCH_MIN_TOKENS, int(os.environ.get("LCC_PAGE_TX_BATCH_MAX_TOKENS", "1536")))
 PAGE_BLOCK_CONTEXT = os.environ.get("LCC_PAGE_BLOCK_CONTEXT", "1") != "0"   # use the client's surrounding-block text as reference context
@@ -467,18 +473,6 @@ PREVIEW_MIN_CHARS = 18
 PREVIEW_MIN_DELTA = 12
 TRANSLATION_CACHE_MAX = 128
 VAD_THRESH = {0: 0.3, 1: 0.4, 2: 0.5, 3: 0.65}   # vadLevel -> Silero speech-probability threshold
-SENT_END = re.compile(r"[.!?。！？…][\"'»」』）)]?")   # candidate sentence boundary
-MIN_SENT_CHARS = 18        # a split shorter than this is likely an abbreviation (Dr./Mr.), not a sentence
-WEAK_TAIL_WORDS = {
-    "and", "or", "but", "so", "because", "that", "which", "who", "to", "of", "in", "for",
-    "with", "as", "at", "from", "by", "if", "when", "while", "than", "then",
-    "i", "we", "you", "they", "he", "she", "it", "a", "an", "the",
-    "am", "is", "are", "was", "were", "be", "being", "been",
-    "will", "would", "can", "could", "should", "may", "might", "must",
-    "do", "does", "did", "have", "has", "had",
-}
-
-
 ASR_MAX_TOKENS = max(32, int(os.environ.get("LCC_ASR_MAX_TOKENS", "64")))   # per-segment generation cap (granite/qwen3)
 
 # Models load lazily via load_models() (called from __main__) so the pure prompt-building helpers
@@ -850,105 +844,6 @@ def _origin_allowed(origin: str | None) -> bool:
     return origin in extra
 
 
-def _has_hangul(s: str) -> bool:
-    return any("가" <= c <= "힣" for c in s)
-
-
-def _lcp_words(a, b):
-    """Longest common word-prefix length (LocalAgreement n=2)."""
-    n = 0
-    for x, y in zip(a, b):
-        if x == y:
-            n += 1
-        else:
-            break
-    return n
-
-
-def _coalesce_batch(batch):
-    """LA partials are UX-only. Drop them when finalizable work (clause/flush/eos) is queued,
-    otherwise keep only the latest — so stale partials never delay the real ASR/translation."""
-    if any(x[0] in ("clause", "flush", "eos") for x in batch):
-        return [x for x in batch if x[0] != "partial"]
-    latest, out = None, []
-    for x in batch:
-        if x[0] == "partial":
-            latest = x
-        else:
-            out.append(x)
-    if latest is not None:
-        out.append(latest)
-    return out
-
-
-def _next_sentence_cut(text: str) -> int:
-    """Index to split off the first COMPLETE sentence, or -1. Skips false boundaries: decimals (5.0)
-    and short fragments ending in a dotted abbreviation (Dr./Mr.) via a minimum-length guard."""
-    for m in SENT_END.finditer(text):
-        i, j = m.start(), m.end()
-        if text[i] == "." and i > 0 and text[i - 1].isdigit() and j < len(text) and text[j].isdigit():
-            continue                                   # decimal point, not a sentence end
-        if len(text[:j].strip()) >= MIN_SENT_CHARS:
-            return j
-    return -1
-
-
-def _norm_word(w: str) -> str:
-    return re.sub(r"^[^\w가-힣]+|[^\w가-힣]+$", "", w.lower())
-
-
-def _norm_words(text: str):
-    return [w for w in (_norm_word(x) for x in (text or "").split()) if w]
-
-
-def _short_suffix_duplicate(new: str, prev: str) -> bool:
-    nw, pw = _norm_words(new), _norm_words(prev)
-    return bool(nw and pw and len(nw) <= 4 and len(pw) > len(nw) and pw[-len(nw):] == nw)
-
-
-def _append_text_dedupe(prev: str, new: str) -> str:
-    prev, new = prev.strip(), new.strip()
-    if not prev:
-        return new
-    if not new:
-        return prev
-    if new.lower() in prev.lower():
-        return prev
-    pw, nw = prev.split(), new.split()
-    max_k = min(14, len(pw), len(nw))
-    for k in range(max_k, 0, -1):
-        if [_norm_word(w) for w in pw[-k:]] == [_norm_word(w) for w in nw[:k]]:
-            tail = " ".join(nw[k:]).strip()
-            return prev if not tail else f"{prev} {tail}"
-    return f"{prev} {new}"
-
-
-def _dedupe_commit_overlap(text: str, tail_words, overlapped: bool) -> str:
-    """When a sentence just committed and the next clause's audio OVERLAPPED it (soft/VAD overlap), drop the
-    leading words of `text` that duplicate the committed sentence's tail (tail_words = its last normalized
-    words). The overlap guard is load-bearing: across a REAL pause a repeat is legitimate ("…it. It is…"), so
-    strip only when the audio actually overlapped. _append_text_dedupe handles this WITHIN a unit; this covers
-    the cross-commit case the sentence split opens. Tested in test_assembler_decisions.py."""
-    if not overlapped or not tail_words or not text:
-        return text
-    nw = text.split()
-    tail = list(tail_words)
-    for k in range(min(len(tail), len(nw), 3), 0, -1):
-        if [_norm_word(w) for w in nw[:k]] == tail[-k:]:
-            return " ".join(nw[k:]).strip()
-    return text
-
-
-def _weak_tail(text: str) -> bool:
-    s = text.strip()
-    if not s:
-        return False
-    if s[-1] in ",;:、，-":
-        return True
-    words = s.split()
-    return bool(words and _norm_word(words[-1]) in WEAK_TAIL_WORDS)
-
-
 def _caption_read_ms(text: str) -> int:
     return max(1300, min(7000, len(text or "") * 75))
 
@@ -960,21 +855,7 @@ def _caption_read_ms(text: str) -> int:
 # their rendering doesn't meaningfully depend on conversation context, so reusing it is safe and instant.
 # Longer lines stay context-keyed only. Cleared with the other caches on any translation-context change.
 TX_REPEAT_CACHE_ON = os.environ.get("LCC_TX_REPEAT_CACHE", "1") == "1"
-TX_REPEAT_MAX_CHARS = max(10, int(os.environ.get("LCC_TX_REPEAT_MAX_CHARS", "60")))
 TX_REPEAT_CACHE_MAX = 256
-
-
-def _repeat_cache_eligible(source: str) -> bool:
-    """True for short lines that read as complete on their own: anything tiny, or up to
-    TX_REPEAT_MAX_CHARS when it ends on terminal punctuation. Tested in test_text_helpers.py."""
-    s = (source or "").strip()
-    if not s or len(s) > TX_REPEAT_MAX_CHARS:
-        return False
-    return len(s) <= 30 or bool(SENT_END.fullmatch(s[-2:]) or SENT_END.fullmatch(s[-1:]))
-
-
-def _repeat_key(source: str) -> str:
-    return " ".join(_norm_words(source))
 
 
 def _commit_decision(text, eos_now, finalize_now, age_ms, pending_cap, pending_max_age_ms):
@@ -1368,11 +1249,6 @@ def transcribe_pcm(pcm: bytes, hint: str = "", asr_engine=None):
     return text
 
 
-_CLEAN_RE = re.compile(r"<\|?channel\|?>.*?<\|?channel\|?>", re.S)
-def _clean(s: str) -> str:
-    return _CLEAN_RE.sub("", s).strip()
-
-
 # Register-aware, source-language-aware style anchors (few-shot). Content type changes the right
 # tone (a gaming stream vs a conference talk vs a newscast), so each register carries its own anchors;
 # and EN->KO vs JA->KO want different example sources, so anchors are keyed by detected source language
@@ -1505,25 +1381,6 @@ _REGISTER_TONE = {
     },
 }
 _REGISTERS = ("casual", "lecture", "news", "chat")
-
-_KANA_RE = re.compile(r"[぀-ヿ]")        # hiragana + katakana -> Japanese source
-_LATIN_RE = re.compile(r"[A-Za-z]")
-_HANGUL_RE = re.compile(r"[가-힣]")
-def _src_lang(text: str) -> str:
-    # Ratio-based, not "any hangul -> Korean": an English line with a Korean name (e.g.
-    # "I talked to 민준 about the demo") must NOT be treated as Korean (would skip translation).
-    h = len(_HANGUL_RE.findall(text or ""))
-    k = len(_KANA_RE.findall(text or ""))
-    lat = len(_LATIN_RE.findall(text or ""))
-    letters = h + k + lat
-    if letters <= 0:
-        return "English"
-    if h >= 4 and h / letters >= 0.45:
-        return "Korean"
-    if k >= 2 and k / letters >= 0.30:
-        return "Japanese"
-    return "English"
-
 
 def _fewshot(target: str, register: str, src_lang: str, profile: str = "caption"):
     if profile == "write":
@@ -2216,32 +2073,6 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
 # truncation; translating each sentence in isolation loses pronouns, terminology, and flow. So we sentence-
 # chunk it and translate the chunks SEQUENTIALLY, feeding each chunk the paragraph's already-translated
 # chunks as recent_pairs — the model keeps terms/discourse consistent within the paragraph — then join.
-_SENT_SPLIT_RE = re.compile(r"(?<=[.!?。！？…])\s+|\n[ \t]*\n")
-
-
-def _split_sentences(text: str):
-    return [p.strip() for p in _SENT_SPLIT_RE.split(str(text or "").strip()) if p and p.strip()]
-
-
-def _chunk_text(text: str, max_chars: int = None):
-    """Group sentences into <= max_chars chunks without splitting a sentence (a lone over-long sentence is
-    hard-split as a last resort). Returns the chunks in order."""
-    max_chars = max_chars or PAGE_CHUNK_CHARS
-    chunks, cur = [], ""
-    for s in _split_sentences(text):
-        if not cur:
-            cur = s
-        elif len(cur) + 1 + len(s) <= max_chars:
-            cur += " " + s
-        else:
-            chunks.append(cur); cur = s
-        while len(cur) > max_chars * 2:                 # a single giant sentence -> hard split (rare)
-            chunks.append(cur[:max_chars]); cur = cur[max_chars:].strip()
-    if cur:
-        chunks.append(cur)
-    return chunks or [str(text or "").strip()]
-
-
 def translate_page_long_once(text, recent_pairs=(), target: str = "Korean", hint: str = "",
                              register: str = "casual", glossary_pairs=(), on_progress=None, custom: str = ""):
     """Translate a long DOM paragraph by sentence-chunking and translating chunks sequentially, each
