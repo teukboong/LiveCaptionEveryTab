@@ -168,6 +168,7 @@ assert.equal(context.lccNormalizeUserPresets([{ name: "", bundle: {} }, { bundle
 const popupHtml = fs.readFileSync(path.join(root, "extension", "popup.html"), "utf8");
 const popupJs = fs.readFileSync(path.join(root, "extension", "popup.js"), "utf8");
 const contentJs = fs.readFileSync(path.join(root, "extension", "content.js"), "utf8");
+const pageTranslatorJs = fs.readFileSync(path.join(root, "extension", "page-translator.js"), "utf8");
 const backgroundJs = fs.readFileSync(path.join(root, "extension", "background.js"), "utf8");
 const offscreenJs = fs.readFileSync(path.join(root, "extension", "offscreen.js"), "utf8");
 assert.match(popupHtml, /<select id="targetLang"><\/select>/, "popup target select is populated from protocol.js");
@@ -240,90 +241,90 @@ assert.match(
   "content glossary reports live config push failures",
 );
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /function lccPageBatchRouteFailed\(requestId, reason\) \{[\s\S]*lccPageWarnBatchRouteFailure\(requestId, reason\);[\s\S]*if \(lccPageVerifyRequests\.has\(requestId\)\) \{ lccPageVerifyDone\(requestId\); return; \}[\s\S]*lccPageTranslateRetry\(\{ request_id: requestId, retry_ms: 500 \}\);[\s\S]*\}/,
   "content page batch ack failures use the existing retry/done paths",
 );
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /function lccPageSendBatch\(requestId, items, verify\) \{[\s\S]*chrome\.runtime\.sendMessage\(\{ type: "page-translate-batch", requestId, items, verify: verify === true \}\)[\s\S]*res\.ok === false \|\| res\.routed === false[\s\S]*lccPageBatchRouteFailed\(requestId, res\)[\s\S]*\.catch\(\(e\) => lccPageBatchRouteFailed\(requestId, e\)\)[\s\S]*catch \(e\) \{[\s\S]*lccPageBatchRouteFailed\(requestId, e\);[\s\S]*\}/,
   "content page batch sender consumes routing acknowledgements",
 );
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /function lccPageWarnBatchRouteFailure\(requestId, reason\) \{[\s\S]*console\.warn\("\[lcc\] page batch routing failed:", requestId, lccPageRouteFailureReason\(reason\)\);[\s\S]*\}/,
   "content page batch sender keeps route failure reasons observable",
 );
 // ---- semantic block batching (Policy A: anchor-collapse) -----------------------------------------------
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /function lccPageBlockUnitFor\(node\) \{[\s\S]*el\.querySelector\(LCC_PAGE_NESTED_BLOCK_SELECTOR\)\) return null;[\s\S]*el\.querySelector\(LCC_PAGE_OPAQUE_SELECTOR\)\) return null;[\s\S]*if \(members\.length < 2\) return null;/,
   "block units are leaf text blocks only — nested blocks, interactive/identifier nodes, and single fragments fall through to the per-node path",
 );
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /if \(LCC_PAGE_BLOCK_UNIT\) \{[\s\S]*const unit = lccPageBlockUnitFor\(node\);[\s\S]*if \(unit\) return lccPageQueueBlockUnit\(unit\);/,
   "lccPageQueueNode routes eligible nodes through the block-unit path",
 );
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /function lccPageApplyBlockTarget\(members, anchor, source, target\) \{[\s\S]*m\.nodeValue !== st\.expectedFull\) continue;[\s\S]*m === anchor[\s\S]*m\.nodeValue = target;[\s\S]*st\.emptied = true;[\s\S]*m\.nodeValue = "";/,
   "block collapse applies the whole-block translation to the anchor and blanks the rest, only when each node still holds its recorded source",
 );
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /if \(work && work\.block\) \{ lccPageApplyBlockResult\(key, work, source, target, msg\.engine\); return; \}/,
   "page result handler routes block-unit results to the collapse path",
 );
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /function lccPageTranslatePartial\(msg\) \{[\s\S]*if \(!work \|\| work\.block\) return;[\s\S]*block units are final-only/,
   "block units never paint speculative partials (final-only collapse)",
 );
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /const isEmptied = state\.emptied && node\.nodeValue === "";[\s\S]*if \(isFinal \|\| isPartial \|\| isEmptied\) node\.nodeValue = state\.originalFull/,
   "restore reverts fragments that were collapsed into a block anchor",
 );
 // ---- semantic block batching (Policy R: placeholder-preserving inline translation) -------------------
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /function lccPageBlockUnitForR\(node\) \{[\s\S]*if \(st0 && st0\.blockOptOut\) return null;[\s\S]*el\.querySelectorAll\(LCC_PAGE_OPAQUE_SELECTOR\)[\s\S]*if \(!opaque \|\| !opaque\.length\) return null;[\s\S]*serial \+= " " \+ lccPagePh\(phCount\) \+ " ";/,
   "Policy R needs a preserved (link/button/code) node and serializes it as an inline ⟦n⟧ placeholder; opted-out blocks stay per-node",
 );
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /const unitR = lccPageBlockUnitForR\(node\);[\s\S]*if \(unitR\) return lccPageQueueBlockUnitR\(unitR\);/,
   "lccPageQueueNode falls through Policy A to Policy R before the per-node path",
 );
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /function lccPageMapPhSegments\(text, phCount\) \{[\s\S]*if \(Number\(m\[1\]\) !== seen \+ 1\) return null;[\s\S]*if \(seen !== phCount\) return null;/,
   "placeholder mapping requires the strict ascending 1..phCount sequence (misorder/missing/dup → reject)",
 );
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /function lccPageApplyBlockResultR\(key, work, target\) \{[\s\S]*if \(!segTexts \|\| segTexts\.length !== segs\.length\) \{[\s\S]*lccPageBlockOptOutAndRequeue\(work\);/,
   "a corrupted-placeholder Policy R result opts the block out and re-queues per-node",
 );
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /function lccPageBlockOptOutAndRequeue\(work\) \{[\s\S]*st\.blockOptOut = true;[\s\S]*lccPageScheduleScan\(0\);/,
   "opt-out marks members so block paths skip them, then re-scans for the per-node path",
 );
 // ---- long paragraphs: server-chunked, length-scaled timeout + incremental streaming -------------------
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /const timeoutMs = Math\.min\(180000, 30000 \+ Math\.floor\(maxLen \/ 500\) \* 2000\);/,
   "page batch timeout scales with item length so a long server-chunked paragraph isn't declared timed-out mid-translation",
 );
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /const reqRec = lccPageTranslateRequests\.get\(requestId\);[\s\S]*reqRec\.timer = setTimeout\([\s\S]*reqRec\.timeoutMs/,
   "a streaming partial re-arms the request timeout (long paragraph stays alive while chunks arrive)",
 );
 assert.match(
-  contentJs,
+  pageTranslatorJs,
   /if \(target\.length > LCC_PAGE_PARTIAL_MAX_CHARS && \(srcLen \|\| 0\) <= LCC_PAGE_PARTIAL_MAX_CHARS\) return false;/,
   "short nodes never get a huge speculative paint, but a long (server-chunked) node may stream its growing translation",
 );

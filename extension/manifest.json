@@ -10,7 +10,7 @@
   "content_scripts": [
     {
       "matches": ["*://*/*"],
-      "js": ["protocol.js", "pcm.js", "page-seed.js", "caption-overlay.js", "caption-scheduler.js", "content.js", "delay.js"],
+      "js": ["protocol.js", "pcm.js", "page-seed.js", "caption-overlay.js", "caption-scheduler.js", "page-translator.js", "content.js", "delay.js"],
       "css": ["content.css"],
       "run_at": "document_idle",
       "all_frames": true

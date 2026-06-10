@@ -185,7 +185,7 @@ def assert_brace_depth(path: Path, lines: list[str], max_depth: int) -> None:
 def assert_injected_content_order() -> None:
     manifest = json.loads(read(EXT / "manifest.json"))
     scripts = manifest["content_scripts"][0]["js"]
-    expected = ["protocol.js", "pcm.js", "page-seed.js", "caption-overlay.js", "caption-scheduler.js", "content.js", "delay.js"]
+    expected = ["protocol.js", "pcm.js", "page-seed.js", "caption-overlay.js", "caption-scheduler.js", "page-translator.js", "content.js", "delay.js"]
     if scripts != expected:
         fail(f"manifest content script order must be {expected!r}; got {scripts!r}")
 
