@@ -4,6 +4,7 @@ import os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mlx.core as mx
 import server
+import translator
 from mlx_lm.models.cache import make_prompt_cache
 from collections import Counter, deque
 mx.set_default_device(mx.gpu)
@@ -41,16 +42,16 @@ def plen_of(txt, win, reg):
     msgs.append({"role": "user", "content": txt})
     return len(server.lm_tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False))
 
-print("warm..."); server._TX_KVREUSE = True; server._reset_tx_cache()
+print("warm..."); translator._TX_KVREUSE = True; server._reset_tx_cache()
 server.translate_once("warm up please", register="lecture")
 
-server._TX_KVREUSE = False; server._reset_tx_cache()
+translator._TX_KVREUSE = False; server._reset_tx_cache()
 rec = deque(maxlen=5); off, windows = [], []
 for txt, reg in STEPS:
     windows.append(list(rec)); ko = server.translate_once(txt, list(rec), target="Korean", register=reg)
     off.append(ko); rec.append((txt[:160], ko[:160]))
 
-server._TX_KVREUSE = True; server._reset_tx_cache()
+translator._TX_KVREUSE = True; server._reset_tx_cache()
 on, inv_fail, skipped = [], [], []
 for i, (txt, reg) in enumerate(STEPS):
     plen = plen_of(txt, windows[i], reg)

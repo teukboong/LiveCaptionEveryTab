@@ -5,14 +5,15 @@ import os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mlx.core as mx
 import server
+import translator
 mx.set_default_device(mx.gpu)
 print("loading lm...", flush=True)
 server.load_models(asr=False, lm=True, vad=False)
 
 # shrink generation cap so the window boundary is easy to straddle with moderate prompts
-server._TX_GEN_MAX = 24
-server._TX_WINDOW_MARGIN = 8
-server._TX_KVREUSE = True; server._reset_tx_cache(); server._TX_KV_WINDOW = None
+translator._TX_GEN_MAX = 24
+translator._TX_WINDOW_MARGIN = 8
+translator._TX_KVREUSE = True; server._reset_tx_cache(); translator._TX_KV_WINDOW = None
 server.translate_once("warm", register="lecture")        # learns window + compiles
 WIN = server._TX_KV_WINDOW
 THRESH = min(server._TX_KV_MAX, WIN) - server._TX_GEN_MAX - server._TX_WINDOW_MARGIN
@@ -55,11 +56,11 @@ STEPS = [
 def norm(s): return " ".join((s or "").split())
 
 # OFF
-server._TX_KVREUSE = False; server._reset_tx_cache()
+translator._TX_KVREUSE = False; server._reset_tx_cache()
 off = [server.translate_once(t, [], target="Korean", register=r) for t, r in STEPS]
 
 # ON
-server._TX_KVREUSE = True; server._reset_tx_cache()
+translator._TX_KVREUSE = True; server._reset_tx_cache()
 on, inv_fail, info = [], [], []
 for i, (t, r) in enumerate(STEPS):
     pl = plen_of(t, r); reuse = (pl <= THRESH)

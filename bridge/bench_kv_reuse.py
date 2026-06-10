@@ -8,6 +8,7 @@ import os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mlx.core as mx
 import server
+import translator
 mx.set_default_device(mx.gpu)
 print("loading lm...", flush=True)
 server.load_models(asr=False, lm=True, vad=False)
@@ -32,13 +33,13 @@ STEPS = [
 REGRESSION = {4, 5, 6, 7, 8}
 def norm(s): return " ".join((s or "").split())
 
-print("warm..."); server._TX_KVREUSE = True; server._reset_tx_cache()
+print("warm..."); translator._TX_KVREUSE = True; server._reset_tx_cache()
 server.translate_once("warm up please", register="lecture")
 
 from collections import deque
 
 # pass 1: OFF (fresh cache) — record output + the recent_pairs window used at each step
-server._TX_KVREUSE = False; server._reset_tx_cache()
+translator._TX_KVREUSE = False; server._reset_tx_cache()
 rec = deque(maxlen=5); off, windows, t_off = [], [], []
 for txt, reg, tgt in STEPS:
     win = list(rec)
@@ -50,7 +51,7 @@ for txt, reg, tgt in STEPS:
     rec.append((txt[:160], ko[:160]))
 
 # pass 2: ON (KV reuse) — feed the SAME windows so prompts are identical; check invariant each call
-server._TX_KVREUSE = True; server._reset_tx_cache()
+translator._TX_KVREUSE = True; server._reset_tx_cache()
 on, t_on, inv_fail = [], [], []
 for i, (txt, reg, tgt) in enumerate(STEPS):
     t0 = time.perf_counter()

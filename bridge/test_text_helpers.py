@@ -12,6 +12,7 @@ test_import_stubs.install()
 
 import server as s
 import model_runtime as rt
+import translator as tx
 from pathlib import Path
 import json
 import re
@@ -203,12 +204,12 @@ _orig = {
     "trim_prompt_cache": rt.trim_prompt_cache,
     "can_trim_prompt_cache": rt.can_trim_prompt_cache,
     "_LM_IS_VLM": rt._LM_IS_VLM,
-    "_TX_KV_WINDOW": s._TX_KV_WINDOW,
-    "_PAGE_TX_KVREUSE": s._PAGE_TX_KVREUSE,
-    "_tx_cache": s._tx_cache,
-    "_tx_cache_ids": s._tx_cache_ids,
-    "_page_tx_cache": s._page_tx_cache,
-    "_page_tx_cache_ids": s._page_tx_cache_ids,
+    "_TX_KV_WINDOW": tx._TX_KV_WINDOW,
+    "_PAGE_TX_KVREUSE": tx._PAGE_TX_KVREUSE,
+    "_tx_cache": tx._tx_cache,
+    "_tx_cache_ids": tx._tx_cache_ids,
+    "_page_tx_cache": tx._page_tx_cache,
+    "_page_tx_cache_ids": tx._page_tx_cache_ids,
 }
 
 class KVCache:
@@ -253,9 +254,9 @@ try:
     rt.trim_prompt_cache = _fake_trim_prompt_cache
     rt.can_trim_prompt_cache = lambda _cache: True
     rt._LM_IS_VLM = False
-    s._TX_KV_WINDOW = None
-    s._PAGE_TX_KVREUSE = True
-    s._tx_cache = object()
+    tx._TX_KV_WINDOW = None
+    tx._PAGE_TX_KVREUSE = True
+    tx._tx_cache = object()
     tx_cache_sentinel = s._tx_cache
 
     for text in ("Share", "Log in"):
@@ -277,12 +278,12 @@ finally:
     rt.trim_prompt_cache = _orig["trim_prompt_cache"]
     rt.can_trim_prompt_cache = _orig["can_trim_prompt_cache"]
     rt._LM_IS_VLM = _orig["_LM_IS_VLM"]
-    s._TX_KV_WINDOW = _orig["_TX_KV_WINDOW"]
-    s._PAGE_TX_KVREUSE = _orig["_PAGE_TX_KVREUSE"]
-    s._tx_cache = _orig["_tx_cache"]
-    s._tx_cache_ids = _orig["_tx_cache_ids"]
-    s._page_tx_cache = _orig["_page_tx_cache"]
-    s._page_tx_cache_ids = _orig["_page_tx_cache_ids"]
+    tx._TX_KV_WINDOW = _orig["_TX_KV_WINDOW"]
+    tx._PAGE_TX_KVREUSE = _orig["_PAGE_TX_KVREUSE"]
+    tx._tx_cache = _orig["_tx_cache"]
+    tx._tx_cache_ids = _orig["_tx_cache_ids"]
+    tx._page_tx_cache = _orig["_page_tx_cache"]
+    tx._page_tx_cache_ids = _orig["_page_tx_cache_ids"]
 
 # --- _clean: strip channel tags + whitespace ---
 check("clean.trim", s._clean("  hi  "), "hi")
