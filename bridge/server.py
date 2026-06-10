@@ -3111,7 +3111,7 @@ async def handle(ws):
                             unit.rev += 1
                         unit.add_clause_audio(audio, _soft)          # bounded audio for optional 2-pass at commit
                         unit.end_ms = max(unit.end_ms, int(end_ms))
-                        if diarize_enabled and len(audio) > len(unit.spk_pcm):
+                        if (diarize_enabled or diarize_loading) and len(audio) > len(unit.spk_pcm):
                             unit.spk_pcm = audio        # embedding fallback for impure/overlong units
                     else:
                         nospeech_count += 1

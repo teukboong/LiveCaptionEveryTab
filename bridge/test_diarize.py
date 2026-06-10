@@ -106,6 +106,16 @@ ok("third_pending", c.add([-1.0, 0.0]) is None)
 check("third_label", c.add([-0.999, 0.05]), 3)
 check("labels_stable", sorted(c.speakers), [1, 2, 3])
 
+# --- server fallback-audio preservation predicate (F-07) ---
+def should_preserve_spk_pcm(diarize_enabled, diarize_loading, audio_len, current_len):
+    return (diarize_enabled or diarize_loading) and audio_len > current_len
+
+
+ok("preserve_when_enabled", should_preserve_spk_pcm(True, False, 200, 100))
+ok("preserve_when_loading", should_preserve_spk_pcm(False, True, 200, 100))
+ok("skip_when_disabled_and_not_loading", not should_preserve_spk_pcm(False, False, 200, 100))
+ok("skip_when_not_longer", not should_preserve_spk_pcm(True, False, 100, 200))
+
 if fails:
     print("test_diarize: FAIL")
     for f in fails:
