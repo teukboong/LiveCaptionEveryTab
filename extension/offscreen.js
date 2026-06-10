@@ -83,6 +83,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     }
   }
   else if (msg.cmd === "pcm") { if (relayMode && msg.pcm && msg.pcm.length) queueOrSendPcm(Int16Array.from(msg.pcm)); }   // video-mode PCM from delay.js
+  else if (msg.cmd === "input-translate") {
+    try {
+      if (pageActive && ws && ws.readyState === WebSocket.OPEN && wsConfigured) {
+        ws.send(JSON.stringify({ type: "input_translate", request_id: String(msg.requestId || ""), text: String(msg.text || ""), target_lang: String(msg.targetLang || "") }));
+        sendResponse({ ok: true });
+      } else {
+        sendResponse({ ok: false, error: "브릿지 연결이 없습니다" });
+      }
+    } catch (e) {
+      sendResponse({ ok: false, error: errorText(e) });
+    }
+  }
   else if (msg.cmd === "dom-translate-batch") {
     try {
       queueOrSendDomBatch(msg);
@@ -151,6 +163,7 @@ function connectWS() {
           d.type === "dom_translate_result" || d.type === "dom_translate_partial" ||
           d.type === "dom_translate_done" || d.type === "dom_translate_busy" || d.type === "dom_translate_err" ||
           d.type === "answer_partial" || d.type === "answer" || d.type === "term_memory" ||
+          d.type === "input_translate_result" || d.type === "input_translate_err" ||
           d.type === "err" || d.type === "notice") {   // surface bridge diagnostics (e.g. ASR switch failure) — content.js renders them
         sendBackgroundBestEffort({ route: "background", ...d }, d.type || "bridge-message");
       }

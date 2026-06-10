@@ -40,6 +40,7 @@ const LCC_DEFAULT_SETTINGS = Object.freeze({
   pageBilingualInline: false,   // inline ghost: original kept visibly under translated prose blocks
   pageVerify: false,
   termMemory: true,          // session term memory + per-domain persistence (auto-glossary)
+  writeBack: true,           // input write-back: translate my draft into the page's language on demand
   syncOffsetMs: 0,
   debugSync: false,
   uiMode: "simple",
@@ -151,6 +152,22 @@ globalThis.lccCanonicalCustomPrompt = function lccCanonicalCustomPrompt(value) {
 globalThis.lccBridgeHello = function lccBridgeHello(ws) {
   ws.send(JSON.stringify({ type: "hello", token: globalThis.LCC_WS_TOKEN }));
 };
+// ISO 639-1 (primary subtag) -> our canonical target-language names, for write-back direction detection
+// from <html lang>. Pure data; unknown/empty codes return "".
+const LCC_LANG_CODE_NAMES = Object.freeze({
+  ko: "Korean", en: "English", ja: "Japanese", zh: "Chinese", es: "Spanish", fr: "French", de: "German",
+  pt: "Portuguese", it: "Italian", ru: "Russian", nl: "Dutch", pl: "Polish", tr: "Turkish",
+  vi: "Vietnamese", th: "Thai", id: "Indonesian", ar: "Arabic", hi: "Hindi", bn: "Bengali",
+  uk: "Ukrainian", cs: "Czech", el: "Greek", he: "Hebrew", iw: "Hebrew", ro: "Romanian", hu: "Hungarian",
+  sv: "Swedish", da: "Danish", no: "Norwegian", nb: "Norwegian", nn: "Norwegian", fi: "Finnish",
+  fil: "Filipino", tl: "Filipino", ms: "Malay", ta: "Tamil", te: "Telugu", ur: "Urdu", fa: "Persian",
+  sw: "Swahili", ca: "Catalan", hr: "Croatian", sk: "Slovak", bg: "Bulgarian", sr: "Serbian",
+  lt: "Lithuanian", sl: "Slovenian", et: "Estonian", lv: "Latvian",
+});
+globalThis.lccLangNameFromCode = function lccLangNameFromCode(code) {
+  const primary = String(code || "").trim().toLowerCase().split(/[-_]/)[0];
+  return LCC_LANG_CODE_NAMES[primary] || "";
+};
 globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   const raw = settings || {};
   const out = { ...LCC_DEFAULT_SETTINGS, ...raw };
@@ -186,6 +203,7 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   out.pageBilingualInline = lccCanonicalBoolean(out.pageBilingualInline, LCC_DEFAULT_SETTINGS.pageBilingualInline);
   out.pageVerify = lccCanonicalBoolean(out.pageVerify, LCC_DEFAULT_SETTINGS.pageVerify);
   out.termMemory = lccCanonicalBoolean(out.termMemory, LCC_DEFAULT_SETTINGS.termMemory);
+  out.writeBack = lccCanonicalBoolean(out.writeBack, LCC_DEFAULT_SETTINGS.writeBack);
   out.customPrompt = lccCanonicalCustomPrompt(out.customPrompt);
   return out;
 };

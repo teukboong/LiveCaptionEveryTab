@@ -36,8 +36,9 @@ RULES = (
     FileRule(
         EXT / "protocol.js",
         # SSOT pure-data layer; grew to own the named user-translation-preset model (canonicalize/upsert/
-        # apply/find) alongside settings. The real guardrail is the forbidden-IO list below, not raw size.
-        max_lines=320,
+        # apply/find) alongside settings, then the term-memory/write-back settings + the ISO 639-1 ->
+        # target-language-name map. The real guardrail is the forbidden-IO list below, not raw size.
+        max_lines=360,
         max_function_lines=70,
         max_brace_depth=5,
         forbidden=(

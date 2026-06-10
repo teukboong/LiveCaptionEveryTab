@@ -1515,6 +1515,8 @@ def _src_lang(text: str) -> str:
 
 
 def _fewshot(target: str, register: str, src_lang: str, profile: str = "caption"):
+    if profile == "write":
+        return []                # write-back: the caption anchors point the wrong direction (they're X->target_caption)
     if profile == "page":
         by_src = _PAGE_TX_FEWSHOT.get(target, {})
         return by_src.get(src_lang) or by_src.get("English") or []
@@ -1594,6 +1596,18 @@ def _page_tx_system(target: str, hint: str = "", glossary_pairs=(), custom: str 
     return s + f"Output ONLY the {target} replacement text, nothing else."
 
 
+def _write_tx_system(target: str, glossary_pairs=()) -> str:
+    # Write-back (입력창 역번역): the user composed a draft in THEIR language and wants it posted in the
+    # page's language. This is authoring, not captioning — render the message as the user would have
+    # written it natively, never as a visibly-translated text.
+    s = (f"Rewrite the user's draft message in natural, native {target}, exactly as they would have "
+         f"written it in {target} themselves. Keep the meaning, tone, politeness level, line breaks, "
+         "emoji, @mentions, #tags, URLs, and code unchanged. Do not add greetings, sign-offs, "
+         "explanations, or anything not in the draft. ")
+    s += _glossary_clause(glossary_pairs)
+    return s + f"Output ONLY the {target} text, nothing else."
+
+
 def _tx_system(target: str, register: str = "casual", hint: str = "", glossary_pairs=(),
                profile: str = "caption", custom: str = "") -> str:
     # custom (when set) REPLACES the descriptive instruction + register tone (per "서술부만 교체"), but the
@@ -1601,6 +1615,8 @@ def _tx_system(target: str, register: str = "casual", hint: str = "", glossary_p
     # (INV-10). Empty custom => byte-identical to the previous prompt (INV-11 / backward-compat).
     if profile == "page":
         return _page_tx_system(target, hint, glossary_pairs, custom)
+    if profile == "write":
+        return _write_tx_system(target, glossary_pairs)
     custom = (custom or "").strip()
     if TX_COMPACT_PROMPT:
         if custom:
@@ -3476,6 +3492,33 @@ async def handle(ws):
                                         "item_id": item["id"], "source": source, "text": str(e)[:240],
                                     })
                         await send_json({"type": "dom_translate_done", "request_id": request_id, "count": sent[0]})
+                    elif d.get("type") == "input_translate":
+                        # Write-back: translate the user's DRAFT (their language) into the page's language for
+                        # posting. One-shot + user-initiated + published-by-the-user, so it always renders on
+                        # the MAIN model (quality layer) — it yields briefly to caption backlog, then proceeds.
+                        request_id = str(d.get("request_id", ""))[:100]
+                        wb_text = str(d.get("text", ""))[:4000].strip()
+                        wb_target = _normalize_target_lang(d.get("target_lang"), "English")
+                        if not request_id:
+                            continue
+                        if not wb_text:
+                            await send_json({"type": "input_translate_err", "request_id": request_id, "text": "empty draft"})
+                            continue
+                        await wait_aux_translation_slot(1500)   # best-effort yield; user is waiting -> proceed regardless
+                        t0 = time.perf_counter()
+                        try:
+                            write_tx = functools.partial(
+                                translate_once, wb_text, [], target=wb_target, hint="", register="chat",
+                                glossary_pairs=effective_glossary(), kv_reuse=False, profile="write",
+                                max_tokens=min(2048, max(96, len(wb_text))), custom="")
+                            async with mlx_lock:
+                                wb_out = await loop.run_in_executor(_mlx_pool, write_tx)
+                            await send_json({"type": "input_translate_result", "request_id": request_id,
+                                             "source": wb_text, "text": wb_out})
+                            print(f"[input-tx {time.perf_counter()-t0:.1f}s] {len(wb_text)}c -> {wb_target}", flush=True)
+                        except Exception as e:
+                            print(f"[input-tx err] {e}", flush=True)
+                            await send_json({"type": "input_translate_err", "request_id": request_id, "text": str(e)[:240]})
                     elif d.get("type") == "warm":          # on-demand model warm-up (popup button)
                         t0 = time.perf_counter()
                         if not await wait_aux_translation_slot(1200):

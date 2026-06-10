@@ -657,6 +657,8 @@ function lccHandleBridgeMessage(msg) {
     lccPageTranslateRetry(msg);
   } else if (msg.type === "dom_translate_err") {
     lccPageTranslateDrop(msg);
+  } else if (msg.type === "input_translate_result" || msg.type === "input_translate_err") {
+    lccWbHandleResult(msg);
   } else if (msg.type === "page-translate-wsstate") {
     // The page-translate tab's own bridge-state signal (captions use "wsstate"). In-flight requests
     // self-heal via their retry timers on a drop; on reconnect, kick a scan so pending nodes resume
@@ -2147,3 +2149,161 @@ function pushTranscript(source, ko) {
   if (lccTranscript.length > 1000) lccTranscript.shift();
   if (lccStoreTimer == null) lccStoreTimer = setTimeout(lccFlushTranscript, 1000);   // trailing debounce; in-memory copy stays live for Alt+R
 }
+
+// ---- write-back input translation: my draft -> the page's language, on demand only ----
+// While page translation is on, focusing a text field shows a small "⇄" chip; clicking it (or Alt+T)
+// sends the draft to the bridge's MAIN translator and replaces the field text with the rendering. Never
+// automatic, never on page-synthesized events (isTrusted gates), and one-click revert for ~6s. The page
+// language comes from <html lang> (unknown -> English); when it equals the user's target language the
+// chip never appears (nothing to write back toward).
+let lccWbBtn = null;
+let lccWbField = null;
+let lccWbSeq = 0;
+const lccWbRequests = new Map();   // requestId -> { el, prev, timer }
+const LCC_WB_MAX_CHARS = 4000;
+const LCC_WB_REVERT_MS = 6000;
+
+function lccWbEnabled() {
+  return lccPageTranslateOn && lccPageTranslateSettings.writeBack !== false;
+}
+function lccWbPageLang() {
+  const fromDoc = globalThis.lccLangNameFromCode(document.documentElement.lang || "");
+  return fromDoc || "English";
+}
+function lccWbFieldEligible(el) {
+  if (!el || !el.tagName) return false;
+  if (el.isContentEditable === true) return true;
+  if (el.tagName === "TEXTAREA") return !el.readOnly && !el.disabled;
+  if (el.tagName !== "INPUT") return false;
+  const type = (el.type || "text").toLowerCase();
+  return (type === "text" || type === "search") && !el.readOnly && !el.disabled;
+}
+function lccWbFieldText(el) {
+  return el.isContentEditable === true ? (el.innerText || "") : String(el.value || "");
+}
+function lccWbApply(el, text) {
+  if (!el || !el.isConnected) return false;
+  if (el.isContentEditable === true) {
+    try {
+      el.focus();
+      document.execCommand("selectAll", false, null);
+      document.execCommand("insertText", false, text);   // keeps the page's undo stack usable
+      return true;
+    } catch (_) { return false; }
+  }
+  el.value = text;
+  try { el.dispatchEvent(new Event("input", { bubbles: true })); } catch (_) {}   // frameworks watch 'input'
+  return true;
+}
+function lccWbEnsureBtn() {
+  if (lccWbBtn && lccWbBtn.isConnected) return lccWbBtn;
+  const b = document.createElement("button");
+  b.id = "lcc-writeback";
+  b.type = "button";
+  b.style.cssText = "position:fixed;z-index:2147483647;display:none;padding:3px 9px;border:0;border-radius:7px;" +
+    "background:rgba(30,30,36,.94);color:#fff;font:12px/1.4 system-ui,-apple-system,sans-serif;cursor:pointer;" +
+    "box-shadow:0 2px 10px rgba(0,0,0,.4);";
+  // mousedown steals focus from the field, which would hide the chip before click lands -> prevent it
+  b.addEventListener("mousedown", (e) => e.preventDefault());
+  b.addEventListener("click", (e) => { if (e.isTrusted) lccWbTrigger(); });
+  (document.body || document.documentElement).appendChild(b);
+  lccWbBtn = b;
+  return b;
+}
+function lccWbHide() {
+  if (lccWbBtn) lccWbBtn.style.display = "none";
+  lccWbField = null;
+}
+function lccWbShowFor(el) {
+  const lang = lccWbPageLang();
+  if (lang === lccPageTranslateSettings.targetLang) return;   // already writing in the page's language
+  const b = lccWbEnsureBtn();
+  const rect = el.getBoundingClientRect();
+  if (!rect || (rect.width === 0 && rect.height === 0)) return;
+  lccWbField = el;
+  delete b.dataset.lccRevert;
+  b.textContent = "⇄ " + lang + " (Alt+T)";
+  b.title = "입력한 글을 " + lang + "로 바꿔서 채워줍니다 (로컬 번역)";
+  const vw = window.innerWidth || 0;
+  b.style.display = "block";
+  b.style.left = Math.max(4, Math.min(rect.right - (b.offsetWidth || 90), vw - (b.offsetWidth || 90) - 4)) + "px";
+  b.style.top = Math.max(4, rect.top - (b.offsetHeight || 22) - 4) + "px";
+}
+function lccWbTrigger() {
+  const el = lccWbField;
+  if (!el || !lccWbEnabled()) return;
+  const b = lccWbEnsureBtn();
+  if (b.dataset.lccRevert) {                       // second press inside the window: restore the draft
+    const req = lccWbRequests.get(b.dataset.lccRevert);
+    if (req && lccWbApply(req.el, req.prev)) lccWbRequests.delete(b.dataset.lccRevert);
+    delete b.dataset.lccRevert;
+    b.textContent = "⇄ " + lccWbPageLang() + " (Alt+T)";
+    return;
+  }
+  const draft = lccWbFieldText(el).slice(0, LCC_WB_MAX_CHARS);
+  if (!draft.trim()) return;
+  const requestId = "wb" + LCC_PAGE_FRAME_TAG + "-" + (++lccWbSeq);
+  const timer = setTimeout(() => {
+    lccWbRequests.delete(requestId);
+    if (lccWbBtn && lccWbBtn.style.display !== "none") lccWbBtn.textContent = "⇄ 시간 초과";
+  }, 25000);
+  lccWbRequests.set(requestId, { el, prev: draft, timer });
+  b.textContent = "번역 중…";
+  try {
+    chrome.runtime.sendMessage({ type: "input-translate", requestId, text: draft, targetLang: lccWbPageLang() },
+      (res) => {
+        if (chrome.runtime.lastError || (res && res.ok === false)) {
+          clearTimeout(timer);
+          lccWbRequests.delete(requestId);
+          if (lccWbBtn) lccWbBtn.textContent = "⇄ 실패 — 브릿지 확인";
+        }
+      });
+  } catch (_) {
+    clearTimeout(timer);
+    lccWbRequests.delete(requestId);
+  }
+}
+function lccWbHandleResult(msg) {
+  const requestId = String(msg.request_id || "");
+  const req = lccWbRequests.get(requestId);
+  if (!req) return;                                 // another frame's request (or expired)
+  clearTimeout(req.timer);
+  const out = String(msg.text || "").trim();
+  if (msg.type === "input_translate_err" || !out || !lccWbApply(req.el, out)) {
+    lccWbRequests.delete(requestId);
+    if (lccWbBtn && lccWbBtn.style.display !== "none") lccWbBtn.textContent = "⇄ 실패";
+    return;
+  }
+  if (lccWbBtn && lccWbField === req.el) {          // offer the one-click revert window
+    lccWbBtn.dataset.lccRevert = requestId;
+    lccWbBtn.textContent = "↩ 되돌리기";
+    setTimeout(() => {
+      if (lccWbBtn && lccWbBtn.dataset.lccRevert === requestId) {
+        delete lccWbBtn.dataset.lccRevert;
+        lccWbRequests.delete(requestId);
+        if (lccWbField) lccWbBtn.textContent = "⇄ " + lccWbPageLang() + " (Alt+T)";
+      }
+    }, LCC_WB_REVERT_MS);
+  } else {
+    lccWbRequests.delete(requestId);
+  }
+}
+try {
+  document.addEventListener("focusin", (e) => {
+    if (!lccWbEnabled()) return;
+    if (lccWbFieldEligible(e.target)) lccWbShowFor(e.target);
+    else lccWbHide();
+  }, true);
+  document.addEventListener("focusout", (e) => {
+    // focus moving to the chip itself is prevented (mousedown preventDefault); any real focus change hides it
+    if (e.target === lccWbField) lccWbHide();
+  }, true);
+  window.addEventListener("scroll", () => lccWbHide(), { passive: true, capture: true });
+  window.addEventListener("keydown", (e) => {
+    if (e.isTrusted && e.altKey && e.code === "KeyT" && lccWbEnabled() && lccWbFieldEligible(e.target)) {
+      e.preventDefault();
+      if (lccWbField !== e.target) lccWbShowFor(e.target);
+      lccWbTrigger();
+    }
+  }, true);
+} catch (_) {}

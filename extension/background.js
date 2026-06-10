@@ -291,7 +291,7 @@ async function forward(msg) {
   else if (msg.type === "answer_partial") await chrome.storage.session.set({ "lcc-answer": { text: msg.text, done: false } });   // popup reads via onChanged
   else if (msg.type === "answer") await chrome.storage.session.set({ "lcc-answer": { text: msg.text, done: true } });
   else if (msg.type === "err" && capturedTabId != null) sendTab(capturedTabId, { type: "err", text: msg.text });
-  else if ((msg.type === "dom_translate_result" || msg.type === "dom_translate_partial" || msg.type === "dom_translate_done" || msg.type === "dom_translate_busy" || msg.type === "dom_translate_err") && pageTabId != null) {
+  else if ((msg.type === "dom_translate_result" || msg.type === "dom_translate_partial" || msg.type === "dom_translate_done" || msg.type === "dom_translate_busy" || msg.type === "dom_translate_err" || msg.type === "input_translate_result" || msg.type === "input_translate_err") && pageTabId != null) {
     sendTab(pageTabId, payload);
   }
   if (msg.type === "caption" || msg.type === "source" || msg.type === "dom_translate_result" || msg.type === "dom_translate_partial") await chrome.storage.session.set({ wsOpen: true });  // data flowing => connected (self-heal)
@@ -301,7 +301,7 @@ async function forward(msg) {
 // type must come from the popup or the offscreen document, neither of which has a sender.tab. The content
 // bundle runs in EVERY page, so without this gate a compromised content script could drive the privileged
 // popup/ask/forward command surface (start/stop captures, ask the bridge, spoof captions) for arbitrary tabs.
-const LCC_TAB_SENDER_TYPES = new Set(["vd-pcm", "content-ready", "page-translate-batch"]);
+const LCC_TAB_SENDER_TYPES = new Set(["vd-pcm", "content-ready", "page-translate-batch", "input-translate"]);
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg !== "object") return;
@@ -391,6 +391,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "lcc-ask") {
     chrome.runtime.sendMessage({ target: "offscreen", cmd: "ask", mode: msg.mode, transcript: msg.transcript, question: msg.question })
       .then((res) => sendResponse(res && res.ok === false ? res : { ok: true }))
+      .catch((e) => respondError(sendResponse, e));
+    return true;
+  }
+  if (msg.type === "input-translate") {
+    const tabId = sender && sender.tab && sender.tab.id;
+    chrome.storage.session.get(["pageTranslating", "pageTabId"])
+      .then(({ pageTranslating, pageTabId }) => {
+        if (!pageTranslating || tabId == null || pageTabId !== tabId) return { ok: false, error: "페이지 번역이 켜진 탭에서만 됩니다" };
+        return ensureOffscreen()
+          .then(() => chrome.runtime.sendMessage({ target: "offscreen", cmd: "input-translate", requestId: msg.requestId, text: msg.text || "", targetLang: msg.targetLang || "" }))
+          .then((res) => (res && res.ok === false) ? res : { ok: true });
+      })
+      .then((res) => sendResponse(res || { ok: false }))
       .catch((e) => respondError(sendResponse, e));
     return true;
   }
