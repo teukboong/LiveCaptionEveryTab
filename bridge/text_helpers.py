@@ -154,6 +154,11 @@ def _src_lang(text: str) -> str:
     return "English"
 
 
+def _gr_norm(s: str) -> str:
+    """Casefold + strip everything non-alphanumeric, so 'black well' / 'Black-Well' both read 'blackwell'."""
+    return re.sub(r"[^0-9a-z가-힣]+", "", (s or "").casefold())
+
+
 _SENT_SPLIT_RE = re.compile(r"(?<=[.!?。！？…])\s+|\n[ \t]*\n")
 
 
