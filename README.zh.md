@@ -1,5 +1,7 @@
 # Live Caption Every Tab — 任意网站的实时外语→你的语言字幕
 
+[![CI](https://github.com/teukboong/LiveCaptionEveryTab/actions/workflows/ci.yml/badge.svg)](https://github.com/teukboong/LiveCaptionEveryTab/actions/workflows/ci.yml)
+
 [한국어](README.md) · [English](README.en.md) · [日本語](README.ja.md) · [Español](README.es.md) · **中文**
 
 > 🤖 本项目**从代码到文档全部通过 vibe coding（AI 结对编程）完成**。

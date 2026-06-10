@@ -1,5 +1,7 @@
 # Live Caption Every Tab — 모든 사이트 실시간 외국어→모국어 자막
 
+[![CI](https://github.com/teukboong/LiveCaptionEveryTab/actions/workflows/ci.yml/badge.svg)](https://github.com/teukboong/LiveCaptionEveryTab/actions/workflows/ci.yml)
+
 **한국어** · [English](README.en.md) · [日本語](README.ja.md) · [Español](README.es.md) · [中文](README.zh.md)
 
 > 🤖 이 프로젝트는 코드부터 문서까지 **전부 바이브 코딩(AI 페어 프로그래밍)으로** 만들었습니다.

@@ -1,5 +1,7 @@
 # Live Caption Every Tab — Subtítulos en tiempo real de cualquier sitio (extranjero→tu idioma)
 
+[![CI](https://github.com/teukboong/LiveCaptionEveryTab/actions/workflows/ci.yml/badge.svg)](https://github.com/teukboong/LiveCaptionEveryTab/actions/workflows/ci.yml)
+
 [한국어](README.md) · [English](README.en.md) · [日本語](README.ja.md) · **Español** · [中文](README.zh.md)
 
 > 🤖 Este proyecto se construyó **íntegramente mediante vibe coding (programación en pareja con IA)** — desde el código hasta la documentación.

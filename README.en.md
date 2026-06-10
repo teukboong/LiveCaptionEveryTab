@@ -1,5 +1,7 @@
 # Live Caption Every Tab — Realtime foreign→your-language captions for any site
 
+[![CI](https://github.com/teukboong/LiveCaptionEveryTab/actions/workflows/ci.yml/badge.svg)](https://github.com/teukboong/LiveCaptionEveryTab/actions/workflows/ci.yml)
+
 [한국어](README.md) · **English** · [日本語](README.ja.md) · [Español](README.es.md) · [中文](README.zh.md)
 
 > 🤖 This project was built **entirely through vibe coding (AI pair-programming)** — from the code to the documentation.

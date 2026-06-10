@@ -1,5 +1,7 @@
 # Live Caption Every Tab — あらゆるサイトの外国語音声をリアルタイムであなたの言語の字幕に
 
+[![CI](https://github.com/teukboong/LiveCaptionEveryTab/actions/workflows/ci.yml/badge.svg)](https://github.com/teukboong/LiveCaptionEveryTab/actions/workflows/ci.yml)
+
 [한국어](README.md) · [English](README.en.md) · **日本語** · [Español](README.es.md) · [中文](README.zh.md)
 
 > 🤖 このプロジェクトは**コードからドキュメントまで、すべてバイブコーディング（AIペアプログラミング）で**作られています。
