@@ -28,4 +28,7 @@ if [ "${LCC_TX_BACKEND:-}" != "cuda" ] && [ "${LCC_LM_MODEL:-}" != "diffusiongem
   sleep 1
 fi
 
-exec env PYTHONWARNINGS=ignore "$PY" -u "$(dirname "$0")/server.py"
+# exec with the ABSOLUTE script path: the native host recognizes "this checkout's bridge" by the
+# command line, and a relative launch (./bridge/run_bridge.sh) would make the popup's start/stop
+# treat the listener as a foreign process and refuse to manage it.
+exec env PYTHONWARNINGS=ignore "$PY" -u "$ROOT/bridge/server.py"
