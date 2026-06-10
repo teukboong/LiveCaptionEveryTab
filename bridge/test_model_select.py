@@ -6,6 +6,7 @@ Run under the bridge venv:
     cd bridge && python test_model_select.py
 """
 import server as s
+import model_runtime as rt
 
 fails = []
 
@@ -36,11 +37,11 @@ ok("whisper: normalize keeps whisper", s._normalize_asr_engine("whisper") == "wh
 ok("whisper: separate family", not s._is_mlxa_engine("whisper") and not s._is_sherpa_engine("whisper"))
 
 # --- _auto_lm_model: largest model that fits free memory (need 26b18/e4b8/e2b6, head4) ------------------
-s.BACKEND = "mlx"
-_orig_probe = s._free_mem_gb_mlx
+rt.BACKEND = "mlx"
+_orig_probe = rt._free_mem_gb_mlx
 try:
     def probe(gb):
-        s._free_mem_gb_mlx = lambda: gb
+        rt._free_mem_gb_mlx = lambda: gb
     for gb, want in {30: "gemma-26b", 22: "gemma-26b", 21.9: "gemma-e4b", 12: "gemma-e4b",
                      11.9: "gemma-e2b", 9: "gemma-e2b", 3: "gemma-e2b"}.items():
         probe(gb)
@@ -48,34 +49,34 @@ try:
     probe(None)
     ok("auto unprobable->largest", s._auto_lm_model()["id"] == "gemma-26b")
 finally:
-    s._free_mem_gb_mlx = _orig_probe
+    rt._free_mem_gb_mlx = _orig_probe
 
 # --- _finalize_model_config: explicit LCC_LM_MODEL > auto; qwen3 default; idempotent --------------------
-s._LM_RESOLVED = False
-s.LM_MODEL = ""
+rt._LM_RESOLVED = False
+rt.LM_MODEL = ""
 s.MLXA_REPOS["qwen3"] = ""
-s.BACKEND = "mlx"
+rt.BACKEND = "mlx"
 try:
-    s._free_mem_gb_mlx = lambda: 30   # fits the 26B
+    rt._free_mem_gb_mlx = lambda: 30   # fits the 26B
     s._finalize_model_config()
     ok("finalize auto -> 26b repo", s.LM_MODEL == "mlx-community/gemma-4-26b-a4b-it-4bit")
     ok("finalize qwen3 default 1.7B", s.MLXA_REPOS["qwen3"] == "Qwen/Qwen3-ASR-1.7B")
-    s.LM_MODEL = "TOUCHED"
+    rt.LM_MODEL = "TOUCHED"
     s._finalize_model_config()   # idempotent: must not re-resolve once done
     ok("finalize idempotent", s.LM_MODEL == "TOUCHED")
 finally:
-    s._free_mem_gb_mlx = _orig_probe
+    rt._free_mem_gb_mlx = _orig_probe
 
 # explicit LCC_LM_MODEL wins over auto
-s._LM_RESOLVED = False
-s.LM_MODEL = "my/custom-model"
+rt._LM_RESOLVED = False
+rt.LM_MODEL = "my/custom-model"
 s.MLXA_REPOS["qwen3"] = ""
 s._finalize_model_config()
 ok("explicit LM_MODEL (custom repo) preserved", s.LM_MODEL == "my/custom-model")
 
 # a curated registry id resolves to its repo (the popup may send a stable id as LCC_LM_MODEL)
-s._LM_RESOLVED = False
-s.LM_MODEL = "gemma-e4b"
+rt._LM_RESOLVED = False
+rt.LM_MODEL = "gemma-e4b"
 s.MLXA_REPOS["qwen3"] = ""
 s._finalize_model_config()
 ok("LCC_LM_MODEL id resolves to repo", s.LM_MODEL == "mlx-community/gemma-4-e4b-it-4bit")

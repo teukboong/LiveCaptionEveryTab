@@ -11,6 +11,7 @@ import test_import_stubs
 test_import_stubs.install()
 
 import server as s
+import model_runtime as rt
 from pathlib import Path
 import json
 import re
@@ -194,14 +195,14 @@ check("dom.non_list", s._dom_translate_items({"items": "nope"}), [])
 
 # --- page DOM KV reuse: separate prefix cache, no caption-cache pollution ---
 _orig = {
-    "lm_tok": s.lm_tok,
-    "lm_model": s.lm_model,
-    "mx": s.mx,
-    "lm_stream": s.lm_stream,
-    "make_prompt_cache": s.make_prompt_cache,
-    "trim_prompt_cache": s.trim_prompt_cache,
-    "can_trim_prompt_cache": s.can_trim_prompt_cache,
-    "_LM_IS_VLM": s._LM_IS_VLM,
+    "lm_tok": rt.lm_tok,
+    "lm_model": rt.lm_model,
+    "mx": rt.mx,
+    "lm_stream": rt.lm_stream,
+    "make_prompt_cache": rt.make_prompt_cache,
+    "trim_prompt_cache": rt.trim_prompt_cache,
+    "can_trim_prompt_cache": rt.can_trim_prompt_cache,
+    "_LM_IS_VLM": rt._LM_IS_VLM,
     "_TX_KV_WINDOW": s._TX_KV_WINDOW,
     "_PAGE_TX_KVREUSE": s._PAGE_TX_KVREUSE,
     "_tx_cache": s._tx_cache,
@@ -244,14 +245,14 @@ def _fake_lm_stream(_model, _tok, feed, max_tokens=None, sampler=None, prompt_ca
 
 try:
     s._reset_page_tx_cache()
-    s.lm_tok = _FakeTok()
-    s.lm_model = object()
-    s.mx = _FakeMx
-    s.lm_stream = _fake_lm_stream
-    s.make_prompt_cache = _fake_make_prompt_cache
-    s.trim_prompt_cache = _fake_trim_prompt_cache
-    s.can_trim_prompt_cache = lambda _cache: True
-    s._LM_IS_VLM = False
+    rt.lm_tok = _FakeTok()
+    rt.lm_model = object()
+    rt.mx = _FakeMx
+    rt.lm_stream = _fake_lm_stream
+    rt.make_prompt_cache = _fake_make_prompt_cache
+    rt.trim_prompt_cache = _fake_trim_prompt_cache
+    rt.can_trim_prompt_cache = lambda _cache: True
+    rt._LM_IS_VLM = False
     s._TX_KV_WINDOW = None
     s._PAGE_TX_KVREUSE = True
     s._tx_cache = object()
@@ -259,7 +260,7 @@ try:
 
     for text in ("Share", "Log in"):
         msgs = s._translate_page_batch_messages([{"id": "a", "text": text}], [], "Korean", "Reddit", "casual", [])
-        prompt_lens.append(len(s.lm_tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False)))
+        prompt_lens.append(len(rt.lm_tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False)))
         check("page.kv_result_" + text, s.translate_page_batch_once(
             [{"id": "a", "text": text}], [], "Korean", "Reddit", "casual", [], max_tokens=16,
         ), {"a": "번역"})
@@ -268,14 +269,14 @@ try:
     ok("page.kv_second_reuses_prefix", feed_lens[1] < prompt_lens[1])
     ok("page.kv_caption_cache_untouched", s._tx_cache is tx_cache_sentinel)
 finally:
-    s.lm_tok = _orig["lm_tok"]
-    s.lm_model = _orig["lm_model"]
-    s.mx = _orig["mx"]
-    s.lm_stream = _orig["lm_stream"]
-    s.make_prompt_cache = _orig["make_prompt_cache"]
-    s.trim_prompt_cache = _orig["trim_prompt_cache"]
-    s.can_trim_prompt_cache = _orig["can_trim_prompt_cache"]
-    s._LM_IS_VLM = _orig["_LM_IS_VLM"]
+    rt.lm_tok = _orig["lm_tok"]
+    rt.lm_model = _orig["lm_model"]
+    rt.mx = _orig["mx"]
+    rt.lm_stream = _orig["lm_stream"]
+    rt.make_prompt_cache = _orig["make_prompt_cache"]
+    rt.trim_prompt_cache = _orig["trim_prompt_cache"]
+    rt.can_trim_prompt_cache = _orig["can_trim_prompt_cache"]
+    rt._LM_IS_VLM = _orig["_LM_IS_VLM"]
     s._TX_KV_WINDOW = _orig["_TX_KV_WINDOW"]
     s._PAGE_TX_KVREUSE = _orig["_PAGE_TX_KVREUSE"]
     s._tx_cache = _orig["_tx_cache"]

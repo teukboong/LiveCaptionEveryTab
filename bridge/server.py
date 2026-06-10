@@ -12,7 +12,7 @@ sentence completes (terminal punctuation, OR a long pause = clause boundary, OR 
 
 Pipeline per VAD chunk: granite/qwen3 (mlx-audio) clean-sentence transcript ([no speech] gate => no hallucination).
 Per completed sentence: Gemma-4-26B-A4B MoE -> natural Korean (Korean source skips translation).
-mlx on a single dedicated worker thread (_mlx_pool) — inline-in-loop hangs; set_default_device(gpu)
+mlx on a single dedicated worker thread (model_runtime._mlx_pool) — inline-in-loop hangs; set_default_device(gpu)
 restores the stream. (asyncio.to_thread's default pool could hop threads between calls.)
 """
 import asyncio, base64, json, collections, difflib, functools, os, re, time
@@ -23,6 +23,7 @@ import websockets
 from silero_vad import load_silero_vad, VADIterator
 from backend_parakeet import ParakeetAsr
 import policy
+import model_runtime
 from policy import (
     SR, WINDOW_SAMPLES, WINDOW_BYTES, WINDOW_MS, SEG_SILENCE_MS, SENT_SILENCE_MS, SPEECH_PAD_MS,
     PREROLL_WINDOWS, SOFT_MAX_SEC, HARD_MAX_SEC, MIN_SEC, SOFT_OVERLAP_MS, LA_ON, LA_STEP_WINDOWS,
@@ -70,95 +71,30 @@ _POLICY_DYNAMIC_EXPORTS = {
     "TX_FINAL_STREAM_DELTA_CHARS",
 }
 
+_MODEL_RUNTIME_DYNAMIC_EXPORTS = {
+    "BACKEND", "LM_MODEL", "_LM_RESOLVED", "_LM_IS_VLM", "lm_model", "lm_tok", "_sampler",
+    "silero", "aux_lm_model", "aux_lm_tok", "_AUX_LM_IS_VLM", "ASR_ENGINE", "mlxa_model",
+    "mlxa_loaded_engine", "parakeet_asr", "whisper_loaded_repo", "mx", "lm_load", "lm_stream",
+    "make_sampler", "make_prompt_cache", "trim_prompt_cache", "can_trim_prompt_cache", "vlm_load",
+    "vlm_generate", "MLX_IMPORT_ERROR", "lm_models", "asr_models", "_ASR_ENGINES",
+    "_is_sherpa_engine", "_is_mlxa_engine", "_is_whisper_engine", "_normalize_asr_engine",
+    "_normalize_backend", "_normalize_latency_mode", "_clamp_int", "_clamp_float", "_config_bool",
+    "_free_mem_gb_mlx", "_free_mem_gb_cuda", "_system_available_gb", "_mlx_device_info",
+    "_mlx_active_memory", "_auto_lm_model", "_finalize_model_config", "_aux_lm_choice",
+    "_lm_select_value", "_resolve_lm_model", "AUX_LM", "AUX_LM_HEADROOM_GB", "MLXA_REPOS",
+    "LM_MODELS", "ASR_MODELS", "GRANITE_ASR_PROMPT", "WHISPER_REPO", "PARAKEET_MODEL_DIR",
+    "PARAKEET_THREADS", "PARAKEET_PROVIDER", "aux_lm_ready", "_aux_runtime", "_diarize",
+    "_require_mlx", "_ensure_asr_loaded", "_load_lm_weights", "_mlx_pool", "_sherpa_pool",
+    "_asr_pool", "_ASR_DEVICE_LOCK", "_aux_lm_pool", "_AUX_LM_DEVICE_LOCK", "_MLX_DEVICE_LOCK",
+}
+
 
 def __getattr__(name):
     if name in _POLICY_DYNAMIC_EXPORTS:
         return getattr(policy, name)
+    if name in _MODEL_RUNTIME_DYNAMIC_EXPORTS:
+        return getattr(model_runtime, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-# ASR engine taxonomy (single source of truth). Two families:
-#   - "sherpa": Parakeet — runs on sherpa-onnx on a dedicated CPU pool, OFF the MLX device, so it never
-#     contends with 26B translation (true ASR∥translate parallelism) and has its own latency/warmup wiring.
-#   - "granite"/"qwen3": mlx-audio audio-LLM ASR — in-process on the Apple GPU, so they serialize against
-#     26B translation (share _mlx_pool + mlx_lock). Native punctuation/truecasing + multilingual + auto langID.
-# _is_sherpa_engine()/_is_mlxa_engine() — NOT scattered name tuples — are THE switch between families.
-_SHERPA_ENGINES = ("parakeet",)
-_MLXA_ENGINES = ("granite", "qwen3")
-# Whisper (large-v3): a dedicated ASR (own decode, no prompt, returns segments) — NOT an audio-LLM,
-# so it gets its own family + loader (mlx_whisper on Mac / whisper.cpp q6 on CUDA), mirroring how
-# sherpa/parakeet is its own family. The _is_*_engine() helpers stay the single switch (no scattered tuples).
-_WHISPER_ENGINES = ("whisper",)
-_ASR_ENGINES = _MLXA_ENGINES + _SHERPA_ENGINES + _WHISPER_ENGINES
-
-def _is_sherpa_engine(engine) -> bool:
-    return engine in _SHERPA_ENGINES
-
-def _is_mlxa_engine(engine) -> bool:
-    return engine in _MLXA_ENGINES
-
-def _is_whisper_engine(engine) -> bool:
-    return engine in _WHISPER_ENGINES
-
-def _normalize_asr_engine(value, default="granite"):
-    engine = str(value or default or "granite").strip().lower()
-    return engine if engine in _ASR_ENGINES else default
-
-
-# Compute backend (platform): "mlx" = in-process Apple-Silicon MLX (default), "cuda" = OpenAI-compatible
-# HTTP client to a remote llama.cpp/vLLM (Windows+NVIDIA via WSL2, or any reachable GPU box). Selected with
-# LCC_BACKEND. Only the backend leaves (transcribe/translate/ask) differ; everything else is shared. See
-# the "Backend seam" block lower in this file.
-_BACKENDS = ("mlx", "cuda", "fake")
-
-def _normalize_backend(value, default="mlx"):
-    b = str(value or default or "mlx").strip().lower()
-    b = {"nvidia": "cuda", "gpu": "cuda", "http": "cuda", "apple": "mlx", "metal": "mlx"}.get(b, b)
-    return b if b in _BACKENDS else default
-
-
-def _normalize_latency_mode(value, default="aggressive"):
-    mode = str(value or default or "aggressive").strip().lower()
-    aliases = {
-        "fast": "aggressive",
-        "low": "aggressive",
-        "low-latency": "aggressive",
-        "low_latency": "aggressive",
-        "safe": "stable",
-        "quality": "stable",
-    }
-    mode = aliases.get(mode, mode)
-    return mode if mode in ("stable", "balanced", "aggressive") else default
-
-
-
-def _clamp_int(value, default, lo, hi):
-    try:
-        n = int(value)
-    except Exception:
-        n = int(default)
-    return max(lo, min(hi, n))
-
-def _clamp_float(value, default, lo, hi):
-    try:
-        n = float(value)
-    except Exception:
-        n = float(default)
-    return max(lo, min(hi, n))
-
-def _config_bool(value, default=False):
-    # Strict: a JSON string "false"/"0"/"off" must read False — bool("false") is True, so a malformed or
-    # hostile config message could otherwise flip a flag ON. The real extension sends actual booleans.
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    s = str(value).strip().lower()
-    if s in ("true", "1", "yes", "on"):
-        return True
-    if s in ("false", "0", "no", "off", ""):
-        return False
-    return default
-
 
 DOM_TX_MAX_ITEMS = int(os.environ.get("LCC_DOM_TX_MAX_ITEMS", "8"))
 DOM_TX_MAX_CHARS = int(os.environ.get("LCC_DOM_TX_MAX_CHARS", "32000"))       # per-item sanity bound; long paragraphs are sentence-chunked (translate_page_long_once) + streamed, not truncated in practice
@@ -193,266 +129,7 @@ def _dom_translate_items(payload, *, max_items=DOM_TX_MAX_ITEMS, max_chars=DOM_T
     return out
 
 
-MLX_IMPORT_ERROR = None
-try:
-    import mlx.core as mx
-    from mlx_lm import load as lm_load, stream_generate as lm_stream
-    from mlx_lm.sample_utils import make_sampler
-    from mlx_lm.models.cache import make_prompt_cache, trim_prompt_cache, can_trim_prompt_cache
-except Exception as e:
-    MLX_IMPORT_ERROR = e
-    mx = None
-    lm_load = lm_stream = make_sampler = None
-    make_prompt_cache = trim_prompt_cache = can_trim_prompt_cache = None
-try:
-    from mlx_vlm import load as vlm_load, generate as vlm_generate   # Gemma-4 nano (mid/lite) translator path
-except Exception:
-    vlm_load = vlm_generate = None
 
-BACKEND = _normalize_backend(os.environ.get("LCC_BACKEND"), "mlx")   # mlx (Apple) | cuda (HTTP to llama.cpp/vLLM)
-
-# --- Translation-model selection: size the translator to AVAILABLE memory, not total ----------------------------
-# The translator weights dominate the footprint, so picking by *total* RAM is blind to what's already resident and
-# has to assume the worst (over-conservative). Instead size to *free* memory (idle VRAM): on CUDA that's nvidia-smi
-# free VRAM; on MLX (unified memory) it's min(Metal working-set budget − active, OS-available). The largest curated
-# model that fits with HEADROOM to spare wins — so a busy 32GB box correctly steps down to avoid swap, while an idle
-# 24GB box can still run the 26B. Precedence:
-#   LCC_LM_MODEL (explicit id)  >  "Auto" = memory-fit over the curated registry (_auto_lm_model).
-# Resolution is LAZY (done in load_models/_ensure_asr_loaded, NOT at import) so `import server` in tests never
-# probes hardware or prints. Effective on MLX (selects LM_MODEL); on CUDA the GGUF is chosen by cuda/serve_llama.sh
-# and the tier here only labels the OpenAI 'model' field + logs which GGUF tier to serve.
-# Curated model registry — SINGLE SOURCE OF TRUTH for both roles. install_models.py, the native host
-# (models_status), and the popup all read these (no model id duplicated). The old full/mid/lite TIER
-# vocabulary is gone: a translator is chosen by id/repo (explicit LCC_LM_MODEL) or by "Auto" = the
-# largest whose footprint+headroom fits free memory. nano (e4b/e2b) load via the mlx_vlm auto-fallback
-# in load_models() — they are fully loadable, just need mlx_vlm installed. (Gemma 4 / Whisper = OSS.)
-LM_MODELS = {   # translation. mlx: repo loaded in-process. cuda: 'repo' = HF GGUF source, 'served' = OpenAI model label.
-    "mlx": [
-        {"id": "gemma-26b", "label": "Gemma 26B", "repo": "mlx-community/gemma-4-26b-a4b-it-4bit",
-         "footprint_gb": _clamp_float(os.environ.get("LCC_LM_NEED_FULL"), 18.0, 4.0, 512.0)},
-        {"id": "gemma-e4b", "label": "Gemma E4B",
-         "repo": os.environ.get("LCC_LM_MID_MLX", "mlx-community/gemma-4-e4b-it-4bit"),
-         "footprint_gb": _clamp_float(os.environ.get("LCC_LM_NEED_MID"), 8.0, 2.0, 512.0)},
-        {"id": "gemma-e2b", "label": "Gemma E2B",
-         "repo": os.environ.get("LCC_LM_LITE_MLX", "mlx-community/gemma-4-e2b-it-4bit"),
-         "footprint_gb": _clamp_float(os.environ.get("LCC_LM_NEED_LITE"), 6.0, 1.0, 512.0)},
-    ],
-    "cuda": [
-        {"id": "gemma-26b", "label": "Gemma 26B", "repo": "google/gemma-4-26B-A4B-it-qat-q4_0-gguf",
-         "served": os.environ.get("LCC_LM_FULL_CUDA", "gemma-4-26b-a4b-it-qat-q4_0"),
-         "footprint_gb": _clamp_float(os.environ.get("LCC_LM_NEED_FULL"), 18.0, 4.0, 512.0)},
-        {"id": "gemma-e4b", "label": "Gemma E4B", "repo": "google/gemma-4-E4B-it-qat-q4_0-gguf",
-         "served": os.environ.get("LCC_LM_MID_CUDA", "gemma-4-e4b-it-qat-q4_0"),
-         "footprint_gb": _clamp_float(os.environ.get("LCC_LM_NEED_MID"), 8.0, 2.0, 512.0)},
-        {"id": "gemma-e2b", "label": "Gemma E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf",
-         "served": os.environ.get("LCC_LM_LITE_CUDA", "gemma-4-e2b-it-qat-q4_0"),
-         "footprint_gb": _clamp_float(os.environ.get("LCC_LM_NEED_LITE"), 6.0, 1.0, 512.0)},
-    ],
-}
-# Curated transcription models. engine = loader family (granite/qwen3 audio-LLM, whisper, parakeet); one
-# engine may have variants (qwen3 1.7B/0.6B) split by repo — selection carries (engine, repo). needs_quant
-# tells install_models which quant target to produce when no prequant exists (whisper only).
-ASR_MODELS = {
-    "mlx": [
-        {"id": "granite", "label": "Granite", "engine": "granite", "repo": "ibm-granite/granite-speech-4.1-2b"},
-        {"id": "qwen3-1.7b", "label": "Qwen3-ASR 1.7B", "engine": "qwen3", "repo": "Qwen/Qwen3-ASR-1.7B"},
-        {"id": "qwen3-0.6b", "label": "Qwen3-ASR 0.6B", "engine": "qwen3", "repo": "Qwen/Qwen3-ASR-0.6B"},
-        {"id": "whisper-large-v3", "label": "Whisper Large v3", "engine": "whisper",
-         "repo": os.environ.get("LCC_WHISPER_MODEL", "mlx-community/whisper-large-v3-mlx"), "needs_quant": "mlx-6bit"},
-    ],
-    "cuda": [
-        {"id": "granite", "label": "Granite", "engine": "granite", "repo": "ibm-granite/granite-speech-4.1-2b"},
-        {"id": "qwen3-1.7b", "label": "Qwen3-ASR 1.7B", "engine": "qwen3", "repo": "Qwen/Qwen3-ASR-1.7B"},
-        {"id": "whisper-large-v3", "label": "Whisper Large v3", "engine": "whisper",
-         "repo": os.environ.get("LCC_WHISPER_GGUF_REPO", "ggerganov/whisper.cpp"), "needs_quant": "gguf-q6"},
-    ],
-}
-# HEADROOM = OS/browser slack kept free so a growing browser doesn't push the resident model into swap.
-_LM_HEADROOM_GB = _clamp_float(os.environ.get("LCC_LM_HEADROOM_GB"), 4.0, 0.0, 64.0)
-_ASR_QWEN3_DEFAULT = "Qwen/Qwen3-ASR-1.7B"   # qwen3 default when unset (tier-based ASR shrink is gone)
-WHISPER_REPO = os.environ.get("LCC_WHISPER_MODEL", "mlx-community/whisper-large-v3-mlx")
-
-def lm_models(backend=None):
-    """Curated translation models for the backend (single source; popup/install/host read this)."""
-    return LM_MODELS.get(_normalize_backend(backend or BACKEND), LM_MODELS["mlx"])
-
-def asr_models(backend=None):
-    """Curated transcription models for the backend (single source)."""
-    return ASR_MODELS.get(_normalize_backend(backend or BACKEND), ASR_MODELS["mlx"])
-
-def _system_available_gb():
-    """OS memory available without swapping (purgeable-inclusive). psutil if present, else vm_stat (macOS)."""
-    try:
-        import psutil
-        return psutil.virtual_memory().available / 1e9
-    except Exception:
-        pass
-    try:   # macOS no-dep fallback: (free + inactive + purgeable + speculative) pages * page size
-        import subprocess
-        out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=4).stdout
-        page, m = 4096, re.search(r"page size of (\d+) bytes", out)
-        if m:
-            page = int(m.group(1))
-        tot = 0
-        for label in ("Pages free", "Pages inactive", "Pages purgeable", "Pages speculative"):
-            mm = re.search(rf"{re.escape(label)}:\s+(\d+)\.", out)
-            if mm:
-                tot += int(mm.group(1))
-        return tot * page / 1e9 if tot else None
-    except Exception:
-        return None
-
-def _free_mem_gb_cuda():
-    """Free dedicated VRAM (GB) via nvidia-smi; min across GPUs (we pin one). None if unavailable."""
-    import shutil, subprocess
-    if not shutil.which("nvidia-smi"):
-        return None
-    try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
-                             capture_output=True, text=True, timeout=4).stdout
-        vals = [float(x.strip()) for x in out.splitlines() if x.strip()]
-        return min(vals) / 1024.0 if vals else None   # MiB -> GiB
-    except Exception:
-        return None
-
-def _mlx_device_info():
-    try:
-        return mx.device_info()            # mlx >= 0.30
-    except Exception:
-        return mx.metal.device_info()      # older mlx (deprecated path)
-
-def _mlx_active_memory():
-    try:
-        return mx.get_active_memory()
-    except Exception:
-        return mx.metal.get_active_memory()
-
-def _free_mem_gb_mlx():
-    """Idle unified memory (GB) on Apple Silicon: min(Metal working-set budget − active MLX, OS-available)."""
-    budget_free = None
-    try:
-        info = _mlx_device_info()
-        budget = float(info.get("max_recommended_working_set_size", 0))
-        if budget > 0:
-            budget_free = (budget - float(_mlx_active_memory())) / 1e9
-    except Exception:
-        pass
-    cands = [v for v in (budget_free, _system_available_gb()) if v is not None]
-    return min(cands) if cands else None
-
-def _auto_lm_model():
-    """Memory-fit auto: the largest curated translator whose footprint + headroom fits free memory; else
-    the smallest; else the largest when memory is unprobable. Returns a model dict from the registry.
-    Replaces the old tier auto-select (chooses a model, not a tier) — this is what keeps 'Auto' working
-    after the tier vocabulary was removed."""
-    models = lm_models()
-    avail = _free_mem_gb_cuda() if BACKEND == "cuda" else _free_mem_gb_mlx()
-    if avail is None:
-        print("[bridge] model: free-memory probe failed -> largest (set LCC_LM_MODEL to pin)", flush=True)
-        return models[0]
-    for m in models:                                     # registry is largest-first
-        if avail >= m["footprint_gb"] + _LM_HEADROOM_GB:
-            print(f"[bridge] model={m['id']}  (avail≈{avail:.1f}GB ≥ {m['footprint_gb']:.0f}+{_LM_HEADROOM_GB:.0f}GB "
-                  f"headroom; pin with LCC_LM_MODEL)", flush=True)
-            return m
-    print(f"[bridge] model={models[-1]['id']}  (avail≈{avail:.1f}GB below all thresholds)", flush=True)
-    return models[-1]
-
-# Lazy-resolved config (empty at import; filled by _finalize_model_config at first warm — see note above).
-LM_MODEL = os.environ.get("LCC_LM_MODEL", "")               # "" -> memory-fit auto over the registry
-_LM_RESOLVED = False
-_LM_IS_VLM = False   # set True at load when the translator is a Gemma-4 nano (multimodal) loaded via mlx_vlm
-
-# --- Aux translator (dual-model concurrency) ------------------------------------------------------------
-# A second, SMALL resident translator (E2B) that takes the latency-tolerant-quality / latency-critical-UX
-# work off the 26B: caption previews and page-DOM microbatches run on their own pool + device lock and
-# OVERLAP the 26B exactly like ASR does (26B decode is bandwidth-bound; a small model slots into the
-# compute gap). Finals, long page paragraphs, verify passes, and ask/summary stay on the main model —
-# aux is the speed layer, main is the quality layer. MLX only (CUDA serves one GGUF); auto-enabled when
-# the main pick is the 26B and free memory still fits the smallest curated model + headroom.
-# LCC_AUX_LM: "auto" (default) | "off"/"0" | explicit registry id / HF repo.
-AUX_LM = os.environ.get("LCC_AUX_LM", "auto")
-AUX_LM_HEADROOM_GB = _clamp_float(os.environ.get("LCC_AUX_LM_HEADROOM_GB"), 2.0, 0.0, 64.0)
-aux_lm_model = aux_lm_tok = None
-_AUX_LM_IS_VLM = False
-
-
-def _aux_lm_choice(main_value, avail_gb, setting=None):
-    """Resolve the aux translator to load (repo/served string) or None. Pure given inputs; tested in
-    test_aux_lm.py. Auto pairs the SMALLEST curated translator under the LARGEST one only — when the
-    main pick already had to shrink, there is no spare memory worth betting on."""
-    s = (AUX_LM if setting is None else setting).strip()
-    if s.lower() in ("", "0", "off", "no", "none", "false"):
-        return None
-    models = lm_models()
-    if s.lower() != "auto":
-        choice = _resolve_lm_model(s)                       # explicit id/repo: the user owns the RAM math
-        return None if choice == main_value else choice
-    if main_value != _lm_select_value(models[0]):
-        return None
-    small = models[-1]
-    if avail_gb is None or avail_gb < small["footprint_gb"] + AUX_LM_HEADROOM_GB:
-        return None
-    return _lm_select_value(small)
-
-
-def aux_lm_ready():
-    return BACKEND == "mlx" and aux_lm_model is not None
-
-
-def _aux_runtime():
-    return (aux_lm_model, aux_lm_tok, _AUX_LM_IS_VLM)
-
-# mlx-audio audio-LLM ASR engines (granite/qwen3): native punctuation + multilingual, loaded via mlx_audio.
-MLXA_REPOS = {
-    "granite": os.environ.get("LCC_GRANITE_MODEL", "ibm-granite/granite-speech-4.1-2b"),
-    "qwen3":   os.environ.get("LCC_QWEN3_MODEL", ""),       # "" -> 1.7B (full/mid) or 0.6B (lite), set at warm
-}
-
-def _lm_select_value(m):
-    """The string the runtime loads for a registry entry: the served label on CUDA, else the HF repo."""
-    return m["served"] if (BACKEND == "cuda" and "served" in m) else m["repo"]
-
-
-def _resolve_lm_model(value):
-    """Map a curated registry id (e.g. 'gemma-26b') to its repo/served value; pass a raw repo through.
-    Lets the popup send a stable id as LCC_LM_MODEL without knowing the backend's repo vs served split."""
-    for m in lm_models():
-        if value == m["id"]:
-            return _lm_select_value(m)
-    return value
-
-
-def _finalize_model_config():
-    """Resolve the translator (explicit LCC_LM_MODEL > memory-fit auto) and the ASR repo, once. Lazy
-    (called at warm, NOT at import) so tests that `import server` never probe hardware. Idempotent.
-    The full/mid/lite tier vocabulary is gone — Auto picks a curated model by footprint (_auto_lm_model)."""
-    global LM_MODEL, _LM_RESOLVED
-    if _LM_RESOLVED:
-        return
-    _LM_RESOLVED = True
-    if not LM_MODEL:
-        LM_MODEL = _lm_select_value(_auto_lm_model())
-    else:
-        LM_MODEL = _resolve_lm_model(LM_MODEL)
-        print(f"[bridge] model={LM_MODEL} (LCC_LM_MODEL)", flush=True)
-    if not MLXA_REPOS["qwen3"]:
-        MLXA_REPOS["qwen3"] = _ASR_QWEN3_DEFAULT
-    print(f"[bridge] translate backend={BACKEND} model={LM_MODEL}", flush=True)
-    if BACKEND == "cuda":
-        print("[bridge] (cuda) translation GGUF is served by cuda/serve_llama.sh — model label "
-              f"{LM_MODEL!r}", flush=True)
-
-# Granite needs an explicit ASR instruction (it also does AST); Qwen3-ASR auto-detects + punctuates with no prompt.
-GRANITE_ASR_PROMPT = os.environ.get(
-    "LCC_GRANITE_PROMPT", "transcribe the speech with proper punctuation and capitalization.")
-ASR_ENGINE = _normalize_asr_engine(os.environ.get("LCC_ASR_ENGINE"), "granite")
-PARAKEET_MODEL_DIR = os.environ.get(
-    "LCC_PARAKEET_MODEL_DIR",
-    os.path.expanduser("~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8"),
-)
-PARAKEET_THREADS = max(1, int(os.environ.get("LCC_PARAKEET_THREADS", "4")))
-PARAKEET_PROVIDER = os.environ.get("LCC_PARAKEET_PROVIDER", "cpu").strip().lower()
 HOST = os.environ.get("LCC_HOST", "127.0.0.1")   # WSL2→Windows localhost forwarding works on 127.0.0.1; set 0.0.0.0 only if a remote client must reach it
 PORT = int(os.environ.get("LCC_PORT", "8765"))
 _DEFAULT_WS_TOKEN = "lcc-local-extension-v1"      # also hardcoded in extension/protocol.js — the localhost guard, NOT a real secret
@@ -472,175 +149,34 @@ ASR_MAX_TOKENS = max(32, int(os.environ.get("LCC_ASR_MAX_TOKENS", "64")))   # pe
 # Models load lazily via load_models() (called from __main__) so the pure prompt-building helpers
 # (_tx_system / _fewshot / translate_once) can be imported by benches/tests without pulling ~50GB of
 # weights. The bridge loads everything; a translation-only bench can skip ASR/VAD.
-lm_model = lm_tok = silero = _sampler = parakeet_asr = None
-mlxa_model = None            # mlx-audio ASR model instance (granite/qwen3); one at a time, reloaded on engine switch
-mlxa_loaded_engine = None
-whisper_loaded_repo = None   # the whisper repo whose model is warm (mlx_whisper caches the model by path)
-
-
-def _diarize():
-    """Lazy diarize-module import: sherpa/numpy stay out of model-free test imports."""
-    import diarize
-    return diarize
-
-
-def _require_mlx():
-    if MLX_IMPORT_ERROR is not None:
-        raise RuntimeError(
-            "MLX backend unavailable. Install the MLX dependencies for the local live-caption backend."
-        ) from MLX_IMPORT_ERROR
-
-
-def _ensure_asr_loaded(engine: str):
-    global parakeet_asr, mlxa_model, mlxa_loaded_engine, whisper_loaded_repo
-    _finalize_model_config()   # resolve MLXA_REPOS / qwen3 default before the first load
-    engine = _normalize_asr_engine(engine, ASR_ENGINE)
-    if engine == "parakeet":
-        if not PARAKEET_MODEL_DIR:
-            raise RuntimeError("LCC_PARAKEET_MODEL_DIR is required when LCC_ASR_ENGINE=parakeet")
-        if parakeet_asr is None:
-            print(
-                f"[bridge] loading Parakeet ASR ({PARAKEET_PROVIDER}, threads={PARAKEET_THREADS}) from {PARAKEET_MODEL_DIR}…",
-                flush=True,
-            )
-            parakeet_asr = ParakeetAsr(
-                PARAKEET_MODEL_DIR,
-                num_threads=PARAKEET_THREADS,
-                provider=PARAKEET_PROVIDER,
-            )
-        return engine
-
-    if _is_mlxa_engine(engine):
-        _require_mlx()
-        if mlxa_model is None or mlxa_loaded_engine != engine:
-            from mlx_audio.stt.utils import load_model as _mlxa_load
-            repo = MLXA_REPOS[engine]
-            print(f"[bridge] loading {repo} ({engine} audio ASR)…", flush=True)
-            mlxa_model = _mlxa_load(repo)
-            mlxa_loaded_engine = engine
-        return engine
-
-    if _is_whisper_engine(engine):
-        # Whisper (large-v3) — dedicated ASR via mlx_whisper. The 6bit model is produced/fetched by
-        # install_models (prequant-first, else local quantize); here we just ensure mlx_whisper is present
-        # and record the repo. mlx_whisper.transcribe() lazily loads + caches the model by path, so the
-        # first real transcribe warms it. No prompt (own decode + langID) — INV-7.
-        _require_mlx()
-        repo = WHISPER_REPO
-        if whisper_loaded_repo != repo:
-            import mlx_whisper  # noqa: F401  — fail fast if the dep is missing (install ensures it)
-            print(f"[bridge] using {repo} (whisper ASR)…", flush=True)
-            whisper_loaded_repo = repo
-        return engine
-
-    raise RuntimeError(f"unknown ASR engine: {engine}")
-
-
-def _load_lm_weights(value):
-    """Load a translator by repo/served value with the Gemma-4 nano (multimodal) mlx_vlm fallback.
-    Returns (model, tok, is_vlm)."""
-    try:
-        model, tok = lm_load(value)
-        return model, tok, False
-    except Exception as e:
-        # Gemma-4 nano (E4B/E2B) ships as a multimodal checkpoint (language_model.* prefix) the mlx_lm
-        # text loader can't read — but it loads via mlx_vlm. Auto-fall back so the small tiers work.
-        if "not in model" in str(e) and vlm_load is not None:
-            print(f"[bridge] {value} is multimodal (Gemma-4 nano) -> loading via mlx_vlm", flush=True)
-            model, tok = vlm_load(value)
-            return model, tok, True
-        raise
+_ensure_asr_loaded = model_runtime._ensure_asr_loaded
 
 
 def load_models(asr=True, lm=True, vad=True):
-    global ASR_ENGINE, lm_model, lm_tok, silero, _sampler, parakeet_asr, _LM_IS_VLM
-    global aux_lm_model, aux_lm_tok, _AUX_LM_IS_VLM
-    if BACKEND == "fake":
-        if vad and silero is None:
+    if model_runtime.BACKEND == "fake":
+        if vad and model_runtime.silero is None:
             import backend_fake
-            silero = backend_fake.FAKE_SILERO_SENTINEL
+            model_runtime.silero = backend_fake.FAKE_SILERO_SENTINEL
         return
-    _finalize_model_config()   # size translator/ASR to available memory (lazy: not at import — tests import server)
-    if BACKEND == "cuda":
-        # Models live on the remote inference servers (llama.cpp / vLLM); the bridge only needs the endpoints
-        # up. Best-effort health-check + log; the first real request surfaces any failure. VAD still loads below.
-        import backend_cuda
-        backend_cuda.load(asr=asr, lm=lm)
-    else:
-        needs_mlx = lm or (asr and _is_mlxa_engine(ASR_ENGINE))
-        if needs_mlx:
-            _require_mlx()
-        if needs_mlx and _sampler is None:
-            _sampler = make_sampler(temp=0.0)
-        if asr:
-            try:
-                _ensure_asr_loaded(ASR_ENGINE)
-            except Exception as e:
-                if _is_sherpa_engine(ASR_ENGINE):
-                    print(f"[bridge] {ASR_ENGINE} ASR unavailable ({e}); falling back to granite ASR", flush=True)
-                    ASR_ENGINE = "granite"
-                    _ensure_asr_loaded(ASR_ENGINE)
-                else:
-                    raise
-        if lm and lm_model is None:
-            print(f"[bridge] loading translator ({LM_MODEL})…", flush=True)
-            lm_model, lm_tok, _LM_IS_VLM = _load_lm_weights(LM_MODEL)
-        if lm and aux_lm_model is None:
-            # Aux pick happens AFTER the main translator is resident so the free-memory probe reflects it.
-            choice = _aux_lm_choice(LM_MODEL, _free_mem_gb_mlx())
-            if choice:
-                try:
-                    print(f"[bridge] loading aux translator ({choice})…", flush=True)
-                    aux_lm_model, aux_lm_tok, _AUX_LM_IS_VLM = _load_lm_weights(choice)
-                    print("[bridge] aux translator ready — previews + page DOM overlap the main model", flush=True)
-                except Exception as e:                      # aux is an enhancement; main path must survive
-                    print(f"[bridge] aux translator unavailable ({e}); single-model mode", flush=True)
-                    aux_lm_model = aux_lm_tok = None
-                    _AUX_LM_IS_VLM = False
-    if vad and silero is None:
-        print("[bridge] loading Silero VAD…", flush=True)
-        silero = load_silero_vad(onnx=True)
-# One dedicated worker for MLX keeps stream affinity.
-# LOAD-BEARING: translate_once mutates the module-global _tx_cache on this pool's thread, so the KV-reuse
-# invariant (_tx_cache_ids == cache.offset) is safe ONLY because there is EXACTLY ONE worker (the cache is
-# thread-confined). Do not raise this without making the translator KV cache per-thread/per-connection.
-_MLX_POOL_WORKERS = 1
-_mlx_pool = ThreadPoolExecutor(max_workers=_MLX_POOL_WORKERS, thread_name_prefix="mlx")
-# Parakeet's sherpa-onnx CPU pool — off the MLX device so ASR never contends with 26B translation.
-# Single worker keeps per-stream decode affinity.
-_sherpa_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sherpa")
-# mlx-audio ASR (granite/qwen3) gets its OWN MLX worker+lock so it can OVERLAP 26B translation on the single
-# GPU: 26B decode is memory-bandwidth bound (compute idles), so a small ASR forward slots into that gap.
-# Measured ~1.16x on a concurrent pair, and it removes the per-sentence "translate-then-transcribe" gap so the
-# translation pipeline doesn't stall. ASR holds _ASR_DEVICE_LOCK, translation holds _MLX_DEVICE_LOCK — disjoint,
-# so they run concurrently (RAM ~25GB peak on a 64GB box). _tx_cache stays confined to _mlx_pool (no race).
-_asr_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="asr")
-_ASR_DEVICE_LOCK = asyncio.Lock()
-# Aux translator pool/lock — third concurrent MLX user (after main LM and ASR), same overlap rationale.
-# Aux calls always use a FRESH per-call prompt cache (runtime path forces kv_reuse off), so nothing here
-# can race the main worker's persistent _tx_cache/_page_tx_cache.
-_aux_lm_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="auxlm")
-_AUX_LM_DEVICE_LOCK = asyncio.Lock()
-# Single MLX device: _MLX_DEVICE_LOCK serializes TRANSLATION (+ ask / warm / engine-load) across connections;
-# ASR uses its own lock above so the two overlap. A live engine switch restarts the capture, so warm/engine-load
-# on this lock won't race a concurrent transcribe on _ASR_DEVICE_LOCK.
-_MLX_DEVICE_LOCK = asyncio.Lock()
+    return model_runtime.load_models(asr=asr, lm=lm, vad=vad)
+
+
 # Single active capture connection (diagnostic only): one client is the intended model. If a second
 # authenticates while one is active we WARN — we do NOT close it: the extension auto-reconnects, so a forced
-# close would cause a reconnect war. Correctness across any concurrent clients is held by _MLX_DEVICE_LOCK;
+# close would cause a reconnect war. Correctness across any concurrent clients is held by model_runtime._MLX_DEVICE_LOCK;
 # full non-degradation would need a per-connection translator cache. See docs/caption-lifecycle.md.
 _active_ws = None
 _TX_KVREUSE = os.environ.get("LCC_TX_KVREUSE", "1") != "0"   # reuse the translator static-prefix KV across calls
-_tx_cache = None            # persistent prompt cache for translate_once (single _mlx_pool worker -> no race)
+_tx_cache = None            # persistent prompt cache for translate_once (single model_runtime._mlx_pool worker -> no race)
 _tx_cache_ids = []          # token ids currently resident in _tx_cache
 _PAGE_TX_KVREUSE = os.environ.get("LCC_PAGE_TX_KVREUSE", "1") != "0"   # separate page-DOM prefix KV; never shares caption cache
-_page_tx_cache = None       # persistent prompt cache for translate_page_batch_once (same single _mlx_pool worker)
+_page_tx_cache = None       # persistent prompt cache for translate_page_batch_once (same single model_runtime._mlx_pool worker)
 _page_tx_cache_ids = []     # token ids currently resident in _page_tx_cache
 _TX_KV_MAX = int(os.environ.get("LCC_TX_KV_MAX_TOKENS", "4096"))   # cap reuse to a bounded prompt window
 _TX_KV_WINDOW = None        # min RotatingKVCache sliding window (Gemma 4); reuse must stay inside it (lazy)
 _TX_GEN_MAX = max(1, int(os.environ.get("LCC_TX_GEN_MAX_TOKENS", "64")))   # caption translation cap; ask/summary uses its own chat cap
 _TX_WINDOW_MARGIN = max(0, int(os.environ.get("LCC_TX_WINDOW_MARGIN", "8")))   # keep reuse a few tokens clear of the window edge
-LATENCY_MODE_DEFAULT = _normalize_latency_mode(os.environ.get("LCC_LATENCY_MODE"), "aggressive")
+LATENCY_MODE_DEFAULT = model_runtime._normalize_latency_mode(os.environ.get("LCC_LATENCY_MODE"), "aggressive")
 TX_RECENT_FINAL_MAX = max(0, int(os.environ.get("LCC_TX_RECENT_FINAL_MAX", "2")))
 TX_RECENT_PREVIEW_MAX = max(0, int(os.environ.get("LCC_TX_RECENT_PREVIEW_MAX", "0")))
 TX_PREVIEW_MAX_TOKENS = max(16, int(os.environ.get("LCC_TX_PREVIEW_MAX_TOKENS", "40")))
@@ -651,7 +187,7 @@ def _lat_tx_max_tokens_for(final: bool):
 
 
 def _lat_soft_max_sec(engine: str, mode: str):
-    if _is_sherpa_engine(engine):
+    if model_runtime._is_sherpa_engine(engine):
         if mode == "aggressive":
             return policy.AGG_SOFT_MAX_SEC
         if mode == "balanced":
@@ -664,10 +200,10 @@ def _lat_sent_windows_for(mode: str, raw_ms):
 # ------------------------------------------------------------------------------------------------------
 
 def warm_mlx_selected(asr=False, lm=False, asr_engine=None):
-    engine = _normalize_asr_engine(asr_engine, ASR_ENGINE)
-    if not _is_sherpa_engine(engine) or lm:
-        _require_mlx()
-        mx.set_default_device(mx.gpu)
+    engine = model_runtime._normalize_asr_engine(asr_engine, model_runtime.ASR_ENGINE)
+    if not model_runtime._is_sherpa_engine(engine) or lm:
+        model_runtime._require_mlx()
+        model_runtime.mx.set_default_device(model_runtime.mx.gpu)
     if asr:
         try:
             _ensure_asr_loaded(engine)
@@ -679,9 +215,9 @@ def warm_mlx_selected(asr=False, lm=False, asr_engine=None):
             translate_once("hello world")
         except Exception as e:
             print("[warm] mlx lm:", e, flush=True)
-        if aux_lm_ready():
+        if model_runtime.aux_lm_ready():
             try:
-                translate_once("hello world", runtime=_aux_runtime())
+                translate_once("hello world", runtime=model_runtime._aux_runtime())
             except Exception as e:
                 print("[warm] aux lm:", e, flush=True)
 
@@ -809,32 +345,32 @@ def _repair_glossary_terms(text: str, glossary_pairs):
 
 
 def transcribe_pcm(pcm: bytes, hint: str = "", asr_engine=None):
-    engine = _normalize_asr_engine(asr_engine, ASR_ENGINE)
+    engine = model_runtime._normalize_asr_engine(asr_engine, model_runtime.ASR_ENGINE)
     if engine == "parakeet":
-        if parakeet_asr is None:
+        if model_runtime.parakeet_asr is None:
             raise RuntimeError("Parakeet ASR is not loaded")
-        return parakeet_asr.transcribe_pcm(pcm, hint=hint)
+        return model_runtime.parakeet_asr.transcribe_pcm(pcm, hint=hint)
 
-    mx.set_default_device(mx.gpu)
+    model_runtime.mx.set_default_device(model_runtime.mx.gpu)
     # 16k mono float32 array straight to the audio model: load_audio()/generate take ndarrays as-is
     # (no resample), so we skip the per-segment /tmp WAV write+decode round-trip.
     audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
     audio *= 1.0 / 32768.0
 
-    if _is_mlxa_engine(engine):                          # mlx-audio audio-LLM (granite / qwen3)
-        if mlxa_model is None:
+    if model_runtime._is_mlxa_engine(engine):                          # mlx-audio audio-LLM (granite / qwen3)
+        if model_runtime.mlxa_model is None:
             raise RuntimeError(f"{engine} ASR is not loaded")
         # No ASR-side text hint: qwen3 auto-detects language + punctuates with no prompt; granite's punctuation
         # is fragile — ANY appended hint ("Keywords:"/"Expected names:") suppresses capitalization+punctuation —
         # so keep the clean instruction. (Glossary still biases the 26B translation; only source-side name
         # spelling is dropped, and both models already transcribe names well.)
-        gen_kw = {"prompt": GRANITE_ASR_PROMPT} if engine == "granite" else {}
-        res = mlxa_model.generate(audio, temperature=0.0, max_tokens=ASR_MAX_TOKENS, **gen_kw)
+        gen_kw = {"prompt": model_runtime.GRANITE_ASR_PROMPT} if engine == "granite" else {}
+        res = model_runtime.mlxa_model.generate(audio, temperature=0.0, max_tokens=ASR_MAX_TOKENS, **gen_kw)
         raw = getattr(res, "text", None)
-    elif _is_whisper_engine(engine):                     # Whisper large-v3 — own decode, no prompt (INV-7)
+    elif model_runtime._is_whisper_engine(engine):                     # Whisper large-v3 — own decode, no prompt (INV-7)
         import mlx_whisper
         # Each VAD chunk is independent: don't condition on previous text (avoids cross-chunk drift).
-        res = mlx_whisper.transcribe(audio, path_or_hf_repo=WHISPER_REPO,
+        res = mlx_whisper.transcribe(audio, path_or_hf_repo=model_runtime.WHISPER_REPO,
                                      temperature=0.0, condition_on_previous_text=False, verbose=False)
         raw = res.get("text") if isinstance(res, dict) else getattr(res, "text", None)
     else:
@@ -861,7 +397,7 @@ def _reset_page_tx_cache():
 def _tx_cache_offset(cache):
     """Logical token length the prompt cache is at (all layers agree), or None if unreadable. For sliding
     layers (RotatingKVCache) this is the logical position, NOT resident size; trimmability is separate
-    (offset < max_size) and must be checked via can_trim_prompt_cache."""
+    (offset < max_size) and must be checked via model_runtime.can_trim_prompt_cache."""
     try:
         offs = [int(c.offset) for c in cache if hasattr(c, "offset")]
         if offs and len(offs) == len(cache) and min(offs) == max(offs):
@@ -905,7 +441,7 @@ def _learn_tx_window(cache):
 def _ensure_ids(prompt):
     """apply_chat_template normally returns list[int]; coerce str/array so _lcp_words + slicing stay sane."""
     if isinstance(prompt, str):
-        return list(map(int, lm_tok.encode(prompt)))
+        return list(map(int, model_runtime.lm_tok.encode(prompt)))
     if hasattr(prompt, "tolist"):
         prompt = prompt.tolist()
     return [int(x) for x in prompt]
@@ -913,13 +449,13 @@ def _ensure_ids(prompt):
 def _trim_cache_or_reset(cache, reset_fn, n, expected_after):
     """Trim exactly n tokens and VERIFY (count + post-offset). Reset the persistent cache and return False
     on any failure — Gemma 4 sliding layers (RotatingKVCache) go non-trimmable once offset >= sliding_window
-    and trim_prompt_cache then silently returns 0, which would desync _tx_cache_ids from the real cache."""
+    and model_runtime.trim_prompt_cache then silently returns 0, which would desync _tx_cache_ids from the real cache."""
     if n <= 0:
         return True
-    if cache is None or not can_trim_prompt_cache(cache):
+    if cache is None or not model_runtime.can_trim_prompt_cache(cache):
         reset_fn(); return False
     try:
-        got = trim_prompt_cache(cache, n)
+        got = model_runtime.trim_prompt_cache(cache, n)
     except Exception:
         reset_fn(); return False
     if got != n or _tx_cache_offset(cache) != expected_after:
@@ -946,14 +482,14 @@ def _vlm_generate_text(msgs, gen_max, on_update=None, model=None, proc=None):
     KV-reuse / token streaming (those are mlx_lm-specific) -> a single final update. Defaults to the main
     translator globals; an aux runtime passes its own (model, proc). Same _translate_messages prompt as the
     mlx_lm path, so output is consistent."""
-    mx.set_default_device(mx.gpu)
-    model = lm_model if model is None else model
-    proc = lm_tok if proc is None else proc
+    model_runtime.mx.set_default_device(model_runtime.mx.gpu)
+    model = model_runtime.lm_model if model is None else model
+    proc = model_runtime.lm_tok if proc is None else proc
     try:
         prompt = proc.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
     except Exception:
         prompt = proc.tokenizer.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
-    res = vlm_generate(model, proc, prompt, max_tokens=int(gen_max), verbose=False)
+    res = model_runtime.vlm_generate(model, proc, prompt, max_tokens=int(gen_max), verbose=False)
     text = _clean(getattr(res, "text", None) or (res if isinstance(res, str) else str(res)))
     if on_update is not None and text:
         on_update(text)
@@ -967,16 +503,16 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
     """Stateless per-clause translation, primed for quality: a strong register-aware instruction,
     source-language-matched few-shot anchors, a pinned glossary, and the last few (source -> target)
     pairs as conversation context so terminology/tone stay consistent across the stream. Re-callable on
-    a growing clause (EN->KO reverses word order, so we re-translate the whole clause). Runs on _mlx_pool
+    a growing clause (EN->KO reverses word order, so we re-translate the whole clause). Runs on model_runtime._mlx_pool
     (single worker -> the module-level _tx_cache has no race). runtime=(model, tok, is_vlm) redirects the
     call to the AUX translator on its own pool — that path always uses a fresh per-call cache (no shared
     KV state, so it is safe off the main worker thread)."""
     global _tx_cache, _tx_cache_ids, _TX_KV_WINDOW
     msgs = _translate_messages(text, recent_pairs, target, hint, register, glossary_pairs, profile, custom)
-    model, tok, is_vlm = (lm_model, lm_tok, _LM_IS_VLM) if runtime is None else runtime
+    model, tok, is_vlm = (model_runtime.lm_model, model_runtime.lm_tok, model_runtime._LM_IS_VLM) if runtime is None else runtime
     if is_vlm:
         return _vlm_generate_text(msgs, max(1, int(max_tokens or _TX_GEN_MAX)), on_update, model, tok)
-    mx.set_default_device(mx.gpu)
+    model_runtime.mx.set_default_device(model_runtime.mx.gpu)
     try:
         prompt = tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False)
     except TypeError:
@@ -984,13 +520,13 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
     prompt = _ensure_ids(prompt)
     gen_max = max(1, int(max_tokens or _TX_GEN_MAX))
     if runtime is None and _TX_KV_WINDOW is None:          # learn the sliding window once (fail-safe on unknown caches)
-        _TX_KV_WINDOW = _learn_tx_window(_tx_cache if _tx_cache is not None else make_prompt_cache(lm_model))
+        _TX_KV_WINDOW = _learn_tx_window(_tx_cache if _tx_cache is not None else model_runtime.make_prompt_cache(model_runtime.lm_model))
     # Reuse the KV of the static prefix (system + few-shot + recent_pairs ~= 95% of the prompt, identical
     # across calls): trim the persistent cache to the longest prefix it still shares with this prompt, then
     # prefill only the divergent tail (~850ms -> ~280ms TTFT). The cache is STATEFUL: the invariant
     # _tx_cache_ids == cache.offset must hold on EVERY path, so every trim is verified and ANY failure
     # (incl. a non-trimmable RotatingKVCache once offset >= sliding_window) resets to a fresh cache; after
-    # each call we trim the generated suffix back to prompt-only. Single _mlx_pool worker. Off: LCC_TX_KVREUSE=0.
+    # each call we trim the generated suffix back to prompt-only. Single model_runtime._mlx_pool worker. Off: LCC_TX_KVREUSE=0.
     # reuse only while the whole call (prompt + generation + margin) stays INSIDE the sliding window: past it
     # the rotating layers go non-trimmable AND a trim+append prefill no longer matches a fresh prefill.
     use_reuse = _TX_KVREUSE if kv_reuse is None else kv_reuse
@@ -1001,24 +537,24 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
             if pre is None or pre != len(_tx_cache_ids):
                 _reset_tx_cache()
         if _tx_cache is None:
-            _tx_cache, _tx_cache_ids = make_prompt_cache(lm_model), []
+            _tx_cache, _tx_cache_ids = model_runtime.make_prompt_cache(model_runtime.lm_model), []
         common = _lcp_words(_tx_cache_ids, prompt)
         if len(_tx_cache_ids) - common > 0 and not _tx_trim_or_reset(len(_tx_cache_ids) - common, common):
-            _tx_cache, _tx_cache_ids, common = make_prompt_cache(lm_model), [], 0
+            _tx_cache, _tx_cache_ids, common = model_runtime.make_prompt_cache(model_runtime.lm_model), [], 0
         feed = prompt[common:]
         if not feed:                                           # prompt already resident: rewind one token,
             if common <= 0 or not _tx_trim_or_reset(1, len(prompt) - 1):   # or rebuild if the cache can't rewind
-                _tx_cache, _tx_cache_ids, common, feed = make_prompt_cache(lm_model), [], 0, prompt
+                _tx_cache, _tx_cache_ids, common, feed = model_runtime.make_prompt_cache(model_runtime.lm_model), [], 0, prompt
             else:
                 common -= 1; feed = prompt[common:]
         cache = _tx_cache
     else:
-        cache = make_prompt_cache(model, max_kv_size=2048)
+        cache = model_runtime.make_prompt_cache(model, max_kv_size=2048)
         feed = prompt
     out, since = [], 0
     try:
         every = max(1, int(stream_every or 4))
-        for r in lm_stream(model, tok, feed, max_tokens=gen_max, sampler=_sampler, prompt_cache=cache):
+        for r in model_runtime.lm_stream(model, tok, feed, max_tokens=gen_max, sampler=model_runtime._sampler, prompt_cache=cache):
             out.append(r.text)
             since += 1
             if on_update is not None and since >= every:
@@ -1082,18 +618,18 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
                     on_segment(str(it["id"]), str(it["text"]), result[str(it["id"])])
         return result
 
-    model, tok, is_vlm = (lm_model, lm_tok, _LM_IS_VLM) if runtime is None else runtime
+    model, tok, is_vlm = (model_runtime.lm_model, model_runtime.lm_tok, model_runtime._LM_IS_VLM) if runtime is None else runtime
     if is_vlm:
         raw = _vlm_generate_text(msgs, gen_max, None, model, tok)
         return _finish(raw)
-    mx.set_default_device(mx.gpu)
+    model_runtime.mx.set_default_device(model_runtime.mx.gpu)
     try:
         prompt = tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False)
     except TypeError:
         prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
     prompt = _ensure_ids(prompt)
     if runtime is None and _TX_KV_WINDOW is None:
-        _TX_KV_WINDOW = _learn_tx_window(_page_tx_cache if _page_tx_cache is not None else make_prompt_cache(lm_model))
+        _TX_KV_WINDOW = _learn_tx_window(_page_tx_cache if _page_tx_cache is not None else model_runtime.make_prompt_cache(model_runtime.lm_model))
     # Streamed DOM segments are applied immediately by the content script; if a persistent KV invariant
     # later forces a fresh retry, there is no safe way to "unsend" already-painted replacements. Use a
     # fresh per-call cache for streaming unless the caller explicitly opts back into reuse.
@@ -1105,24 +641,24 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
             if pre is None or pre != len(_page_tx_cache_ids):
                 _reset_page_tx_cache()
         if _page_tx_cache is None:
-            _page_tx_cache, _page_tx_cache_ids = make_prompt_cache(lm_model), []
+            _page_tx_cache, _page_tx_cache_ids = model_runtime.make_prompt_cache(model_runtime.lm_model), []
         common = _lcp_words(_page_tx_cache_ids, prompt)
         if len(_page_tx_cache_ids) - common > 0 and not _page_tx_trim_or_reset(len(_page_tx_cache_ids) - common, common):
-            _page_tx_cache, _page_tx_cache_ids, common = make_prompt_cache(lm_model), [], 0
+            _page_tx_cache, _page_tx_cache_ids, common = model_runtime.make_prompt_cache(model_runtime.lm_model), [], 0
         feed = prompt[common:]
         if not feed:
             if common <= 0 or not _page_tx_trim_or_reset(1, len(prompt) - 1):
-                _page_tx_cache, _page_tx_cache_ids, common, feed = make_prompt_cache(lm_model), [], 0, prompt
+                _page_tx_cache, _page_tx_cache_ids, common, feed = model_runtime.make_prompt_cache(model_runtime.lm_model), [], 0, prompt
             else:
                 common -= 1; feed = prompt[common:]
         cache = _page_tx_cache
     else:
-        cache = make_prompt_cache(model, max_kv_size=max(2048, min(_TX_KV_MAX, len(prompt) + gen_max + _TX_WINDOW_MARGIN)))
+        cache = model_runtime.make_prompt_cache(model, max_kv_size=max(2048, min(_TX_KV_MAX, len(prompt) + gen_max + _TX_WINDOW_MARGIN)))
         feed = prompt
     out = []
     since = 0
     try:
-        for r in lm_stream(model, tok, feed, max_tokens=gen_max, sampler=_sampler, prompt_cache=cache):
+        for r in model_runtime.lm_stream(model, tok, feed, max_tokens=gen_max, sampler=model_runtime._sampler, prompt_cache=cache):
             out.append(r.text)
             if on_segment is not None:
                 since += 1
@@ -1193,16 +729,16 @@ def translate_page_long_once(text, recent_pairs=(), target: str = "Korean", hint
 def run_ask(mode: str, transcript_text: str, question: str = "", target: str = "Korean", on_partial=None):
     """On-demand summary / Q&A over the running transcript (already-resident translator, fresh KV cache)."""
     msgs, max_toks = _ask_messages(mode, transcript_text, question, target)
-    if _LM_IS_VLM:
+    if model_runtime._LM_IS_VLM:
         return _vlm_generate_text(msgs, max_toks, on_partial)
-    mx.set_default_device(mx.gpu)
+    model_runtime.mx.set_default_device(model_runtime.mx.gpu)
     try:
-        prompt = lm_tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False)
+        prompt = model_runtime.lm_tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False)
     except TypeError:
-        prompt = lm_tok.apply_chat_template(msgs, add_generation_prompt=True)
-    cache = make_prompt_cache(lm_model, max_kv_size=8192)   # fresh window; don't pollute the translation KV cache
+        prompt = model_runtime.lm_tok.apply_chat_template(msgs, add_generation_prompt=True)
+    cache = model_runtime.make_prompt_cache(model_runtime.lm_model, max_kv_size=8192)   # fresh window; don't pollute the translation KV cache
     out, since = [], 0
-    for r in lm_stream(lm_model, lm_tok, prompt, max_tokens=max_toks, sampler=_sampler, prompt_cache=cache):
+    for r in model_runtime.lm_stream(model_runtime.lm_model, model_runtime.lm_tok, prompt, max_tokens=max_toks, sampler=model_runtime._sampler, prompt_cache=cache):
         out.append(r.text); since += 1
         if on_partial is not None and since >= 4:
             since = 0; on_partial(_clean("".join(out)))
@@ -1216,7 +752,7 @@ def run_ask(mode: str, transcript_text: str, question: str = "", target: str = "
 # LCC_BACKEND=cuda we rebind these SAME module globals to backend_cuda's OpenAI-compatible HTTP client; the
 # live loop passes them to executors by name, so it transparently drives a remote llama.cpp/vLLM instead.
 # backend_cuda imports the shared prompt builders from THIS module lazily (at call time) — no import cycle.
-if BACKEND == "cuda":
+if model_runtime.BACKEND == "cuda":
     import backend_cuda
     transcribe_pcm = backend_cuda.transcribe_pcm
     translate_once = backend_cuda.translate_once
@@ -1225,7 +761,7 @@ if BACKEND == "cuda":
     warm_mlx_selected = backend_cuda.warm_selected      # name kept for call-site compatibility; impl is an HTTP ping
     _ensure_asr_loaded = backend_cuda.ensure_asr_loaded
     print(f"[bridge] backend=cuda  chat={backend_cuda.CHAT_URL}  asr={backend_cuda.ASR_URL}", flush=True)
-elif BACKEND == "fake":
+elif model_runtime.BACKEND == "fake":
     import backend_fake
     transcribe_pcm = backend_fake.transcribe_pcm
     translate_once = backend_fake.translate_once
@@ -1280,7 +816,7 @@ async def handle(ws):
     peer = getattr(ws, "remote_address", None)
     print(f"[bridge] client connected origin={origin!r} peer={peer!r}", flush=True)
     loop = asyncio.get_running_loop()        # for thread->loop partial-caption handoff
-    vad = VADIterator(silero, threshold=VAD_THRESH[2], sampling_rate=SR,
+    vad = VADIterator(model_runtime.silero, threshold=VAD_THRESH[2], sampling_rate=SR,
                       min_silence_duration_ms=SEG_SILENCE_MS, speech_pad_ms=SPEECH_PAD_MS)
     cur_vad_level = 2                       # applied VAD level; rebuild VAD only when this actually changes
     sent_silence_cfg_ms = SENT_SILENCE_MS
@@ -1289,7 +825,7 @@ async def handle(ws):
     recent_pairs = collections.deque(maxlen=5)   # last few (source, target) finals -> consistency context
     dom_recent_pairs = collections.deque(maxlen=3)   # page translation consistency, kept out of caption history
     target_lang, context_hint = _normalize_target_lang("Korean"), ""   # set via {"type":"config"} from the client
-    asr_engine = ASR_ENGINE
+    asr_engine = model_runtime.ASR_ENGINE
     latency_mode = LATENCY_MODE_DEFAULT
     evs_level = 0               # EVS controller pressure (0 nominal / 1 pressured under backlog); see _evs_step
     register = "casual"         # tone preset (casual/lecture/news/chat) -> few-shot + tone instruction
@@ -1335,7 +871,7 @@ async def handle(ws):
     la_prev, la_stable, la_count, speech_epoch = [], [], 0, 0   # LocalAgreement state + utterance epoch (stale-partial guard)
     t_conn = time.perf_counter()
     authed = False
-    mlx_lock = _MLX_DEVICE_LOCK   # global: serialize the single MLX device across ALL connections (was per-conn)
+    mlx_lock = model_runtime._MLX_DEVICE_LOCK   # global: serialize the single MLX device across ALL connections (was per-conn)
 
     async def send_json(payload):
         try:
@@ -1553,7 +1089,7 @@ async def handle(ws):
             return False
         if pending_preview_jobs:
             return False
-        if aux_lm_ready():
+        if model_runtime.aux_lm_ready():
             # The aux pool freed previews from the main lock, but DISPLAY ORDER still rules: a preview
             # of unit N+1 painting before unit N's still-translating final makes the client rewind to
             # the previous sentence when that final lands ("이전 자막 깜박임"). Keep the backlog gates;
@@ -1566,7 +1102,7 @@ async def handle(ws):
             return False
         if latency_mode == "balanced":
             return (not in_speech) and work_q.empty()
-        if _is_sherpa_engine(asr_engine):
+        if model_runtime._is_sherpa_engine(asr_engine):
             return True
         return (not in_speech) and work_q.empty()
 
@@ -1692,12 +1228,12 @@ async def handle(ws):
             engine = "main"                                  # cached text came from the main model
         if ko is None:
             try:
-                async with _AUX_LM_DEVICE_LOCK:
-                    ko = await loop.run_in_executor(_aux_lm_pool, functools.partial(
+                async with model_runtime._AUX_LM_DEVICE_LOCK:
+                    ko = await loop.run_in_executor(model_runtime._aux_lm_pool, functools.partial(
                         translate_once, source, recent_ctx, target=target_lang, hint=context_hint,
                         register=register, glossary_pairs=effective_glossary(),
                         max_tokens=tx_max_tokens_for(False), stream_every=tx_stream_every_for(False),
-                        profile="caption", custom=custom_prompt, runtime=_aux_runtime()))
+                        profile="caption", custom=custom_prompt, runtime=model_runtime._aux_runtime()))
             except Exception as e:
                 print(f"[trans err aux] {e}", flush=True)
                 preview_drop_count += 1
@@ -1751,7 +1287,7 @@ async def handle(ws):
                 preview_drop_count += 1
                 scheduler_stats["preview_drop_busy"] += 1
                 continue
-            if not job["final"] and aux_lm_ready():
+            if not job["final"] and model_runtime.aux_lm_ready():
                 t = asyncio.create_task(aux_preview(job))    # don't block finals behind a preview
                 aux_tasks.add(t)
                 t.add_done_callback(aux_tasks.discard)
@@ -1792,7 +1328,7 @@ async def handle(ws):
                 if ko is None:
                     # MLX ASR shares the MLX worker with translation. Sherpa ASR (Parakeet) has its own
                     # CPU pool, so do not stall translation behind sherpa speech backlog.
-                    if not _is_sherpa_engine(asr_engine):
+                    if not model_runtime._is_sherpa_engine(asr_engine):
                         guard = 0
                         while not work_q.empty() and guard < 50:
                             await asyncio.sleep(0.02); guard += 1
@@ -1826,7 +1362,7 @@ async def handle(ws):
                                 tpt = asyncio.create_task(_tx_pump())
                                 try:
                                     ko = await loop.run_in_executor(
-                                        _mlx_pool, translate_once, source, recent_ctx,
+                                        model_runtime._mlx_pool, translate_once, source, recent_ctx,
                                         target_lang, context_hint, register, effective_glossary(), _on_tx,
                                         None, tx_max_tokens_for(True), tx_stream_every_for(True), "caption", custom_prompt)
                                 except Exception as e:
@@ -1843,7 +1379,7 @@ async def handle(ws):
                             else:
                                 try:
                                     ko = await loop.run_in_executor(
-                                        _mlx_pool, translate_once, source, recent_ctx,
+                                        model_runtime._mlx_pool, translate_once, source, recent_ctx,
                                         target_lang, context_hint, register, effective_glossary(), None,
                                         None, tx_max_tokens_for(job["final"]), tx_stream_every_for(job["final"]), "caption", custom_prompt)
                                 except Exception as e:
@@ -1930,13 +1466,13 @@ async def handle(ws):
 
     async def _on_asr_pool(engine, fn, *fn_args):
         # Route an ASR-pool job to the right executor: sherpa (Parakeet) runs on the dedicated CPU pool with no
-        # MLX lock; the in-process MLX audio model (granite/qwen3) runs on its OWN _asr_pool + _ASR_DEVICE_LOCK
+        # MLX lock; the in-process MLX audio model (granite/qwen3) runs on its OWN model_runtime._asr_pool + model_runtime._ASR_DEVICE_LOCK
         # so it OVERLAPS 26B translation on the single GPU (26B decode is bandwidth-bound; small ASR fills the
-        # compute gap). Translation keeps mlx_lock + _mlx_pool; the two locks are disjoint so they run together.
-        if _is_sherpa_engine(engine):
-            return await loop.run_in_executor(_sherpa_pool, fn, *fn_args)
-        async with _ASR_DEVICE_LOCK:
-            return await loop.run_in_executor(_asr_pool, fn, *fn_args)
+        # compute gap). Translation keeps mlx_lock + model_runtime._mlx_pool; the two locks are disjoint so they run together.
+        if model_runtime._is_sherpa_engine(engine):
+            return await loop.run_in_executor(model_runtime._sherpa_pool, fn, *fn_args)
+        async with model_runtime._ASR_DEVICE_LOCK:
+            return await loop.run_in_executor(model_runtime._asr_pool, fn, *fn_args)
 
     async def transcribe(audio):
         if len(audio) < int(MIN_SEC * SR) * 2:
@@ -1963,12 +1499,12 @@ async def handle(ws):
         failure."""
         if not (diarize_enabled and spk_clusters is not None) or unit.speaker is not None:
             return
-        min_bytes = int(_diarize().SPK_MIN_SEC * SR) * 2
+        min_bytes = int(model_runtime._diarize().SPK_MIN_SEC * SR) * 2
         spk_src = bytes(unit.pcm) if (unit.pure and len(unit.pcm) >= min_bytes) else unit.spk_pcm
         if len(spk_src) < min_bytes:
             return
         try:
-            emb = await loop.run_in_executor(_sherpa_pool, _diarize().embed, spk_src)
+            emb = await loop.run_in_executor(model_runtime._sherpa_pool, model_runtime._diarize().embed, spk_src)
             if emb:
                 unit.speaker = spk_clusters.add(emb)
         except Exception as e:
@@ -2135,10 +1671,10 @@ async def handle(ws):
                         prev_page_sig = _translation_context_signature(
                             target_lang, page_register, page_context_hint or context_hint, prev_page_glossary, custom_prompt)
                         if d.get("latencyMode") is not None:
-                            latency_mode = _normalize_latency_mode(d.get("latencyMode"), latency_mode)
+                            latency_mode = model_runtime._normalize_latency_mode(d.get("latencyMode"), latency_mode)
                             sent_sil_windows = sent_windows_for(sent_silence_cfg_ms)
                         if d.get("asrEngine") is not None:
-                            requested_engine = _normalize_asr_engine(d.get("asrEngine"), asr_engine)
+                            requested_engine = model_runtime._normalize_asr_engine(d.get("asrEngine"), asr_engine)
                             try:
                                 await _on_asr_pool(requested_engine, _ensure_asr_loaded, requested_engine)
                                 asr_engine = requested_engine
@@ -2146,11 +1682,11 @@ async def handle(ws):
                                 await send_json({"type": "err", "text": f"ASR 엔진 전환 실패({requested_engine}): {e}"})
                                 print(f"[bridge] asr switch failed engine={requested_engine}: {e}", flush=True)
                         if d.get("vadLevel") is not None:
-                            vad_level = _clamp_int(d.get("vadLevel"), 2, 0, 3)
+                            vad_level = model_runtime._clamp_int(d.get("vadLevel"), 2, 0, 3)
                             if vad_level != cur_vad_level:    # rebuild only on real change — a live config push (glossary/slider/lang)
                                 cur_vad_level = vad_level      # must not discard the in-progress utterance just by arriving
                                 thr = VAD_THRESH.get(vad_level, 0.5)
-                                vad = VADIterator(silero, threshold=thr, sampling_rate=SR,
+                                vad = VADIterator(model_runtime.silero, threshold=thr, sampling_rate=SR,
                                                   min_silence_duration_ms=SEG_SILENCE_MS, speech_pad_ms=SPEECH_PAD_MS)
                                 # Rebuilding resets VAD state, so flush any in-flight utterance as a soft clause
                                 # first — otherwise changing the level mid-speech silently drops it.
@@ -2158,7 +1694,7 @@ async def handle(ws):
                                     await enqueue_work(("clause", bytes(voiced), speech_start_ms, audio_ms, True))
                                 in_speech, voiced = False, bytearray(); preroll.clear()
                         if d.get("sentSilenceMs") is not None:           # 0 is valid, don't truthiness-skip
-                            sent_silence_cfg_ms = _clamp_int(d.get("sentSilenceMs"), SENT_SILENCE_MS, 500, 5000)
+                            sent_silence_cfg_ms = model_runtime._clamp_int(d.get("sentSilenceMs"), SENT_SILENCE_MS, 500, 5000)
                             sent_sil_windows = sent_windows_for(sent_silence_cfg_ms)
                         if d.get("targetLang"):
                             target_lang = _normalize_target_lang(d.get("targetLang"), target_lang)
@@ -2178,9 +1714,9 @@ async def handle(ws):
                             raw_page_glossary = str(d.get("pageGlossary") or "")
                             page_glossary_pairs = _parse_glossary(raw_page_glossary) if raw_page_glossary.strip() else None
                         if d.get("accuracyMode") is not None:
-                            accuracy_mode = _config_bool(d.get("accuracyMode"), accuracy_mode)
+                            accuracy_mode = model_runtime._config_bool(d.get("accuracyMode"), accuracy_mode)
                         if d.get("diarize") is not None:
-                            _want_diarize = _config_bool(d.get("diarize"), diarize_enabled)
+                            _want_diarize = model_runtime._config_bool(d.get("diarize"), diarize_enabled)
                             if not _want_diarize:
                                 diarize_enabled = False
                             elif spk_clusters is not None:
@@ -2191,8 +1727,8 @@ async def handle(ws):
                                 async def _enable_diarize():
                                     nonlocal diarize_enabled, diarize_loading, spk_clusters
                                     try:
-                                        await loop.run_in_executor(_sherpa_pool, _diarize().ensure_extractor)
-                                        spk_clusters = _diarize().OnlineSpeakerClusters()
+                                        await loop.run_in_executor(model_runtime._sherpa_pool, model_runtime._diarize().ensure_extractor)
+                                        spk_clusters = model_runtime._diarize().OnlineSpeakerClusters()
                                         diarize_enabled = True
                                         await send_json({"type": "notice", "text": "화자 구분 켜짐"})
                                     except Exception as e:
@@ -2203,7 +1739,7 @@ async def handle(ws):
 
                                 asyncio.create_task(_enable_diarize())
                         if d.get("termMemory") is not None:
-                            term_memory_enabled = _config_bool(d.get("termMemory"), term_memory_enabled)
+                            term_memory_enabled = model_runtime._config_bool(d.get("termMemory"), term_memory_enabled)
                         if d.get("autoGlossary") is not None:     # domain-persisted term seeds (tab memory)
                             auto_seed_raw = str(d.get("autoGlossary") or "")[:4000]
                             if TERM_MEMORY_ON and term_memory_enabled:
@@ -2270,7 +1806,7 @@ async def handle(ws):
                             async with mlx_lock:
                                 apt = asyncio.create_task(a_pump())
                                 try:
-                                    ans = await loop.run_in_executor(_mlx_pool, run_ask, mode, tr, q, target_lang, a_partial)
+                                    ans = await loop.run_in_executor(model_runtime._mlx_pool, run_ask, mode, tr, q, target_lang, a_partial)
                                 finally:
                                     a_done = True; a_ev.set()
                                     await asyncio.gather(apt, return_exceptions=True)
@@ -2294,13 +1830,13 @@ async def handle(ws):
                         short = [it for it in items if len(it["text"]) <= PAGE_LONG_CHARS or "⟦" in it["text"]]
                         longs = [it for it in items if len(it["text"]) > PAGE_LONG_CHARS and "⟦" not in it["text"]]
                         partial_requested = bool(d.get("partial"))
-                        verify_requested = _config_bool(d.get("verify"), False)
+                        verify_requested = model_runtime._config_bool(d.get("verify"), False)
                         # Aux routing: short microbatches + per-item shorts go to the AUX translator when
                         # resident — page DOM stops contending with captions entirely (no busy deference).
                         # Long paragraphs and verify re-checks stay on the MAIN model (quality layer).
-                        use_aux = aux_lm_ready() and not verify_requested
-                        dom_lock = _AUX_LM_DEVICE_LOCK if use_aux else mlx_lock
-                        dom_pool = _aux_lm_pool if use_aux else _mlx_pool
+                        use_aux = model_runtime.aux_lm_ready() and not verify_requested
+                        dom_lock = model_runtime._AUX_LM_DEVICE_LOCK if use_aux else mlx_lock
+                        dom_pool = model_runtime._aux_lm_pool if use_aux else model_runtime._mlx_pool
                         dom_engine = "aux" if use_aux else "main"
                         print(f"[dom-tx] request={request_id} items={len(items)} short={len(short)} long={len(longs)} "
                               f"partial={int(partial_requested)} engine={dom_engine}", flush=True)
@@ -2355,7 +1891,7 @@ async def handle(ws):
                                             glossary_pairs=list(page_glossary), on_segment=_on_segment,
                                             on_partial=(_on_partial if partial_requested else None),
                                             custom=custom_prompt,
-                                            runtime=(_aux_runtime() if use_aux else None),
+                                            runtime=(model_runtime._aux_runtime() if use_aux else None),
                                         )
                                     finally:
                                         loop.call_soon_threadsafe(_q.put_nowait, _done)
@@ -2431,7 +1967,7 @@ async def handle(ws):
                                         kv_reuse=False, profile="page", stream_every=3,
                                         max_tokens=_page_batch_max_tokens([dict(item)]),   # _TX_GEN_MAX(64) would truncate
                                         custom=custom_prompt,
-                                        runtime=(_aux_runtime() if use_aux else None),
+                                        runtime=(model_runtime._aux_runtime() if use_aux else None),
                                     )
                                     if want_partial:
                                         partial_task = asyncio.create_task(_single_partial_pump())
@@ -2488,7 +2024,7 @@ async def handle(ws):
                                     t0 = time.perf_counter()
                                     try:
                                         async with mlx_lock:
-                                            out = await loop.run_in_executor(_mlx_pool, page_long)
+                                            out = await loop.run_in_executor(model_runtime._mlx_pool, page_long)
                                     finally:
                                         if lp_task is not None:
                                             lp_q.put_nowait(_LP_DONE)
@@ -2523,7 +2059,7 @@ async def handle(ws):
                                 glossary_pairs=effective_glossary(), kv_reuse=False, profile="write",
                                 max_tokens=min(2048, max(96, len(wb_text))), custom="")
                             async with mlx_lock:
-                                wb_out = await loop.run_in_executor(_mlx_pool, write_tx)
+                                wb_out = await loop.run_in_executor(model_runtime._mlx_pool, write_tx)
                             await send_json({"type": "input_translate_result", "request_id": request_id,
                                              "source": wb_text, "text": wb_out})
                             print(f"[input-tx {time.perf_counter()-t0:.1f}s] {len(wb_text)}c -> {wb_target}", flush=True)
@@ -2552,7 +2088,7 @@ async def handle(ws):
                                 # segments (the small model keeps the format) + sentence-level context
                                 return ocr_mac.group_lines(ocr_mac.recognize(_img))
 
-                            ocr_lines = await loop.run_in_executor(_sherpa_pool, _ocr)
+                            ocr_lines = await loop.run_in_executor(model_runtime._sherpa_pool, _ocr)
                             ocr_lines = [l for l in ocr_lines if re.search(r"[^\W\d_]", l["text"])]
                         except Exception as e:
                             print(f"[ocr err] {e}", flush=True)
@@ -2568,7 +2104,7 @@ async def handle(ws):
                         use_aux_ocr = False
                         await wait_aux_translation_slot(1500)   # user-initiated: yield briefly, then proceed
                         ocr_lock = mlx_lock
-                        ocr_pool = _mlx_pool
+                        ocr_pool = model_runtime._mlx_pool
                         try:
                             ocr_out = {}
                             for chunk_at in range(0, len(ocr_lines), DOM_TX_MAX_ITEMS):   # marker batches stay small
@@ -2578,7 +2114,7 @@ async def handle(ws):
                                     translate_page_batch_once, items, [],
                                     target=target_lang, hint=ocr_hint, register=page_register,
                                     glossary_pairs=list(ocr_glossary), custom=custom_prompt,
-                                    runtime=(_aux_runtime() if use_aux_ocr else None))
+                                    runtime=(model_runtime._aux_runtime() if use_aux_ocr else None))
                                 try:
                                     async with ocr_lock:
                                         ocr_out.update(await loop.run_in_executor(ocr_pool, ocr_tx))
@@ -2593,7 +2129,7 @@ async def handle(ws):
                                                 glossary_pairs=list(ocr_glossary), kv_reuse=False,
                                                 profile="page", max_tokens=_page_batch_max_tokens([dict(it)]),
                                                 custom=custom_prompt,
-                                                runtime=(_aux_runtime() if use_aux_ocr else None))
+                                                runtime=(model_runtime._aux_runtime() if use_aux_ocr else None))
                                             async with ocr_lock:
                                                 ocr_out[it["id"]] = await loop.run_in_executor(ocr_pool, ocr_tx1)
                                         except Exception as e1:
@@ -2616,7 +2152,7 @@ async def handle(ws):
                             continue
                         await _on_asr_pool(asr_engine, warm_mlx_selected, True, False, asr_engine)
                         async with mlx_lock:
-                            await loop.run_in_executor(_mlx_pool, warm_mlx_selected, False, True, asr_engine)
+                            await loop.run_in_executor(model_runtime._mlx_pool, warm_mlx_selected, False, True, asr_engine)
                         sec = round(time.perf_counter() - t0, 1)
                         await send_json({"type": "warmed", "sec": sec})
                         print(f"[warm] {sec}s", flush=True)
@@ -2737,10 +2273,10 @@ if __name__ == "__main__":
               f"second (they would share the MLX device → slow + flickering). Exiting.", flush=True)
         raise SystemExit(1)
     load_models(asr=True, lm=True, vad=True)
-    if BACKEND == "cuda":
+    if model_runtime.BACKEND == "cuda":
         print(f"[bridge] ready (CUDA HTTP backend + 26B translate, latency={LATENCY_MODE_DEFAULT})", flush=True)
     else:
-        asr_label = {"parakeet": "Parakeet ASR"}.get(ASR_ENGINE, "MLX ASR")
+        asr_label = {"parakeet": "Parakeet ASR"}.get(model_runtime.ASR_ENGINE, "MLX ASR")
         print(f"[bridge] ready ({asr_label} + 26B translate, latency={LATENCY_MODE_DEFAULT})", flush=True)
         try:
             import mlx_lm as _mlxlm
@@ -2749,15 +2285,15 @@ if __name__ == "__main__":
             pass
     try:                                              # warm on the main thread (MLX: establishes streams + compiles; CUDA: pings endpoints)
         warm_mlx_selected(True, True)
-        if BACKEND == "mlx":
-            _reset_tx_cache()                         # real translation rebuilds it on the _mlx_pool worker thread
+        if model_runtime.BACKEND == "mlx":
+            _reset_tx_cache()                         # real translation rebuilds it on the model_runtime._mlx_pool worker thread
             _reset_page_tx_cache()
-            if mx is not None:
-                try: mx.clear_cache()
+            if model_runtime.mx is not None:
+                try: model_runtime.mx.clear_cache()
                 except Exception: pass
         print("[bridge] warmed", flush=True)
     except Exception as e:
-        if BACKEND == "mlx":
+        if model_runtime.BACKEND == "mlx":
             _reset_tx_cache()
             _reset_page_tx_cache()
         print("[bridge] warm skip:", e, flush=True)
