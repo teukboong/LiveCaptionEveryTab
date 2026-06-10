@@ -48,8 +48,10 @@
 ```
 - `kind:"preview"` (`phase:"preview"`): 확정 **전** 미리 번역. latency mode·debounce·busy 게이트로 제어,
   언제든 stale로 폐기될 수 있음(`preview_is_stale`). **aux 번역기**(듀얼 모델)가 상주하면 preview는
-  스케줄러 루프를 막지 않는 별도 task로 aux에서 렌더되고, final이 진행 중이어도 발사될 수 있다
-  (aggressive). aux 산출물은 캐시되지 않고 preview promotion 대상도 아니다(final은 항상 main 품질).
+  스케줄러 루프를 막지 않는 별도 task로 aux에서 렌더된다 — 단, **final backlog가 있으면 발사하지
+  않는다**(표시 순서 불변식: N+1 preview가 N의 미표시 final보다 먼저 칠해지면 client가 이전 문장으로
+  되감기는 깜박임이 생긴다). aux 산출물은 캐시되지 않고 preview promotion 대상도 아니다(final은 항상
+  main 품질).
 - `kind:"final_stream"` (`phase:"final_stream"`): **확정 번역이 토큰 단위로 스트리밍** 중. 이 unit은
   곧 final로 확정된다. `_stream_partial_should_emit` 게이트로 토막·역행을 억제.
 - `phase:"degraded_stream"` / `degraded:true`: 번역 실패로 마지막 양호한 KO partial을 degraded로 노출.

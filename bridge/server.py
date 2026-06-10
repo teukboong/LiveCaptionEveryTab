@@ -2623,8 +2623,13 @@ async def handle(ws):
         if pending_preview_jobs:
             return False
         if aux_lm_ready():
-            # Previews run on the aux translator's own pool/lock — they no longer steal the main model,
-            # so let them fire even while finals are in flight (bandwidth-shared, UX-only).
+            # The aux pool freed previews from the main lock, but DISPLAY ORDER still rules: a preview
+            # of unit N+1 painting before unit N's still-translating final makes the client rewind to
+            # the previous sentence when that final lands ("이전 자막 깜박임"). Keep the backlog gates;
+            # aux still wins by never delaying finals in the scheduler loop and by firing during
+            # speech without touching the main model.
+            if active_tx_job is not None or final_backlog_count() > 0 or pending_final_jobs:
+                return False
             return latency_mode == "aggressive" or ((not in_speech) and work_q.empty())
         if active_tx_job is not None or final_backlog_count() > 0 or pending_final_jobs:
             return False
