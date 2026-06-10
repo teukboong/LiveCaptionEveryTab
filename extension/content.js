@@ -733,6 +733,21 @@ try {
 } catch (_) {}
 
 // ---- page translation: direct DOM text replacement, driven by MutationObserver deltas ----
+// iframe coverage: page translation runs in EVERY real content frame of the tab (the manifest injects
+// all_frames; background broadcasts page-translate messages tab-wide and dom_translate results reach all
+// frames). Each frame keeps its own queues/caches keyed off its own document; the frame tag below makes
+// request ids tab-unique so a frame never adopts (or tears down on) another frame's results. Pixel/ad
+// frames are skipped by size; the caption overlay stays governed by lccShouldRender (unchanged).
+const LCC_PAGE_FRAME_TAG = LCC_IS_TOP ? "t" : "f" + Math.random().toString(36).slice(2, 7);
+function lccPageFrameAllowed() {
+  if (LCC_IS_TOP) return true;
+  try {
+    if (!/^https?:$/.test(location.protocol)) return false;
+    return window.innerWidth >= 200 && window.innerHeight >= 100;   // skip tracking/ad pixel frames
+  } catch (_) {
+    return false;
+  }
+}
 const LCC_PAGE_EXCLUDE_SELECTOR = [
   "script", "style", "noscript", "template", "svg", "canvas", "video", "audio",
   "input", "textarea", "select", "option", "pre", "code", "kbd", "samp",
@@ -1070,7 +1085,7 @@ function lccPageAlreadyTarget(core) {
   return (core.match(re) || []).length / letters >= minRatio;
 }
 function lccPageNodeAllowed(node) {
-  if (!lccPageTranslateOn || !LCC_IS_TOP || !node || node.nodeType !== Node.TEXT_NODE) return false;
+  if (!lccPageTranslateOn || !lccPageFrameAllowed() || !node || node.nodeType !== Node.TEXT_NODE) return false;
   const parent = node.parentElement;
   if (!parent || parent.closest(LCC_PAGE_EXCLUDE_SELECTOR)) return false;
   const state = lccPageTranslateState.get(node);
@@ -1503,7 +1518,7 @@ function lccPageQueueNode(node) {
   return true;
 }
 function lccPageScanNode(root, limit) {
-  if (!root || !lccPageTranslateOn || !LCC_IS_TOP) return 0;
+  if (!root || !lccPageTranslateOn || !lccPageFrameAllowed()) return 0;
   limit = limit == null ? lccPageTranslatePolicy().scanLimit : limit;
   let count = 0;
   if (root.nodeType === Node.TEXT_NODE) {
@@ -1537,7 +1552,7 @@ function lccPageNow() {
 }
 function lccPageStartScan(prefetch) {
   lccPageCancelIdle(lccPageScanIdleId); lccPageScanIdleId = 0;
-  if (!lccPageTranslateOn || !LCC_IS_TOP) { lccPageScanCursor = null; return; }
+  if (!lccPageTranslateOn || !lccPageFrameAllowed()) { lccPageScanCursor = null; return; }
   const root = lccPageRoot();
   if (!root) { lccPageScanCursor = null; return; }
   lccPageScanCursor = { walker: document.createTreeWalker(root, NodeFilter.SHOW_TEXT), prefetch: !!prefetch, seen: 0 };
@@ -1575,7 +1590,7 @@ function lccPageScanChunk() {
   }
 }
 function lccPageMaybePrefetch() {
-  if (!lccPageTranslateOn || !LCC_IS_TOP || lccPagePrefetchDone || lccPageScanCursor || lccPagePrefetchTimer) return;
+  if (!lccPageTranslateOn || !lccPageFrameAllowed() || lccPagePrefetchDone || lccPageScanCursor || lccPagePrefetchTimer) return;
   if (lccPageHotQueue.length || lccPageColdQueue.length || lccPageTranslateRequests.size) return;
   lccPagePrefetchTimer = lccPageRequestIdle(() => {
     lccPagePrefetchTimer = 0;
@@ -1648,7 +1663,7 @@ function lccPageVerifyFlush() {
     items.push({ id: key, text: v.source });
   }
   if (!items.length) return;
-  const requestId = "ptv" + lccPageTranslateEpoch + "-" + (++lccPageVerifyReqSeq);
+  const requestId = "ptv" + LCC_PAGE_FRAME_TAG + lccPageTranslateEpoch + "-" + (++lccPageVerifyReqSeq);
   const keys = items.map((it) => it.id);
   const timer = setTimeout(() => lccPageVerifyDone(requestId), 30000);
   lccPageVerifyRequests.set(requestId, { keys, timer });
@@ -1717,7 +1732,7 @@ function lccPageFlush() {
   };
   if (pull(lccPageHotQueue, true)) pull(lccPageColdQueue, false);
   if (items.length) {
-    const requestId = "ptr" + lccPageTranslateEpoch + "-" + (++lccPageTranslateReqSeq);
+    const requestId = "ptr" + LCC_PAGE_FRAME_TAG + lccPageTranslateEpoch + "-" + (++lccPageTranslateReqSeq);
     const keys = items.map((it) => it.id);
     let maxLen = 0;
     for (const it of items) maxLen = Math.max(maxLen, (it.text || "").length);
@@ -1779,16 +1794,23 @@ function lccPageClearTransient(restore) {
   lccPageVerifyInflight = "";
 }
 function lccPageNotifyReady() {
-  if (!LCC_IS_TOP) return;
+  if (!lccPageFrameAllowed()) return;
   try {
-    chrome.runtime.sendMessage({ type: "content-ready", pageContext: lccPageContext(), pageUrl: location.href }, (res) => {
+    // Subframes report empty context/url so background keeps the TOP frame's values; they still get the
+    // pageTranslating + settings reply and self-start (covers iframes loaded mid-session).
+    chrome.runtime.sendMessage({
+      type: "content-ready",
+      isTop: LCC_IS_TOP,
+      pageContext: LCC_IS_TOP ? lccPageContext() : "",
+      pageUrl: LCC_IS_TOP ? location.href : "",
+    }, (res) => {
       if (chrome.runtime.lastError || !res || !res.pageTranslating) return;
       lccPageTranslateStart(res.settings || {});
     });
   } catch (_) {}
 }
 function lccPageHandleUrlOrContextChange() {
-  if (!lccPageTranslateOn || !LCC_IS_TOP) return;
+  if (!lccPageTranslateOn || !lccPageFrameAllowed()) return;
   const url = location.href;
   const ctx = lccPageContext();
   const urlChanged = url !== lccPageTranslateUrl;
@@ -1925,7 +1947,7 @@ function lccPageBilingualStop() {
   lccPageBilingualInlineClearAll();
 }
 function lccPageTranslateStart(rawSettings) {
-  if (!LCC_IS_TOP) return;
+  if (!lccPageFrameAllowed()) return;
   const wasOn = lccPageTranslateOn;
   lccPageTranslateSettings = globalThis.lccNormalizeSettings({ ...lccPageTranslateSettings, ...(rawSettings || {}) });
   if (!wasOn) { lccPageTranslateEpoch += 1; lccPageTranslateReqSeq = 0; }
