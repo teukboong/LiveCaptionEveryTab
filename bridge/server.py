@@ -53,9 +53,9 @@ def _normalize_asr_engine(value, default="granite"):
 
 # Compute backend (platform): "mlx" = in-process Apple-Silicon MLX (default), "cuda" = OpenAI-compatible
 # HTTP client to a remote llama.cpp/vLLM (Windows+NVIDIA via WSL2, or any reachable GPU box). Selected with
-# LCC_BACKEND. Only the three GPU leaves (transcribe/translate/ask) differ; everything else is shared. See
+# LCC_BACKEND. Only the backend leaves (transcribe/translate/ask) differ; everything else is shared. See
 # the "Backend seam" block lower in this file.
-_BACKENDS = ("mlx", "cuda")
+_BACKENDS = ("mlx", "cuda", "fake")
 
 def _normalize_backend(value, default="mlx"):
     b = str(value or default or "mlx").strip().lower()
@@ -567,6 +567,11 @@ def _load_lm_weights(value):
 def load_models(asr=True, lm=True, vad=True):
     global ASR_ENGINE, lm_model, lm_tok, silero, _sampler, parakeet_asr, _LM_IS_VLM
     global aux_lm_model, aux_lm_tok, _AUX_LM_IS_VLM
+    if BACKEND == "fake":
+        if vad and silero is None:
+            import backend_fake
+            silero = backend_fake.FAKE_SILERO_SENTINEL
+        return
     _finalize_model_config()   # size translator/ASR to available memory (lazy: not at import — tests import server)
     if BACKEND == "cuda":
         # Models live on the remote inference servers (llama.cpp / vLLM); the bridge only needs the endpoints
@@ -2304,6 +2309,16 @@ if BACKEND == "cuda":
     warm_mlx_selected = backend_cuda.warm_selected      # name kept for call-site compatibility; impl is an HTTP ping
     _ensure_asr_loaded = backend_cuda.ensure_asr_loaded
     print(f"[bridge] backend=cuda  chat={backend_cuda.CHAT_URL}  asr={backend_cuda.ASR_URL}", flush=True)
+elif BACKEND == "fake":
+    import backend_fake
+    transcribe_pcm = backend_fake.transcribe_pcm
+    translate_once = backend_fake.translate_once
+    translate_page_batch_once = backend_fake.translate_page_batch_once
+    run_ask = backend_fake.run_ask
+    warm_mlx_selected = backend_fake.warm_selected
+    _ensure_asr_loaded = backend_fake.ensure_asr_loaded
+    VADIterator = backend_fake.FakeVADIterator
+    print("[bridge] backend=fake (test-only)", flush=True)
 # ------------------------------------------------------------------------------------------------------
 
 
