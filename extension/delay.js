@@ -259,9 +259,10 @@
     if (!window.__lccOverlay || !window.__lccOverlay.setLines) return;
     if (!s.anchorPerf || !s.shownT) return;             // not streaming yet -> keep the "● 자막 대기 중…" message
     let src = "", ko = "", isDraft = false;
+    const contentMs = s.shownT * 1000 - s.anchorPerf;   // bridge audio_ms currently on screen
+    let cue = null;
     {
-      const contentMs = s.shownT * 1000 - s.anchorPerf;   // bridge audio_ms currently on screen
-      let cue = null, next = null;
+      let next = null;
       for (let i = 0; i < s.cues.length; i++) {
         if (s.cues[i].start <= contentMs) { cue = s.cues[i]; next = s.cues[i + 1] || null; }
         else break;
@@ -282,13 +283,26 @@
       }
     }
     const ov = window.__lccOverlay;
+    // Sync debug (video mode): the cue-clock view — what content-ms is on screen, which cue window
+    // matched, and the queue depth. Built only when the popup toggle is on (ov.debugEnabled).
+    let dbg = "";
+    if (ov.debugEnabled && ov.debugEnabled()) {
+      dbg = [
+        isDraft ? "vd-live" : "vd-cue",
+        "t=" + Math.round(contentMs),
+        cue ? "c=" + Math.round(cue.start) + ".." + Math.round(cue.end) : "",
+        s.live ? "L=" + Math.round(s.live.start) + (s.live.unit != null ? "/u" + s.live.unit : "") : "",
+        "q=" + s.cues.length,
+        "delay=" + Math.round(s.delaySec * 1000) + "ms",
+      ].filter(Boolean).join(" ");
+    }
     if (isDraft && ov.setLinesSplit && ov.koSplitInto) {     // live: LocalAgreement stable(solid)/draft(dim)
       const sp = ov.koSplitInto(s.koState, (s.live && s.live.unit) || null, ko);
-      const key = src + "|" + sp.stable + "\u22a5" + sp.draft + "|S";
-      if (key !== s.lastSub) { s.lastSub = key; ov.setLinesSplit(src, sp.stable, sp.draft, ""); }
+      const key = src + "|" + sp.stable + "\u22a5" + sp.draft + "|S|" + dbg;
+      if (key !== s.lastSub) { s.lastSub = key; ov.setLinesSplit(src, sp.stable, sp.draft, dbg); }
     } else {
-      const key = src + "|" + ko + "|" + (isDraft?"D":"C");
-      if (key !== s.lastSub) { s.lastSub = key; ov.setLines(src, ko, "", isDraft); }
+      const key = src + "|" + ko + "|" + (isDraft?"D":"C") + "|" + dbg;
+      if (key !== s.lastSub) { s.lastSub = key; ov.setLines(src, ko, dbg, isDraft); }
     }
   }
 

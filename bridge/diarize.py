@@ -35,12 +35,15 @@ SPK_MODELS = {
     "resnet293": {  # default: WeSpeaker ResNet293 VoxCeleb LM (109MB) — strongest sherpa-onnx asset
         "file": "wespeaker_en_voxceleb_resnet293_LM.onnx",   # (VoxCeleb1-O EER ~0.45%); ~190ms per 4s clip on CPU
         "url": _SPK_URL_BASE + "wespeaker_en_voxceleb_resnet293_LM.onnx",
-        "hi": 0.55, "lo": 0.35,
+        # Calibrated on two-voice TTS clips: same-speaker cos 0.85-0.97, different-speaker 0.45-0.53.
+        # lo MUST clear the impostor range — the original 0.35 put different speakers inside the
+        # label-only band, so a second speaker could never open ("화자 구분이 안 됨" bug).
+        "hi": 0.66, "lo": 0.58,
     },
-    "campplus": {   # WeSpeaker CAM++ VoxCeleb LM (28MB) — same domain, 4x smaller/faster
-        "file": "wespeaker_en_voxceleb_CAM++_LM.onnx",
-        "url": _SPK_URL_BASE + "wespeaker_en_voxceleb_CAM++_LM.onnx",
-        "hi": 0.55, "lo": 0.35,
+    "campplus": {   # WeSpeaker CAM++ VoxCeleb LM (28MB) — measured POOR separation on the same calibration
+        "file": "wespeaker_en_voxceleb_CAM++_LM.onnx",       # (same-speaker min 0.19 < diff max 0.79) — avoid;
+        "url": _SPK_URL_BASE + "wespeaker_en_voxceleb_CAM++_LM.onnx",   # kept only for explicit opt-in
+        "hi": 0.66, "lo": 0.58,
     },
     "titanet": {    # NeMo TitaNet-large (97MB) — strongest, heavier per clip
         "file": "nemo_en_titanet_large.onnx",

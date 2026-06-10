@@ -715,6 +715,7 @@ window.__lccOverlay = {
   setLinesSplit,
   koSplitInto: lccKoSplitInto,
   setSrc,
+  debugEnabled: () => !!settings.debugSync,   // delay.js builds its cue-clock debug line only when on
   setPlaybackDelay: lccSetPlaybackDelay,
   markStreamClock: lccMarkStreamClock,
   handleBridgeMessage: lccHandleBridgeMessage,
