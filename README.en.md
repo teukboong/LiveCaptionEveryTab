@@ -83,7 +83,7 @@ bash bridge/run_bridge.sh
 ## Features
 - **Term memory (auto-glossary)**: recurring names/terms mined from captions pin into the glossary automatically — consistent renderings + fuzzy ASR spelling repair. Remembered per site and re-seeded into both caption and page translation on your next visit (toggle in popup)
 - **Dual-model concurrency**: with enough RAM, a small E2B translator loads next to the 26B and takes previews + page-DOM batches — finals stay 26B quality, and page translation stops competing with captions (`LCC_AUX_LM=off`)
-- **Speaker tagging (beta)**: ①② speaker labels on captions for podcasts/interviews — CPU speaker embeddings + online clustering, ~28MB model auto-downloads on first use
+- **Speaker tagging (beta)**: ①② speaker labels on captions for podcasts/interviews — CPU speaker embeddings + online clustering, ~109MB model auto-downloads on first use
 - **Input write-back**: compose in your language in any text field, press the ⇄ chip or Alt+T to render it in the page's language (one-click revert) — the reading lens becomes participation
 - **Image translation (macOS)**: Alt+hover an image → Apple Vision OCR (ANE, no model download) → translated overlay over memes/screenshots
 - **Inline original (inline ghost)**: keep the original faintly under translated long paragraphs — no hover needed

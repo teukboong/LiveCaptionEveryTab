@@ -17,8 +17,11 @@ Accuracy comes from four stacked defenses (all pure, tested in test_diarize.py):
     healing the same-voice-split-into-three failure for all future clips.
 
 Embedding models are curated (auto-download on first enable; LCC_SPK_MODEL_ID picks, LCC_SPK_MODEL
-pins an explicit file). Default is a VoxCeleb-trained large-margin model — VoxCeleb is YouTube
-interview audio, i.e. exactly this domain, and LM finetuning separates embeddings enough to threshold.
+pins an explicit file). Default is the strongest VoxCeleb-trained large-margin model sherpa-onnx ships
+(ResNet293-LM) — VoxCeleb is YouTube interview audio, i.e. exactly this domain; one embedding per
+committed sentence costs ~0.2s of CPU, which the sherpa pool absorbs without touching the GPU. True
+research SOTA (WavLM fusion, ReDimNet) would drag in a torch runtime for a marginal clean-benchmark
+gain — the practical ceiling here is clip length/noise, not the last 0.1% EER.
 """
 import math
 import os
@@ -29,7 +32,12 @@ _SPK_URL_BASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker
 SPK_DIR = os.path.expanduser("~/.local/share/models/live-caption")
 # Per-model cosine thresholds (hi = join+update, lo = label-only floor); calibrate live with LCC_SPK_DEBUG=1.
 SPK_MODELS = {
-    "campplus": {   # default: WeSpeaker CAM++ VoxCeleb + large-margin (28MB) — YouTube-domain, fast
+    "resnet293": {  # default: WeSpeaker ResNet293 VoxCeleb LM (109MB) — strongest sherpa-onnx asset
+        "file": "wespeaker_en_voxceleb_resnet293_LM.onnx",   # (VoxCeleb1-O EER ~0.45%); ~190ms per 4s clip on CPU
+        "url": _SPK_URL_BASE + "wespeaker_en_voxceleb_resnet293_LM.onnx",
+        "hi": 0.55, "lo": 0.35,
+    },
+    "campplus": {   # WeSpeaker CAM++ VoxCeleb LM (28MB) — same domain, 4x smaller/faster
         "file": "wespeaker_en_voxceleb_CAM++_LM.onnx",
         "url": _SPK_URL_BASE + "wespeaker_en_voxceleb_CAM++_LM.onnx",
         "hi": 0.55, "lo": 0.35,
@@ -45,7 +53,7 @@ SPK_MODELS = {
         "hi": 0.55, "lo": 0.38,
     },
 }
-SPK_MODEL_ID = os.environ.get("LCC_SPK_MODEL_ID", "campplus").strip().lower()
+SPK_MODEL_ID = os.environ.get("LCC_SPK_MODEL_ID", "resnet293").strip().lower()
 SPK_MODEL_PATH = os.environ.get("LCC_SPK_MODEL", "")     # explicit .onnx path overrides the registry
 SPK_MAX_SPEAKERS = max(2, int(os.environ.get("LCC_SPK_MAX", "6")))
 SPK_MIN_SEC = float(os.environ.get("LCC_SPK_MIN_SEC", "1.2"))   # shorter audio gives junk embeddings
@@ -62,7 +70,7 @@ _extractor_lock = threading.Lock()
 
 
 def _active_model():
-    return SPK_MODELS.get(SPK_MODEL_ID, SPK_MODELS["campplus"])
+    return SPK_MODELS.get(SPK_MODEL_ID, SPK_MODELS["resnet293"])
 
 
 def _model_path():
