@@ -17,7 +17,7 @@ CUDA_ENV="${LCC_CUDA_ENV:-$HOME/.lcc-cuda.env}"
 [ -f "$CUDA_ENV" ] && { set -a; . "$CUDA_ENV"; set +a; }
 
 PY="${LCC_PYTHON:-$HOME/.venvs/lcc-asr/bin/python}"
-LLAMA_BIN="${LCC_LLAMA_BIN:-$HOME/runtime/llama.cpp-gemma4-mtp/build-cuda126/bin/llama-server}"
+LLAMA_BIN="${LCC_LLAMA_BIN:-$(command -v llama-server || echo "$HOME/llama.cpp/build/bin/llama-server")}"   # one-click sets LCC_LLAMA_BIN; else PATH, else conventional build dir
 
 CHAT_HOST="${LCC_CUDA_CHAT_HOST:-127.0.0.1}"
 CHAT_PORT="${LCC_CUDA_CHAT_PORT:-18080}"
@@ -31,7 +31,7 @@ ASR_PORT="${LCC_CUDA_ASR_PORT:-8000}"
 ASR_SWITCH_CMD="${LCC_CUDA_ASR_SWITCH_CMD:-$CUDA_DIR/switch_asr_gguf.sh}"
 
 BRIDGE_PORT="${LCC_PORT:-8765}"
-BRIDGE_HOST="${LCC_BRIDGE_HOST:-${LCC_HOST:-0.0.0.0}}"
+BRIDGE_HOST="${LCC_BRIDGE_HOST:-${LCC_HOST:-127.0.0.1}}"   # loopback by default (WSL2 localhost-forwarding reaches it); for 0.0.0.0 also set LCC_ALLOW_INSECURE_BIND=1
 BRIDGE_PID="$STATE_DIR/bridge-${BRIDGE_PORT}.pid"
 BRIDGE_LOG="$LOG_DIR/bridge-popup-$(date -u +%Y%m%dT%H%M%SZ).log"
 
@@ -176,7 +176,7 @@ case "$CMD" in
     status_json
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|status} [granite|qwen3]" >&2
+    echo "usage: $0 {start|stop|restart|status} [granite|qwen3|whisper]" >&2
     exit 2
     ;;
 esac

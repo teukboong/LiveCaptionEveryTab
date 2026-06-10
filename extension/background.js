@@ -278,7 +278,16 @@ async function forward(msg) {
   if (msg.type === "caption" || msg.type === "source" || msg.type === "dom_translate_result" || msg.type === "dom_translate_partial") await chrome.storage.session.set({ wsOpen: true });  // data flowing => connected (self-heal)
 }
 
+// Message types that legitimately originate from a tab (content scripts: delay.js / content.js). Every other
+// type must come from the popup or the offscreen document, neither of which has a sender.tab. The content
+// bundle runs in EVERY page, so without this gate a compromised content script could drive the privileged
+// popup/ask/forward command surface (start/stop captures, ask the bridge, spoof captions) for arbitrary tabs.
+const LCC_TAB_SENDER_TYPES = new Set(["vd-pcm", "content-ready", "page-translate-batch"]);
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || typeof msg !== "object") return;
+  if (sender && sender.id && sender.id !== chrome.runtime.id) return;             // not our extension -> ignore
+  if (sender && sender.tab && !LCC_TAB_SENDER_TYPES.has(msg.type)) return;        // a tab/content script may not issue popup/forward commands
   if (msg.type === "vd-pcm") { sendOffscreenBestEffort({ target: "offscreen", cmd: "pcm", pcm: msg.pcm }, "vd-pcm"); return; }   // delay.js -> offscreen relay (video mode)
   if (msg.type === "offscreen-ready") {
     resendStart().catch((e) => console.warn("[lcc] offscreen-ready resend failed:", lccErrorText(e)));
@@ -424,7 +433,7 @@ async function reArmCapturedTab(tabId) {
   if (!ready || ready.ok === false) return;                // not an injectable page (e.g. chrome://) -> nothing to re-arm
   const dsec = Math.min(12, Math.max(0, Number(delaySec) || 0));
   if (mode === "video") {
-    // Video delay lives in the page's delay.js (audio DelayNode + canvas), gone with the old document.
+    // Video delay lives in the page's delay.js (audio DelayNode + canvas), gone when the old page unloads.
     // Reset the relay so a fresh start-relay isn't deduped and the bridge's audio_ms restarts at 0, which
     // is what the re-armed delay.js anchors its subtitle clock to (first PCM tap == audio_ms 0).
     const config = await bridgeConfig();

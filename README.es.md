@@ -17,7 +17,7 @@ Las herramientas de subtitulado/traducción en tiempo real se dividen en dos gru
 | | Este proyecto | Extensiones basadas en Whisper | Reproductores de escritorio (p. ej. LLPlayer) |
 |---|---|---|---|
 | **Entrada** | **Cualquier pestaña** con sonido (incl. directos) | Audio de pestaña | Vídeo descargado / archivos·URLs metidos en un reproductor |
-| **ASR** | Granite / Qwen3 / Whisper (Whisper también es ahora una de **nuestras** opciones; Granite·Qwen3 con puntuación·truecasing nativos y silencio·música filtrados con `[no speech]`) | Sobre todo Whisper | Sobre todo Whisper |
+| **ASR** | Granite / Qwen3 / Whisper (Granite·Qwen3 con puntuación·truecasing nativos; silencio·música filtrados con `[no speech]`) | Sobre todo Whisper | Sobre todo Whisper |
 | **Traducción** | **LLM local (Gemma-4)** por significado — mantiene contexto·pronombres | Ninguna / MT literal / nube | LLM local posible (Ollama, etc.) |
 | **Ejecución** | 100% local (cero nube) | Local~mixta | Local |
 | **Idioma destino** | Coreano primero (+multilingüe) | Varía | Multilingüe (el ajuste por idioma varía) |
@@ -26,7 +26,7 @@ Las herramientas de subtitulado/traducción en tiempo real se dividen en dos gru
 - **Los reproductores de escritorio** tienen muy buena traducción con LLM local, pero hay que descargar el vídeo o meterlo en el reproductor, lo que no encaja con directos / sitios arbitrarios. → Aquí, sin descargas — se superpone **directamente sobre cualquier pestaña que emita sonido**.
 - **No solo el sonido, también el texto.** El cuerpo de la página (DOM) de la misma pestaña también suele necesitar traducción, pero la traducción de página integrada del navegador o en la nube envía el texto fuera y tiende a lo literal. → Aquí se aplica a la página el *mismo Gemma local, glosario y contexto* que mueven los subtítulos, reemplazando el DOM del cuerpo en su sitio y sin superposición. El objetivo era manejar el **sonido y el texto de una pestaña con un solo traductor local**.
 
-Todo es **local y gratuito**. A cambio hay un mínimo de hardware (ver requisitos en [SETUP.md](SETUP.md)). Los modelos de traducción y de transcripción se eligen en **menús desplegables** del popup: **Auto** (ajusta el modelo a la memoria libre, sobre un registro de modelos) + una lista curada + un id de HF personalizado. En máquinas más modestas, "Auto" ajusta el modelo de traducción a la memoria disponible.
+Todo es **local y gratuito**. A cambio hay un mínimo de hardware (ver requisitos en [SETUP.md](SETUP.md)). Los modelos de traducción y de transcripción se eligen en **menús desplegables** del popup: **Auto** (ajusta el modelo a la memoria libre, sobre un registro de modelos) + una lista curada + un id de HF personalizado; los modelos no descargados muestran un **botón de descarga**.
 
 ## Plataforma — dos runtimes (con soporte equivalente)
 
@@ -35,9 +35,9 @@ El mismo bridge·la misma extensión corren en ambos backends. Elige el de tu eq
 | Backend | Entorno | Transcripción (ASR) | Traducción | Guía |
 |---|---|---|---|---|
 | **MLX** (`LCC_BACKEND=mlx`) | Apple Silicon | Granite/Qwen3/Whisper (mlx-audio + mlx_whisper; Whisper se auto-cuantiza a 6bit al descargar) | Gemma-4 (26B/E4B/E2B · elegir o Auto) (mlx-lm) | [SETUP.md](SETUP.md) |
-| **CUDA** (`LCC_BACKEND=cuda`) | Windows + NVIDIA (WSL2) | Granite/Qwen3 (transformers, `cuda/asr_server.py`) / Whisper (whisper.cpp q6) | llama.cpp · GGUF (26B/E4B/E2B · elegir o Auto) (HTTP compatible con OpenAI) | [SETUP-windows.md](SETUP-windows.md) |
+| **CUDA** (`LCC_BACKEND=cuda`) | Windows + NVIDIA (WSL2) | Granite/Qwen3 (transformers, `cuda/asr_server.py`) / Whisper (whisper.cpp q6, sin verificar) | llama.cpp · GGUF (26B/E4B/E2B · elegir o Auto) (HTTP compatible con OpenAI) | [SETUP-windows.md](SETUP-windows.md) |
 
-La elección del motor de transcripción (inglés=granite / multilingüe=qwen3 / multilingüe=whisper) es idéntica en ambos (ruteada por el campo `model`); Whisper también es ahora un motor disponible (MLX 6bit en Mac, whisper.cpp q6 en CUDA). VAD·ensamblado de frases·planificador·number-guard·constructor de prompts son **compartidos por ambos backends** (funciones puras); solo cambian las 3 funciones de GPU (transcribir/traducir/resumir) por runtime, y esa frontera es `bridge/backend_cuda.py` (HTTP) y el "Backend seam" en server.py. (El valor por defecto del código es `mlx`.)
+La elección del motor de transcripción (inglés=granite / multilingüe=qwen3 / multilingüe=whisper) es idéntica en ambos (ruteada por el campo `model`). VAD·ensamblado de frases·planificador·number-guard·constructor de prompts son **compartidos por ambos backends** (funciones puras); solo cambian las 3 funciones de GPU (transcribir/traducir/resumir) por runtime, y esa frontera es `bridge/backend_cuda.py` (HTTP) y el "Backend seam" en server.py. (El valor por defecto del código es `mlx`.)
 
 ## Arquitectura
 ```

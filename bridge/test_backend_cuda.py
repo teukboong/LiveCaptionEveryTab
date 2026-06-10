@@ -143,6 +143,19 @@ check("tx_page_batch_prompt_parity",
           {"id": "b", "text": "r/SipsTea"},
       ], [], "Korean", "Reddit page", "casual", []))
 
+# custom translation prompt must thread through to the SAME shared builder as the MLX path (regression guard:
+# the live loop passes custom as a trailing positional/keyword; a missing param TypeError'd every CUDA translation)
+bc.translate_once("Hello", [], "Korean", "", "casual", [], max_tokens=24, profile="caption", custom="be terse")
+check("tx_custom_prompt_parity",
+      captured["messages"] == srv._translate_messages("Hello", [], "Korean", "", "casual", [], "caption", "be terse"))
+bc.translate_page_batch_once([{"id": "a", "text": "Share"}, {"id": "b", "text": "r/SipsTea"}],
+                             [], "Korean", "Reddit page", "casual", [], max_tokens=96, custom="keep slang")
+check("tx_page_batch_custom_prompt_parity",
+      captured["messages"] == srv._translate_page_batch_messages([
+          {"id": "a", "text": "Share"},
+          {"id": "b", "text": "r/SipsTea"},
+      ], [], "Korean", "Reddit page", "casual", [], "keep slang"))
+
 want_msgs, want_max = srv._ask_messages("qa", "the transcript", "what was said?", "Korean")
 bc.run_ask("qa", "the transcript", "what was said?", "Korean")
 check("ask_prompt_parity", captured["messages"] == want_msgs)

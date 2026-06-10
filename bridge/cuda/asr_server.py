@@ -12,6 +12,8 @@ its own port (8002 by default); the bridge routes model=whisper there. This serv
 Env:
   LCC_CUDA_ASR_GRANITE_REPO   default ibm-granite/granite-speech-4.1-2b
   LCC_CUDA_ASR_QWEN3_REPO     default Qwen/Qwen3-ASR-1.7B
+  LCC_CUDA_ASR_GRANITE_REVISION / LCC_CUDA_ASR_QWEN3_REVISION   pin a commit SHA (supply-chain reproducibility)
+  LCC_ASR_TRUST_REMOTE_CODE   default 1; set 0 to refuse remote model code (granite then won't load)
   LCC_ASR_DEVICE / LCC_ASR_DTYPE / LCC_ASR_HOST / LCC_ASR_PORT / LCC_ASR_MAX_TOKENS
   LCC_ASR_SINGLE_MODEL=1      unload the inactive ASR model before loading another engine; useful on 8GB GPUs
   LCC_GRANITE_PROMPT          granite ASR instruction (default same as the bridge)
@@ -34,6 +36,15 @@ REPOS = {
     "granite": os.environ.get("LCC_CUDA_ASR_GRANITE_REPO", "ibm-granite/granite-speech-4.1-2b"),
     "qwen3": os.environ.get("LCC_CUDA_ASR_QWEN3_REPO", "Qwen/Qwen3-ASR-1.7B"),
 }
+# Supply-chain pin: set a commit SHA per engine to load a reproducible, audited revision instead of whatever
+# 'main' currently points at. Empty -> latest (current behavior). Recommended when trust_remote_code is on.
+REVISIONS = {
+    "granite": os.environ.get("LCC_CUDA_ASR_GRANITE_REVISION", "").strip() or None,
+    "qwen3": os.environ.get("LCC_CUDA_ASR_QWEN3_REVISION", "").strip() or None,
+}
+# granite-speech ships custom modeling code, so it REQUIRES trust_remote_code to load (pin a REVISION above to
+# make that code reproducible). Set LCC_ASR_TRUST_REMOTE_CODE=0 to refuse remote code (granite then won't load).
+TRUST_REMOTE_CODE = os.environ.get("LCC_ASR_TRUST_REMOTE_CODE", "1").strip().lower() in {"1", "true", "yes", "on"}
 GRANITE_PROMPT = os.environ.get(
     "LCC_GRANITE_PROMPT", "transcribe the speech with proper punctuation and capitalization.")
 
@@ -88,15 +99,17 @@ def _load(engine):
             device_map=_device_map(),
             max_inference_batch_size=MAX_BATCH,
             max_new_tokens=MAX_TOKENS,
+            **({"revision": REVISIONS["qwen3"]} if REVISIONS["qwen3"] else {}),
         )
         _loaded[engine] = (None, model)
     else:
         from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 
-        proc = AutoProcessor.from_pretrained(repo, trust_remote_code=True)
+        rev = REVISIONS[engine]
+        proc = AutoProcessor.from_pretrained(repo, revision=rev, trust_remote_code=TRUST_REMOTE_CODE)
         dtype = ("auto" if DTYPE == "auto" else getattr(torch, DTYPE))
         model = AutoModelForSpeechSeq2Seq.from_pretrained(
-            repo, torch_dtype=dtype, trust_remote_code=True, device_map=_device_map())
+            repo, revision=rev, torch_dtype=dtype, trust_remote_code=TRUST_REMOTE_CODE, device_map=_device_map())
         model.eval()
         _loaded[engine] = (proc, model)
     print(f"[asr] {engine} ready", flush=True)

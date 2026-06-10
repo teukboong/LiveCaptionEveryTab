@@ -33,7 +33,7 @@ for test_file in \
   test_backend_cuda.py \
   test_evs_controller.py \
   test_latency_profile.py \
-  test_lm_tier.py \
+  test_model_select.py \
   test_number_guard.py \
   test_policy.py \
   test_scheduler_staleness.py \

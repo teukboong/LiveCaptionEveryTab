@@ -396,7 +396,11 @@ PARAKEET_THREADS = max(1, int(os.environ.get("LCC_PARAKEET_THREADS", "4")))
 PARAKEET_PROVIDER = os.environ.get("LCC_PARAKEET_PROVIDER", "cpu").strip().lower()
 HOST = os.environ.get("LCC_HOST", "127.0.0.1")   # WSL2→Windows localhost forwarding works on 127.0.0.1; set 0.0.0.0 only if a remote client must reach it
 PORT = int(os.environ.get("LCC_PORT", "8765"))
-WS_TOKEN = os.environ.get("LCC_WS_TOKEN", "lcc-local-extension-v1")
+_DEFAULT_WS_TOKEN = "lcc-local-extension-v1"      # also hardcoded in extension/protocol.js — the localhost guard, NOT a real secret
+WS_TOKEN = os.environ.get("LCC_WS_TOKEN", _DEFAULT_WS_TOKEN)
+# Only THIS project's extension may drive the bridge. The repo manifest pins this id via its embedded "key";
+# override (or add dev/custom builds) with LCC_EXTENSION_ID / LCC_ALLOWED_WS_ORIGINS.
+_EXTENSION_ID = os.environ.get("LCC_EXTENSION_ID", "ddcflpihicaobncgpmadoipiofpllgnl").strip()
 MAX_WS_MSG_BYTES = int(os.environ.get("LCC_MAX_WS_MSG_BYTES", str(256 * 1024)))
 MAX_AUDIO_FRAME_BYTES = int(os.environ.get("LCC_MAX_AUDIO_FRAME_BYTES", str(64 * 1024)))
 WORK_Q_MAX = max(8, int(os.environ.get("LCC_WORK_Q_MAX", "96")))
@@ -758,8 +762,10 @@ def _request_header(ws, name: str):
 
 def _origin_allowed(origin: str | None) -> bool:
     if not origin:
-        return True                         # CLI smoke tests usually omit Origin.
-    if origin.startswith("chrome-extension://"):
+        return True                         # CLI smoke tests usually omit Origin (still token-gated at hello).
+    # Restrict to THIS extension's origin — not every chrome-extension:// origin, since any other installed
+    # extension could otherwise open the localhost WS and stream the active tab's audio / read transcripts.
+    if _EXTENSION_ID and origin == f"chrome-extension://{_EXTENSION_ID}":
         return True
     extra = [o.strip() for o in os.environ.get("LCC_ALLOWED_WS_ORIGINS", "").split(",") if o.strip()]
     return origin in extra
@@ -1208,7 +1214,7 @@ _LATIN_RE = re.compile(r"[A-Za-z]")
 _HANGUL_RE = re.compile(r"[가-힣]")
 def _src_lang(text: str) -> str:
     # Ratio-based, not "any hangul -> Korean": an English line with a Korean name (e.g.
-    # "I talked to 김수영 about the demo") must NOT be treated as Korean (would skip translation).
+    # "I talked to 민준 about the demo") must NOT be treated as Korean (would skip translation).
     h = len(_HANGUL_RE.findall(text or ""))
     k = len(_KANA_RE.findall(text or ""))
     lat = len(_LATIN_RE.findall(text or ""))
@@ -3102,7 +3108,20 @@ async def main():
         await asyncio.Future()
 
 
+def _is_loopback_host(host: str) -> bool:
+    return (host or "").strip().lower() in ("127.0.0.1", "localhost", "::1")
+
+
 if __name__ == "__main__":
+    # Fail-close: binding a non-loopback host (e.g. 0.0.0.0) with the built-in token would let anyone on the
+    # LAN who read the public source stream the user's tab audio / read transcripts. Require an explicit
+    # acknowledgement (a private LCC_WS_TOKEN, or LCC_ALLOW_INSECURE_BIND=1) before exposing beyond localhost.
+    if not _is_loopback_host(HOST) and WS_TOKEN == _DEFAULT_WS_TOKEN \
+            and os.environ.get("LCC_ALLOW_INSECURE_BIND", "").strip() not in ("1", "true", "yes"):
+        print(f"[bridge] refusing to bind non-loopback host {HOST!r} with the built-in default token — anyone "
+              f"on your LAN could stream this tab's audio. Bind 127.0.0.1 (default), or set a private "
+              f"LCC_WS_TOKEN, or LCC_ALLOW_INSECURE_BIND=1 to accept the risk. Exiting.", flush=True)
+        raise SystemExit(2)
     if _port_in_use(HOST, PORT):
         print(f"[bridge] {HOST}:{PORT} already in use — another bridge is running; refusing to start a "
               f"second (they would share the MLX device → slow + flickering). Exiting.", flush=True)

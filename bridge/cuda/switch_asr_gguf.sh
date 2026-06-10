@@ -6,8 +6,8 @@ set -euo pipefail
 
 ENGINE="${1:-${LCC_CUDA_ASR_ENGINE:-}}"
 case "$ENGINE" in
-  granite|qwen3) ;;
-  *) echo "usage: $0 granite|qwen3" >&2; exit 2 ;;
+  granite|qwen3|whisper) ;;
+  *) echo "usage: $0 granite|qwen3|whisper" >&2; exit 2 ;;
 esac
 
 BIN="${LCC_CUDA_ASR_LLAMA_BIN:-${LCC_LLAMA_BIN:-llama-server}}"
@@ -19,6 +19,49 @@ GPU="${LCC_CUDA_ASR_CUDA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0}}"
 LOG_DIR="${LCC_CUDA_ASR_LOG_DIR:-$HOME/models/live-caption-cuda8/logs}"
 STATE_DIR="${LCC_CUDA_ASR_STATE_DIR:-$HOME/.cache/live-caption-cuda}"
 STATE="$STATE_DIR/asr-switch-${PORT}.env"
+
+# whisper is a different binary (whisper.cpp's whisper-server) on its OWN port (default 8002), not the
+# granite/qwen3 llama-server on 8000. The bridge already routes model=whisper to that port, so "switching"
+# to whisper just means ensuring that server is up. Start it in the background (idempotent) and gate on the
+# port listening, then hand back — we leave the 8000 server alone (distinct VRAM endpoint).
+if [ "$ENGINE" = "whisper" ]; then
+  WHOST="${LCC_CUDA_ASR_WHISPER_HOST:-127.0.0.1}"
+  WPORT="${LCC_CUDA_ASR_WHISPER_PORT:-8002}"
+  SERVE_WHISPER="$(cd "$(dirname "$0")" && pwd)/serve_whisper.sh"
+  WSTATE="$STATE_DIR/asr-switch-whisper-${WPORT}.env"
+  mkdir -p "$LOG_DIR" "$STATE_DIR"
+  whisper_listening() { ss -ltn "( sport = :$WPORT )" 2>/dev/null | awk 'NR > 1 { f = 1 } END { exit f ? 0 : 1 }'; }
+  if whisper_listening; then
+    echo "[asr-switch] whisper already serving on $WHOST:$WPORT"
+    exit 0
+  fi
+  [ -x "$SERVE_WHISPER" ] || { echo "serve_whisper.sh not found/executable: $SERVE_WHISPER" >&2; exit 1; }
+  WLOG="$LOG_DIR/asr-switch-whisper-$(date +%Y%m%dT%H%M%S).log"
+  LCC_CUDA_ASR_WHISPER_HOST="$WHOST" LCC_CUDA_ASR_WHISPER_PORT="$WPORT" \
+    nohup "$SERVE_WHISPER" > "$WLOG" 2>&1 &
+  wpid="$!"
+  for _ in $(seq 1 "${LCC_CUDA_ASR_SWITCH_WAIT_SECS:-90}"); do
+    if ! kill -0 "$wpid" 2>/dev/null; then
+      echo "[asr-switch] whisper-server exited pid=$wpid log=$WLOG" >&2
+      tail -120 "$WLOG" >&2 || true
+      exit 1
+    fi
+    if whisper_listening; then
+      {
+        printf 'ENGINE_ACTIVE=%q\n' "whisper"
+        printf 'PID_ACTIVE=%q\n' "$wpid"
+        printf 'PORT_ACTIVE=%q\n' "$WPORT"
+        printf 'LOG_ACTIVE=%q\n' "$WLOG"
+      } > "$WSTATE"
+      echo "[asr-switch] ready engine=whisper pid=$wpid port=$WPORT log=$WLOG"
+      exit 0
+    fi
+    sleep 1
+  done
+  echo "[asr-switch] timeout engine=whisper pid=$wpid log=$WLOG" >&2
+  tail -120 "$WLOG" >&2 || true
+  exit 1
+fi
 
 GRANITE_MODEL="${LCC_CUDA_ASR_GRANITE_GGUF:-$HOME/models/live-caption-cuda8/asr-gguf-q6/granite/granite-speech-4.1-2b-Q6_K.gguf}"
 GRANITE_MMPROJ="${LCC_CUDA_ASR_GRANITE_MMPROJ:-$HOME/models/live-caption-cuda8/asr-gguf-q6/granite/mmproj-model-f16.gguf}"

@@ -4,7 +4,8 @@
 #   install-host.sh            # install for all installed Chromium browsers
 #   install-host.sh uninstall  # remove the host manifest
 set -u
-HOST_NAMES=("io.github.teukboong.livecaption" "com.hesperides.livecaption")
+HOST_NAMES=("io.github.teukboong.livecaption")
+LEGACY_HOST_NAMES=("com.hesperides.livecaption")        # pre-release alias: cleaned up on uninstall, never installed
 PRIMARY_HOST_NAME="${HOST_NAMES[0]}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 HOST_PY="$DIR/lcc_bridge_host.py"
@@ -42,7 +43,7 @@ done < <(
 if [ "${1:-}" = "uninstall" ]; then
   n=0
   for d in "${BROWSER_DIRS[@]}"; do
-    for host_name in "${HOST_NAMES[@]}"; do
+    for host_name in "${HOST_NAMES[@]}" "${LEGACY_HOST_NAMES[@]}"; do
       f="$d/$host_name.json"
       [ -f "$f" ] && rm -f "$f" && echo "삭제: $f" && n=$((n+1))
     done

@@ -4,7 +4,6 @@ let capturing = false;
 
 // Shared defaults live in protocol.js so popup/background/offscreen send the same bridge config.
 const DEFAULTS = globalThis.LCC_DEFAULT_SETTINGS;
-const BRIDGE_SETTING_KEYS = new Set(["targetLang", "asrEngine"]);
 // Range sliders the bridge tunes live (server re-applies on a `config` message without dropping
 // the in-flight utterance). Display-only ranges (font/position/delay/sync) stay local.
 const BRIDGE_RANGE_KEYS = new Set(["vadLevel", "sentSilenceMs"]);
@@ -659,7 +658,6 @@ chrome.storage.session.get("lcc-answer").then((r) => {
 // Requires the one-time host install: extension/native-host/install-host.sh
 const LCC_NM_HOSTS = [
   "io.github.teukboong.livecaption",
-  "com.hesperides.livecaption",
 ];
 function isNativeHostMissingError(message) {
   const text = String(message || "").toLowerCase();

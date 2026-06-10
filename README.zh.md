@@ -49,7 +49,7 @@
    [content.js 两行覆盖层] ◀──WS(JSON caption)──────────┘
 ```
 - ASR 在弹窗中从**三个转写引擎**里选（▸ 转写引擎）。**Granite Speech 4.1 2B**（`ibm-granite/granite-speech-4.1-2b`·英语忠实，WER 接近 0%）与 **Qwen3-ASR 1.7B**（`Qwen/Qwen3-ASR-1.7B`·含日语/韩语共 52 种语言，自动语种识别）经 **mlx-audio** 加载，两者都原生输出标点·truecasing，所以句子切分可直接进行。**Whisper Large v3**（多语种）作为专用引擎经 **mlx_whisper** 运行（下载时自动量化为 **MLX 6bit**，自有解码、无提示词）。与翻译模型共享同一块 Apple GPU（串行）。⚠ granite 需要 mlx-audio **main 上的 conv 修复**（见 SETUP）。
-- 仅英语的低延迟 Parakeet 是给高级用户的出口，仅通过 `LCC_ASR_ENGINE=parakeet` 启用（CPU，与翻译并行；模型 `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`，`sherpa-onnx==1.13.2`）。弹窗选择器只暴露 granite/qwen3。
+- 仅英语的低延迟 Parakeet 是给高级用户的出口，仅通过 `LCC_ASR_ENGINE=parakeet` 启用（CPU，与翻译并行；模型 `~/.local/share/models/live-caption/parakeet-tdt-0.6b-v2-int8`，`sherpa-onnx==1.13.2`）。弹窗选择器只暴露 granite/qwen3/whisper。
 - 翻译：**可选的 Gemma-4 模型**——`gemma-26b`（26B-A4B，mlx-lm）、`gemma-e4b`（E4B）与 `gemma-e2b`（E2B，E4B/E2B 经 mlx_vlm 加载），或选 **自动** 按空闲内存适配——默认 **quality 提示词**（expert interpreter·by-meaning·no-translationese + 3 个 few-shot，靠 KV-cache 摊销开销 → 比书面语更自然的口语）。低延迟用 `LCC_TX_PROFILE=fast`。**目标语言可选**（45 种语言 — Gemma 多语种），源语言自动检测，目标=源时跳过。
 - RAM ~26GB（gemma-26b 权重；gemma-e4b ~8 / gemma-e2b ~6GB 更小）+ 每个 chunk 少量 KV。延迟 ~2.9–3.4s/语音 chunk（ASR ~0.7s + 翻译 ~1.4s + 音频 prefill + 等待小句边界）。
 - MTP 在此硬件上无意义，故未使用（MoE·dense·E4B 均已验证）。

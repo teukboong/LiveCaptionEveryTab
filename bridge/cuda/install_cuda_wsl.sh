@@ -105,7 +105,9 @@ LCC_CUDA_ASR_LLAMA_BIN=$LLAMA_BIN
 LCC_CUDA_ASR_GRANITE_HF=$ASR_GRANITE_HF
 LCC_CUDA_ASR_QWEN3_HF=$ASR_QWEN3_HF
 LCC_CUDA_TIMEOUT=120
-LCC_HOST=0.0.0.0
+LCC_HOST=127.0.0.1
+# If WSL2 localhost-forwarding doesn't reach 127.0.0.1, set LCC_HOST=0.0.0.0 AND LCC_ALLOW_INSECURE_BIND=1
+# (0.0.0.0 exposes the bridge to your LAN with the built-in token — see SETUP-windows.md).
 EOF
 
 log "Smoke"

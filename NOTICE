@@ -12,27 +12,31 @@ Models
 
 This project does NOT bundle or redistribute any model weights. Models are
 downloaded at runtime from their original sources (Hugging Face), each under
-its own license. The default model stack is fully permissive (Apache-2.0):
+its own license. The default model stack is permissive (Apache-2.0); the
+optional Whisper engine is MIT:
 
 Speech recognition (ASR) — pick one in the popup:
   * IBM Granite Speech 4.1 2B   (ibm-granite/granite-speech-4.1-2b)   Apache-2.0
   * Qwen3-ASR 1.7B              (Qwen/Qwen3-ASR-1.7B)                  Apache-2.0
   * Qwen3-ASR 0.6B              (Qwen/Qwen3-ASR-0.6B)                  Apache-2.0  [lite]
+  * Whisper Large v3 (OpenAI)   (mlx-community/whisper-large-v3-mlx;   MIT
+                                 whisper.cpp ggml q6 on CUDA)
   * (power-user) Parakeet TDT 0.6B v2 via sherpa-onnx                 CC-BY-4.0 (model)
 
 Translation / summarization — Gemma 4 (Google), all Apache-2.0.
-Tiered so the project runs across a range of hardware:
+A curated registry of Gemma 4 sizes so the project runs across a range of
+hardware (picked in the popup or auto-selected by available memory):
 
-  tier   model (Apple Silicon / MLX)                weights (q4)  use
+  size   model (Apple Silicon / MLX)                weights (q4)  use
   -----  ----------------------------------------   -----------   --------------------
-  full   mlx-community/gemma-4-26b-a4b-it-4bit       ~14 GB        best quality (32GB)
-  mid    mlx-community/gemma-4-e4b-it-4bit          ~5  GB        balanced  (16GB)
-  lite   mlx-community/gemma-4-e2b-it-4bit (qat)     ~3.2 GB       minimal   (<=16GB)
+  26B    mlx-community/gemma-4-26b-a4b-it-4bit       ~14 GB        best quality (32GB)
+  E4B    mlx-community/gemma-4-e4b-it-4bit          ~5  GB        balanced  (16GB)
+  E2B    mlx-community/gemma-4-e2b-it-4bit (qat)     ~3.2 GB       minimal   (<=16GB)
 
   Windows + NVIDIA (llama.cpp GGUF):
-  full   google/gemma-4-26B-A4B-it-qat-q4_0-gguf
-  mid    google/gemma-4-E4B-it-qat-q4_0-gguf
-  lite   google/gemma-4-E2B-it-qat-q4_0-gguf
+  26B    google/gemma-4-26B-A4B-it-qat-q4_0-gguf
+  E4B    google/gemma-4-E4B-it-qat-q4_0-gguf
+  E2B    google/gemma-4-E2B-it-qat-q4_0-gguf
 
 Gemma 4 is released by Google under the Apache License 2.0. Earlier Gemma
 releases (1/2/3) used the separate "Gemma Terms of Use"; this project targets
@@ -51,15 +55,17 @@ Third-party software dependencies (installed via pip, not vendored)
     psutil                       BSD-3-Clause
 
   Apple Silicon / MLX backend:
-    mlx, mlx-lm                  Apache-2.0 / MIT   (Apple)   — full-tier translator
-    mlx-vlm                      MIT                          — mid/lite (Gemma-4 nano) translator
+    mlx, mlx-lm                  Apache-2.0 / MIT   (Apple)   — 26B translator
+    mlx-vlm                      MIT                          — E4B/E2B (Gemma-4 nano) translator
     mlx-audio                    MIT  (Blaizzy/mlx-audio)     — granite/qwen3 ASR
+    mlx-whisper                  MIT  (Apple)                 — Whisper ASR (6bit)
     sherpa-onnx                  Apache-2.0  (k2-fsa)         — optional Parakeet ASR (power-user)
 
   Windows + NVIDIA / CUDA backend (run on the GPU box; ASR uses transformers/qwen-asr, NOT mlx-audio):
     transformers                 Apache-2.0  (Hugging Face)   — granite ASR server
     qwen-asr                     Apache-2.0  (Qwen)           — qwen3 ASR server
     torch, torchaudio            BSD-3-Clause                 — ASR server runtime
+    whisper.cpp (whisper-server) MIT  (ggml-org)              — Whisper ASR server (q6 gguf, port 8002)
     llama.cpp (server)           MIT  (ggml-org)              — translation server (26B/E4B/E2B GGUF)
 
 Each component is the property of its respective owners and is provided under

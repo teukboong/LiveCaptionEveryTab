@@ -197,9 +197,9 @@ function lccEnsureGlossBar() {
     if (res.ok) { msg.textContent = `✓ '${src.value.trim()}' 추가 (다음 발화부터)`; src.value = ""; tgt.value = ""; setTimeout(lccCloseGlossBar, 1100); }
     else { msg.textContent = res.error || "원문·번역 둘 다 필요"; }
   };
-  add.addEventListener("click", submit);
+  add.addEventListener("click", (e) => { if (e.isTrusted) submit(); });   // page-synthesized clicks must not pin glossary into storage
   src.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); tgt.focus(); } });
-  tgt.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
+  tgt.addEventListener("keydown", (e) => { if (e.isTrusted && e.key === "Enter") { e.preventDefault(); submit(); } });
   bar.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); lccCloseGlossBar(); } });
   bar._fields = { src, tgt, msg };
   lccGlossBar = bar;
@@ -219,7 +219,7 @@ function lccToggleGlossBar() {
 try {
   // Alt+G (e.code, layout-independent) toggles the glossary bar. Chrome-targeted; Atlas hooks Alt away.
   window.addEventListener("keydown", (e) => {
-    if (e.altKey && e.code === "KeyG" && !lccEditableTarget(e.target)) { e.preventDefault(); lccToggleGlossBar(); }
+    if (e.isTrusted && e.altKey && e.code === "KeyG" && !lccEditableTarget(e.target)) { e.preventDefault(); lccToggleGlossBar(); }
   }, true);
 } catch (_) {}
 
@@ -657,6 +657,11 @@ function lccHandleBridgeMessage(msg) {
     lccPageTranslateRetry(msg);
   } else if (msg.type === "dom_translate_err") {
     lccPageTranslateDrop(msg);
+  } else if (msg.type === "page-translate-wsstate") {
+    // The page-translate tab's own bridge-state signal (captions use "wsstate"). In-flight requests
+    // self-heal via their retry timers on a drop; on reconnect, kick a scan so pending nodes resume
+    // promptly instead of waiting for the next mutation/scroll.
+    if (msg.open && lccPageTranslateOn) lccPageScheduleScan(0);
   }
 }
 

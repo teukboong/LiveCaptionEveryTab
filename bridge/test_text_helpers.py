@@ -70,7 +70,7 @@ ok("ssd.empty_new", s._short_suffix_duplicate("", "hello") is False)
 check("src.english", s._src_lang("Hello world this is English"), "English")
 check("src.korean", s._src_lang("안녕하세요 정말 반갑습니다 오늘은"), "Korean")
 check("src.japanese", s._src_lang("これはテストですよろしく"), "Japanese")
-check("src.en_with_kr_name", s._src_lang("I met 김수영 yesterday"), "English")   # documented edge
+check("src.en_with_kr_name", s._src_lang("I met 민준 yesterday"), "English")   # documented edge
 check("src.empty", s._src_lang(""), "English")
 
 # --- target language wiring: popup options, protocol list, server allowlist, and prompts stay aligned ---

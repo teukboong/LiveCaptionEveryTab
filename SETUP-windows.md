@@ -183,7 +183,7 @@ LCC_CUDA_ASR_QWEN3_URL=http://127.0.0.1:8001/v1/audio/transcriptions   # 별도 
 
 | 증상 | 해결 |
 |---|---|
-| 오버레이 "브릿지 연결 끊김" | WSL2의 터미널 3(브리지)이 `ready` 인지. 안 되면 `~/.lcc-cuda.env` 에 `LCC_HOST=0.0.0.0` 추가 후 재시작(localhost 포워딩이 127.0.0.1을 못 넘기는 환경) |
+| 오버레이 "브릿지 연결 끊김" | WSL2의 터미널 3(브리지)이 `ready` 인지. 안 되면 `~/.lcc-cuda.env` 에 `LCC_HOST=0.0.0.0` **와** `LCC_ALLOW_INSECURE_BIND=1` 을 같이 추가 후 재시작(localhost 포워딩이 127.0.0.1을 못 넘기는 환경). ⚠ 0.0.0.0 은 내장 토큰으로 LAN 전체에 탭 오디오를 노출하므로, 신뢰된 네트워크에서만 사용 |
 | 브리지에 `asr endpoint NOT reachable` | 터미널 2(asr) 먼저 켜기. 포트 8000 충돌이면 `LCC_ASR_PORT`/`LCC_CUDA_ASR_URL` 같이 변경 |
 | 브리지에 `chat endpoint NOT reachable` | 터미널 1(llama) 먼저. GGUF 경로(`LCC_LLAMA_GGUF`)·`llama-server` PATH 확인 |
 | 번역이 `<think>...` 같은 게 섞임 | `serve_llama.sh` 의 `--jinja` 가 빠졌거나 템플릿이 무시. llama.cpp 최신 빌드로 |
@@ -191,7 +191,7 @@ LCC_CUDA_ASR_QWEN3_URL=http://127.0.0.1:8001/v1/audio/transcriptions   # 별도 
 | VRAM 부족(OOM) | 안 쓰는 ASR 엔진은 로드 안 됨(lazy). 번역 GGUF를 Q4_K_S/Q3로. `LCC_ASR_DTYPE=float16` |
 | 자막이 안 뜸 | 실제 발화 구간인지(무음/음악은 `[no speech]`로 정상 스킵), 탭에서 소리 나는지, 터미널 3 로그에 `[cap …]` 뜨는지 |
 
-포트 점유: `ss -ltnp | grep -E ':(8765|8080|8000)'` → 점유 PID kill.
+포트 점유: `ss -ltnp | grep -E ':(8765|8080|8000|8002)'` → 점유 PID kill.
 
 ---
 

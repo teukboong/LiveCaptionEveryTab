@@ -224,7 +224,7 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
 
 // --- User translation presets (named, multiple) — SEPARATE from the built-in LCC_CONTENT_PRESETS ----------
 // A user preset saves the full translation-shaping bundle so it can be recalled later, including from Simple.
-// The actual persistence (chrome.storage 'lcc-user-presets') lives in the popup; protocol.js owns the pure
+// The actual persistence (browser storage key 'lcc-user-presets') lives in the popup; protocol.js owns the pure
 // data model + canonicalization so popup / content / tests all share one source of truth.
 const LCC_USER_PRESETS_KEY = "lcc-user-presets";
 const LCC_PRESET_NAME_MAX = 60;

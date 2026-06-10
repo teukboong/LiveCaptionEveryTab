@@ -190,18 +190,20 @@ def _postprocess_asr(text):
 # --- Backend interface (the names server.py rebinds to) -----------------------------------------------
 def translate_once(text, recent_pairs=(), target="Korean", hint="", register="casual",
                    glossary_pairs=(), on_update=None, kv_reuse=None, max_tokens=None, stream_every=None,
-                   profile="caption"):
+                   profile="caption", custom=""):
     """Stateless per-clause translation. Same prompt as the MLX path (shared _translate_messages), streamed
     so the live loop's on_update preview works identically. kv_reuse is ignored — the remote server manages
-    its own prefix/KV caching (llama.cpp prompt cache, vLLM automatic prefix caching)."""
+    its own prefix/KV caching (llama.cpp prompt cache, vLLM automatic prefix caching). custom mirrors the MLX
+    signature so the live loop can pass the user's custom translation prompt on the CUDA path too (INV-11)."""
     import server as _srv
-    msgs = _srv._translate_messages(text, recent_pairs, target, hint, register, glossary_pairs, profile)
+    msgs = _srv._translate_messages(text, recent_pairs, target, hint, register, glossary_pairs, profile, custom)
     gen_max = max(1, int(max_tokens or TX_GEN_MAX))
     return _chat(msgs, gen_max, int(stream_every or 4), on_update)
 
 
 def translate_page_batch_once(items, recent_pairs=(), target="Korean", hint="", register="casual",
-                              glossary_pairs=(), max_tokens=None, kv_reuse=None, on_segment=None, on_partial=None):
+                              glossary_pairs=(), max_tokens=None, kv_reuse=None, on_segment=None, on_partial=None,
+                              custom=""):
     """DOM page microbatch translation. Same @@n@@-marker prompt/parser as the MLX path. kv_reuse is ignored
     (remote CUDA text servers handle prefix caching). When on_segment is given, segments stream back via the
     chat stream's incremental marker parse just like the MLX path; on_partial streams the still-growing
@@ -216,7 +218,7 @@ def translate_page_batch_once(items, recent_pairs=(), target="Korean", hint="", 
     ]
     if not clean_items:
         return {}
-    msgs = _srv._translate_page_batch_messages(clean_items, recent_pairs, target, hint, register, glossary_pairs)
+    msgs = _srv._translate_page_batch_messages(clean_items, recent_pairs, target, hint, register, glossary_pairs, custom)
     emitted = set()
     partial_state = {}
     on_update = None
