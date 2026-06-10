@@ -3600,11 +3600,12 @@ async def handle(ws):
                             continue
                         ocr_glossary = effective_page_glossary()
                         ocr_hint = page_context_hint or context_hint
-                        use_aux_ocr = aux_lm_ready()
-                        if not use_aux_ocr:
-                            await wait_aux_translation_slot(1500)   # user-initiated: yield briefly, then proceed
-                        ocr_lock = _AUX_LM_DEVICE_LOCK if use_aux_ocr else mlx_lock
-                        ocr_pool = _aux_lm_pool if use_aux_ocr else _mlx_pool
+                        # OCR renders on the MAIN translator: the overlay is one-shot (no idle re-check can
+                        # patch it later like page DOM), so quality wins over hover latency here.
+                        use_aux_ocr = False
+                        await wait_aux_translation_slot(1500)   # user-initiated: yield briefly, then proceed
+                        ocr_lock = mlx_lock
+                        ocr_pool = _mlx_pool
                         try:
                             ocr_out = {}
                             for chunk_at in range(0, len(ocr_lines), DOM_TX_MAX_ITEMS):   # marker batches stay small
