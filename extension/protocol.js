@@ -38,6 +38,7 @@ const LCC_DEFAULT_SETTINGS = Object.freeze({
   pageTranslateStream: "partial",
   pageBilingual: true,
   pageVerify: false,
+  termMemory: true,          // session term memory + per-domain persistence (auto-glossary)
   syncOffsetMs: 0,
   debugSync: false,
   uiMode: "simple",
@@ -182,6 +183,7 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   out.pageTranslateStream = globalThis.lccCanonicalPageTranslateStream(out.pageTranslateStream);
   out.pageBilingual = lccCanonicalBoolean(out.pageBilingual, LCC_DEFAULT_SETTINGS.pageBilingual);
   out.pageVerify = lccCanonicalBoolean(out.pageVerify, LCC_DEFAULT_SETTINGS.pageVerify);
+  out.termMemory = lccCanonicalBoolean(out.termMemory, LCC_DEFAULT_SETTINGS.termMemory);
   out.customPrompt = lccCanonicalCustomPrompt(out.customPrompt);
   return out;
 };
@@ -216,6 +218,8 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
     pageTranslateStream: globalThis.lccCanonicalPageTranslateStream(s.pageTranslateStream),   // content+offscreen read it; bridge ignores
     pageBilingual: s.pageBilingual === true,      // content-only: hover shows the original
     pageVerify: s.pageVerify === true,            // content-only: re-check cached labels in idle
+    termMemory: s.termMemory === true,            // bridge: mine + auto-pin recurring terms
+    autoGlossary: String(s.autoGlossary || ""),   // bridge: domain term seeds injected by the SW (not user-edited)
 
     accuracyMode: s.accuracyMode === true,
     autoPrime: s.autoPrime === true,

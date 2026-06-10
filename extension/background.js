@@ -3,6 +3,7 @@
 //  - "video": delay.js in the captured tab (B-2)
 // State {capturing, mode, capturedTabId, pendingStreamId} lives in session so it survives SW sleep.
 importScripts("protocol.js");
+importScripts("term-memory.js");
 console.log("[lcc] background service worker loaded");
 
 const LCC_OFFSCREEN_WARN_INTERVAL_MS = 2000;
@@ -91,6 +92,7 @@ async function cleanup() {
     pendingStreamId: null,
     pageContext: null,
     pageUrl: null,
+    captureUrl: null,
     delaySec: null,
     wsOpen: false,
     lccStreamClock: null,
@@ -100,9 +102,29 @@ async function cleanup() {
 
 // offscreen has no working chrome.storage, so the SW resolves the bridge settings and pushes them
 // in the start message (and re-pushes on the offscreen-ready handshake / reconnect needs).
+// Callers must set captureUrl/pageUrl in session BEFORE building the config — the domain term seeds
+// (tab memory) are resolved from them here.
 async function bridgeConfig() {
   const s = (await chrome.storage.local.get("lcc-settings"))["lcc-settings"] || {};
-  return globalThis.lccNormalizeSettings(s);
+  const config = globalThis.lccNormalizeSettings(s);
+  if (config.termMemory === true) {
+    try {   // seeds are an enhancement — never let them block a config push
+      const { captureUrl, pageUrl } = await chrome.storage.session.get(["captureUrl", "pageUrl"]);
+      config.autoGlossary = await globalThis.lccTermMemorySeeds([captureUrl, pageUrl]);
+    } catch (e) {
+      console.warn("[lcc] term-memory seed lookup failed:", lccErrorText(e));
+    }
+  }
+  return config;
+}
+
+async function tabUrl(tabId) {
+  try {
+    return String((await chrome.tabs.get(tabId)).url || "");
+  } catch (e) {
+    console.warn("[lcc] tab url lookup failed:", tabId, lccErrorText(e));
+    return "";
+  }
 }
 
 // Re-deliver the start params when offscreen announces it's ready (covers the createDocument race
@@ -180,8 +202,9 @@ async function startAudio(streamId, tabId, delaySec, pageContext) {
   await cleanup();                                  // tear down any prior capture (either mode)
   requireContentScript(await ensureContentScript(tabId));  // inject into already-open tabs so captions show without a reload
   const dsec = Math.min(12, Math.max(0, Number(delaySec) || 0));
+  const captureUrl = await tabUrl(tabId);           // set BEFORE bridgeConfig so domain term seeds resolve
+  await chrome.storage.session.set({ capturing: true, captioning: true, mode: "audio", capturedTabId: tabId, pendingStreamId: streamId, pageContext: pageContext || "", delaySec: dsec, captureUrl });
   const config = await bridgeConfig();
-  await chrome.storage.session.set({ capturing: true, captioning: true, mode: "audio", capturedTabId: tabId, pendingStreamId: streamId, pageContext: pageContext || "", delaySec: dsec });
   await ensureOffscreen();
   sendOffscreenBestEffort({ target: "offscreen", cmd: "start", streamId, delaySec: dsec, pageContext: pageContext || "", config }, "start");   // warm path; offscreen-ready handshake re-delivers if missed
   chrome.action.setBadgeText({ text: "ON" });
@@ -194,9 +217,10 @@ async function startVideo(tabId, delaySec, pageContext) {
   await cleanup();                                  // tear down any prior capture (esp. stale offscreen)
   requireContentScript(await ensureContentScript(tabId));  // inject into already-open tabs so the delayed-render path is present
   const dsec = Math.min(12, Math.max(0.5, Number(delaySec) || 3.5));
-  const config = await bridgeConfig();
+  const captureUrl = await tabUrl(tabId);           // set BEFORE bridgeConfig so domain term seeds resolve
   // Set session state BEFORE creating the offscreen doc so resendStart() can recover params.
-  await chrome.storage.session.set({ capturing: true, captioning: true, mode: "video", capturedTabId: tabId, pendingStreamId: null, pageContext: pageContext || "", delaySec: dsec });
+  await chrome.storage.session.set({ capturing: true, captioning: true, mode: "video", capturedTabId: tabId, pendingStreamId: null, pageContext: pageContext || "", delaySec: dsec, captureUrl });
+  const config = await bridgeConfig();
   await ensureOffscreen();                           // offscreen owns the bridge WS (page CSP/origin can't open one)
   sendOffscreenBestEffort({ target: "offscreen", cmd: "start-relay", delaySec: dsec, pageContext: pageContext || "", config }, "start-relay");   // warm path; offscreen-ready handshake re-delivers if missed
   chrome.action.setBadgeText({ text: "ON" });
@@ -208,15 +232,9 @@ async function startVideo(tabId, delaySec, pageContext) {
 
 async function startPage(tabId, pageContext) {
   requireContentScript(await ensureContentScript(tabId));  // page translation needs the content script present
-  const config = await bridgeConfig();
-  let pageUrl = "";
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    pageUrl = (tab && tab.url) || "";
-  } catch (e) {
-    console.warn("[lcc] page URL lookup failed:", tabId, lccErrorText(e));
-  }
+  const pageUrl = await tabUrl(tabId);
   await chrome.storage.session.set({ capturing: true, pageTranslating: true, pageTabId: tabId, pageContext: pageContext || "", pageUrl });
+  const config = await bridgeConfig();              // AFTER session.set so domain term seeds resolve
   await ensureOffscreen();
   sendOffscreenBestEffort({ target: "offscreen", cmd: "start-page", pageContext: pageContext || "", config }, "start-page");
   sendTab(tabId, { type: "page-translate-start", settings: config });
@@ -246,7 +264,7 @@ async function forward(msg) {
     await chrome.storage.session.set({ wsOpen: !!msg.open });   // (don't let the capturedTabId early-return drop it)
     chrome.action.setBadgeText({ text: msg.open ? "ON" : "…" });
   }
-  const { capturedTabId, pageTabId, mode, delaySec } = await chrome.storage.session.get(["capturedTabId", "pageTabId", "mode", "delaySec"]);
+  const { capturedTabId, pageTabId, mode, delaySec, captureUrl, pageUrl } = await chrome.storage.session.get(["capturedTabId", "pageTabId", "mode", "delaySec", "captureUrl", "pageUrl"]);
   const { route: _route, ...payloadWithMaybeRouteTarget } = msg;
   const payload = payloadWithMaybeRouteTarget.target === "background"
     ? (({ target: _target, ...rest }) => rest)(payloadWithMaybeRouteTarget)
@@ -269,6 +287,7 @@ async function forward(msg) {
     if (pageTabId != null) sendTab(pageTabId, { type: "page-translate-wsstate", open: msg.open });
   }
   else if (msg.type === "notice" && capturedTabId != null) sendTab(capturedTabId, { type: "notice", text: msg.text });
+  else if (msg.type === "term_memory") await globalThis.lccTermMemorySave(msg.terms, captureUrl || pageUrl);   // tab memory: persist mined terms per domain
   else if (msg.type === "answer_partial") await chrome.storage.session.set({ "lcc-answer": { text: msg.text, done: false } });   // popup reads via onChanged
   else if (msg.type === "answer") await chrome.storage.session.set({ "lcc-answer": { text: msg.text, done: true } });
   else if (msg.type === "err" && capturedTabId != null) sendTab(capturedTabId, { type: "err", text: msg.text });
@@ -310,8 +329,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       const nextContext = String(msg.pageContext || pageContext || "").trim().slice(0, 200);
       const nextUrl = String(msg.pageUrl || (sender && sender.tab && sender.tab.url) || "").slice(0, 500);
-      const config = await bridgeConfig();
       await chrome.storage.session.set({ pageContext: nextContext, pageUrl: nextUrl });
+      const config = await bridgeConfig();          // AFTER session.set so domain term seeds resolve
       await ensureOffscreen();
       sendOffscreenBestEffort({ target: "offscreen", cmd: "start-page", pageContext: nextContext, config }, "start-page");
       sendResponse({ ok: true, pageTranslating: true, settings: config });

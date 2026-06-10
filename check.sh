@@ -51,6 +51,7 @@ for js_file in extension/*.js; do
   node --check "$js_file"
 done
 node extension/test_protocol.js
+node extension/test_term_memory.js
 node extension/test_extension_actions.js
 node extension/test_delay_runtime.js
 node extension/test_offscreen_runtime.js

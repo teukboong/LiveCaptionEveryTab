@@ -150,7 +150,7 @@ function connectWS() {
       if (d.type === "caption" || d.type === "caption_partial" || d.type === "source" ||
           d.type === "dom_translate_result" || d.type === "dom_translate_partial" ||
           d.type === "dom_translate_done" || d.type === "dom_translate_busy" || d.type === "dom_translate_err" ||
-          d.type === "answer_partial" || d.type === "answer" ||
+          d.type === "answer_partial" || d.type === "answer" || d.type === "term_memory" ||
           d.type === "err" || d.type === "notice") {   // surface bridge diagnostics (e.g. ASR switch failure) — content.js renders them
         sendBackgroundBestEffort({ route: "background", ...d }, d.type || "bridge-message");
       }

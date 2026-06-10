@@ -197,7 +197,7 @@ function loadBackgroundHarness({
   failOffscreenClose = false,
   failOffscreenMessage = false,
   failOffscreenPcm = false,
-  failSecondSessionGet = false,
+  failThirdSessionGet = false,
   failSessionGet = false,
   failSessionSet = false,
   failTabGet = false,
@@ -264,7 +264,9 @@ function loadBackgroundHarness({
         get() {
           sessionGetCount += 1;
           if (failSessionGet) return Promise.reject(new Error("session get failed"));
-          if (failSecondSessionGet && sessionGetCount === 2) return Promise.reject(new Error("session get failed"));
+          // popup-config-update flow: #1 captioning/page state, #2 bridgeConfig term-memory seeds (fail-open),
+          // #3 resetTranslationContext -> the boundary whose failure must surface as the response error.
+          if (failThirdSessionGet && sessionGetCount === 3) return Promise.reject(new Error("session get failed"));
           return Promise.resolve({ capturedTabId: 456, pageTabId: 123, pageTranslating });
         },
         set(value) {
@@ -466,7 +468,7 @@ function runBackgroundClearTranscript(options) {
   assert.deepEqual(plain(backgroundStartPageUrlFailure.runtimeMessages), [
     { target: "offscreen", cmd: "start-page", pageContext: "page ctx", config: startPageSettings },
   ]);
-  assert.match(backgroundStartPageUrlFailure.warnings.join("\n"), /page URL lookup failed: 123 tab get failed/);
+  assert.match(backgroundStartPageUrlFailure.warnings.join("\n"), /tab url lookup failed: 123 tab get failed/);
 
   const backgroundRestrictedTab = await runBackgroundMessage(
     { type: "popup-start-video", tabId: 123, delaySec: 3, pageContext: "" },
@@ -496,7 +498,7 @@ function runBackgroundClearTranscript(options) {
 
   const backgroundConfigResetFailure = await runBackgroundMessage(
     { type: "popup-config-update", resetTranslationContext: true },
-    { pageTranslating: true, failSecondSessionGet: true },
+    { pageTranslating: true, failThirdSessionGet: true },
   );
   const failedConfigResetSettings = plain(backgroundConfigResetFailure.runtimeMessages[0].config);
   assert.deepEqual(plain(backgroundConfigResetFailure.response), { ok: false, error: "session get failed" });

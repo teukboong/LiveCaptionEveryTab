@@ -114,6 +114,7 @@ const UI_TEXT = Object.freeze({
     contextPlaceholder: "자유 텍스트 바이어싱",
     labelGlossary: "용어집",
     glossaryPlaceholder: "이름=번역 (줄마다 하나)\n예: Blackwell=블랙웰",
+    termMemory: "용어 메모리 (반복 용어 자동 학습 · 사이트별 기억)",
     advancedApplyHint: "용어집·용어 힌트는 다음 발화부터 / 정확도·음성 감지는 자막 다시 시작 시 적용",
     sectionPageAdvanced: "페이지 번역",
     labelPageRegister: "페이지 말투",
@@ -257,6 +258,7 @@ const UI_TEXT = Object.freeze({
     contextPlaceholder: "Free-text biasing",
     labelGlossary: "Glossary",
     glossaryPlaceholder: "Name=translation (one per line)\nExample: Blackwell=Blackwell",
+    termMemory: "Term memory (auto-learn recurring terms, per-site recall)",
     advancedApplyHint: "Glossary and hints apply from the next utterance. Accuracy/VAD applies after restarting captions.",
     sectionPageAdvanced: "Page translation",
     labelPageRegister: "Page tone",
@@ -424,6 +426,7 @@ async function loadSettings() {
   document.getElementById("pageTranslateStream").value = settings.pageTranslateStream;
   document.getElementById("pageBilingual").checked = settings.pageBilingual !== false;
   document.getElementById("pageVerify").checked = settings.pageVerify === true;
+  document.getElementById("termMemory").checked = settings.termMemory !== false;
   document.getElementById("debugSync").checked = settings.debugSync;
   document.getElementById("contextHint").value = settings.contextHint;
   document.getElementById("glossary").value = settings.glossary;
@@ -788,6 +791,7 @@ document.getElementById("pageTranslateStream").addEventListener("change", (e) =>
 });
 document.getElementById("pageBilingual").addEventListener("change", (e) => { settings.pageBilingual = e.target.checked; saveSettings(true); });
 document.getElementById("pageVerify").addEventListener("change", (e) => { settings.pageVerify = e.target.checked; saveSettings(true); });
+document.getElementById("termMemory").addEventListener("change", (e) => { settings.termMemory = e.target.checked; saveSettings(true); });
 document.getElementById("debugSync").addEventListener("change", (e) => { settings.debugSync = e.target.checked; saveSettings(); });
 document.getElementById("contextHint").addEventListener("input", (e) => { settings.contextHint = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });
 document.getElementById("glossary").addEventListener("input", (e) => { settings.glossary = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });
