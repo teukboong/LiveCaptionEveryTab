@@ -192,8 +192,8 @@ assert.match(
 );
 assert.match(
   popupJs,
-  /if \(!r\.done\) pollInstall\(\);[\s\S]*else \{[\s\S]*setInstBusy\(false\);[\s\S]*if \(r\.ok\)[\s\S]*else setInstStatus\(tr\("installFailed"/,
-  "popup install resume shows both completed and failed terminal status",
+  /if \(!r \|\| r\.idle \|\| r\.noHost \|\| r\.done\) return;[\s\S]*?pollInstall\(\);/,
+  "popup open resumes only a LIVE install — a finished install in the state file stays silent",
 );
 assert.match(
   popupJs,

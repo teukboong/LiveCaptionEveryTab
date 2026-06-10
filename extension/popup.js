@@ -837,6 +837,29 @@ function asrSelectValue() {
 function renderModelSelects() {
   const lmSel = document.getElementById("lmModel");
   const asrSel = document.getElementById("asrEngine");
+  const lmCustomEl = document.getElementById("lmModelCustom"), asrCustomEl = document.getElementById("asrEngineCustom");
+  if (!modelStatus.lm.length && !modelStatus.asr.length) {
+    // First paint runs before models_status answers. The registry isn't known yet, so a saved
+    // registry id would mis-resolve to "직접 입력" and flash the custom inputs — instead show the
+    // saved choice as a provisional option and let the refresh re-render with real labels.
+    const lmSaved = settings.lmModel || LM_AUTO;
+    lmSel.innerHTML = "";
+    lmSel.appendChild(optEl(LM_AUTO, tr("modelAuto")));
+    if (lmSaved !== LM_AUTO) lmSel.appendChild(optEl(lmSaved, lmSaved));
+    lmSel.appendChild(optEl(MODEL_CUSTOM, tr("modelCustom")));
+    lmSel.value = lmSaved;
+    lmCustomEl.hidden = true;
+    const asrSaved = settings.asrModelId || "granite";
+    asrSel.innerHTML = "";
+    if (asrSaved !== MODEL_CUSTOM) asrSel.appendChild(optEl(asrSaved, asrSaved));
+    asrSel.appendChild(optEl(MODEL_CUSTOM, tr("modelCustom")));
+    asrSel.value = asrSaved;
+    asrCustomEl.hidden = asrSaved !== MODEL_CUSTOM;
+    if (asrSaved === MODEL_CUSTOM && !asrCustomEl.value) asrCustomEl.value = settings.asrRepo || "";
+    document.getElementById("lmDownload").hidden = true;   // installed-ness unknown until the registry loads
+    document.getElementById("asrDownload").hidden = true;
+    return;
+  }
   lmSel.innerHTML = "";
   lmSel.appendChild(optEl(LM_AUTO, tr("modelAuto")));
   for (const m of modelStatus.lm) lmSel.appendChild(optEl(m.id, m.label + (m.installed ? "" : "  ⬇")));
@@ -986,13 +1009,11 @@ document.getElementById("userPreset").addEventListener("change", async (e) => {
 refreshModelStatus();
 loadUserPresets();
 nmSend({ cmd: "install_status" }).then((r) => {
-  if (!r || r.idle || r.noHost) return;
-  if (!r.done) pollInstall();
-  else {
-    setInstBusy(false);
-    if (r.ok) setInstStatus(tr("installed", { model: r.model || "" }), "#16a34a");
-    else setInstStatus(tr("installFailed", { error: r.error || "" }), "#dc2626");
-  }
+  // A finished install (ok or failed) is history — the state file keeps it forever, so showing it
+  // on every popup open never goes away. Surface only a LIVE install; completion still gets its
+  // moment via pollInstall() within the session that watched it finish.
+  if (!r || r.idle || r.noHost || r.done) return;
+  pollInstall();
 });
 window.addEventListener("pagehide", () => {
   if (_pushCfgTimer) { clearTimeout(_pushCfgTimer); _pushCfgTimer = null; }
