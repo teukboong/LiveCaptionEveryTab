@@ -81,6 +81,28 @@ RULES = (
         ),
     ),
     FileRule(
+        EXT / "caption-overlay.js",
+        max_lines=500,
+        forbidden=(
+            (r"\bchrome\.runtime\.sendMessage\b", "caption-overlay.js must stay a pure render layer"),
+        ),
+    ),
+    FileRule(
+        EXT / "caption-scheduler.js",
+        max_lines=800,
+    ),
+    FileRule(
+        EXT / "page-translator.js",
+        max_lines=1400,
+        forbidden=(
+            (r"__lccVideoSub", "page-translator.js must not depend on video subtitle routing"),
+        ),
+    ),
+    FileRule(
+        EXT / "content.js",
+        max_lines=700,
+    ),
+    FileRule(
         EXT / "background.js",
         # Grew with popup model-picker routing, the content-script trust-boundary gate, and tab-memory
         # routing (capture/page URL capture + term_memory persistence; the data model lives in

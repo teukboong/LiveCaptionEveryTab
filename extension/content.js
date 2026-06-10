@@ -1,3 +1,6 @@
+// Content script map: caption-overlay.js owns caption DOM rendering, caption-scheduler.js owns caption
+// queue/timing/transcript state, page-translator.js owns lccPage* DOM translation state, and this file
+// remains the settings/router plus glossary, recent panel, write-back, OCR, and page-context bridge.
 let settings = globalThis.lccNormalizeSettings({});
 try {
   if (chrome.storage && chrome.storage.local) {
