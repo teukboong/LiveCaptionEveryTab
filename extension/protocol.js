@@ -37,6 +37,7 @@ const LCC_DEFAULT_SETTINGS = Object.freeze({
   pageTranslateMaxChars: 4000,
   pageTranslateStream: "partial",
   pageBilingual: true,
+  pageBilingualInline: false,   // inline ghost: original kept visibly under translated prose blocks
   pageVerify: false,
   termMemory: true,          // session term memory + per-domain persistence (auto-glossary)
   syncOffsetMs: 0,
@@ -182,6 +183,7 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   out.pageTranslateMaxChars = lccClampInteger(out.pageTranslateMaxChars, LCC_DEFAULT_SETTINGS.pageTranslateMaxChars, 80, 8000);
   out.pageTranslateStream = globalThis.lccCanonicalPageTranslateStream(out.pageTranslateStream);
   out.pageBilingual = lccCanonicalBoolean(out.pageBilingual, LCC_DEFAULT_SETTINGS.pageBilingual);
+  out.pageBilingualInline = lccCanonicalBoolean(out.pageBilingualInline, LCC_DEFAULT_SETTINGS.pageBilingualInline);
   out.pageVerify = lccCanonicalBoolean(out.pageVerify, LCC_DEFAULT_SETTINGS.pageVerify);
   out.termMemory = lccCanonicalBoolean(out.termMemory, LCC_DEFAULT_SETTINGS.termMemory);
   out.customPrompt = lccCanonicalCustomPrompt(out.customPrompt);
@@ -217,6 +219,7 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
     pageGlossary: s.pageGlossary || "",
     pageTranslateStream: globalThis.lccCanonicalPageTranslateStream(s.pageTranslateStream),   // content+offscreen read it; bridge ignores
     pageBilingual: s.pageBilingual === true,      // content-only: hover shows the original
+    pageBilingualInline: s.pageBilingualInline === true,   // content-only: original kept under translated prose
     pageVerify: s.pageVerify === true,            // content-only: re-check cached labels in idle
     termMemory: s.termMemory === true,            // bridge: mine + auto-pin recurring terms
     autoGlossary: String(s.autoGlossary || ""),   // bridge: domain term seeds injected by the SW (not user-edited)

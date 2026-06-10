@@ -38,3 +38,18 @@
   text-shadow: 0 1px 2px #000;
   white-space: normal;
 }
+
+/* Bilingual inline ghost: the pre-translation original rendered faintly under a translated block.
+   Driven by content.js setting data-lcc-orig on elements whose translation has been applied
+   (long prose only); removing the attribute/class restores the page exactly. */
+.lcc-bi-inline[data-lcc-orig]::after {
+  content: attr(data-lcc-orig);
+  display: block;
+  opacity: 0.52;
+  font-size: 0.84em;
+  font-style: italic;
+  line-height: 1.35;
+  margin-top: 0.18em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

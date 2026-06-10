@@ -107,6 +107,7 @@ const UI_TEXT = Object.freeze({
     pageStreamPartial: "라이브 partial",
     pageStreamFinal: "확정만",
     pageBilingual: "원문 보기 (번역 위에 마우스)",
+    pageBilingualInline: "원문 같이 보기 (긴 문단 아래 원문 표시)",
     pageVerify: "캐시 번역 idle 재확인",
     labelSyncOffset: "싱크 보정",
     debugSync: "싱크 디버그 표시",
@@ -251,6 +252,7 @@ const UI_TEXT = Object.freeze({
     pageStreamPartial: "Live partial",
     pageStreamFinal: "Final only",
     pageBilingual: "Show original (hover translation)",
+    pageBilingualInline: "Keep original under long paragraphs",
     pageVerify: "Re-check cached labels when idle",
     labelSyncOffset: "Sync offset",
     debugSync: "Show sync debug",
@@ -425,6 +427,7 @@ async function loadSettings() {
   document.getElementById("autoPrime").checked = settings.autoPrime;
   document.getElementById("pageTranslateStream").value = settings.pageTranslateStream;
   document.getElementById("pageBilingual").checked = settings.pageBilingual !== false;
+  document.getElementById("pageBilingualInline").checked = settings.pageBilingualInline === true;
   document.getElementById("pageVerify").checked = settings.pageVerify === true;
   document.getElementById("termMemory").checked = settings.termMemory !== false;
   document.getElementById("debugSync").checked = settings.debugSync;
@@ -790,6 +793,7 @@ document.getElementById("pageTranslateStream").addEventListener("change", (e) =>
   saveSettings(true);
 });
 document.getElementById("pageBilingual").addEventListener("change", (e) => { settings.pageBilingual = e.target.checked; saveSettings(true); });
+document.getElementById("pageBilingualInline").addEventListener("change", (e) => { settings.pageBilingualInline = e.target.checked; saveSettings(true); });
 document.getElementById("pageVerify").addEventListener("change", (e) => { settings.pageVerify = e.target.checked; saveSettings(true); });
 document.getElementById("termMemory").addEventListener("change", (e) => { settings.termMemory = e.target.checked; saveSettings(true); });
 document.getElementById("debugSync").addEventListener("change", (e) => { settings.debugSync = e.target.checked; saveSettings(); });

@@ -1130,6 +1130,7 @@ function lccPageApplyToNode(node, state, source, target, expectedFull, pre, post
   state.translated = target;
   state.translatedFull = state.pre + target + state.post;
   node.nodeValue = state.translatedFull;       // direct browser DOM replacement, not an overlay
+  lccPageBilingualInlineMark(node.parentElement);
 }
 // Speculative partial streaming: paint the model's in-progress translation into the node; a later final
 // (dom_translate_result) confirms it, and busy/err/clear restores the original. Partials are never cached.
@@ -1275,6 +1276,7 @@ function lccPageQueueBlockUnit(unit) {
     lccPageBindBlockMembers(members, anchor, "");
     if (lccPageApplyBlockTarget(members, anchor, source, cached.target) > 0) {
       lccPageTranslateStats.applied += 1;
+      lccPageBilingualInlineMark(el);
       if (cached.kind !== "url") lccPageVerifyEnqueue(anchor, source, cached.target);
     }
     return false;
@@ -1299,7 +1301,11 @@ function lccPageApplyBlockResult(key, work, source, target) {
     lccPageTranslateStats.dropEmpty += 1;      // model rendered empty: keep source, next scan re-queues
   } else {
     const applied = lccPageApplyBlockTarget(members, anchor, source || work.text, target);
-    if (applied > 0) { lccPageRememberCache(work.text, target); lccPageTranslateStats.applied += applied; }
+    if (applied > 0) {
+      lccPageRememberCache(work.text, target);
+      lccPageTranslateStats.applied += applied;
+      lccPageBilingualInlineMark(work.block.el);
+    }
     else lccPageTranslateStats.dropChanged += 1;
   }
   lccPageWork.delete(key);
@@ -1444,6 +1450,7 @@ function lccPageApplyBlockResultR(key, work, target) {
   let applied = 0;
   for (let i = 0; i < segs.length; i += 1) applied += lccPageApplySegCollapse(segs[i], segTexts[i].trim());
   lccPageTranslateStats.applied += applied;
+  if (applied > 0) lccPageBilingualInlineMark(work.block.el);
   lccPageWork.delete(key);
 }
 function lccPageQueueNode(node) {
@@ -1804,7 +1811,34 @@ function lccPageStopUrlWatch() {
   }
 }
 function lccPageBilingualEnabled() {
-  return lccPageTranslateSettings.pageBilingual !== false;
+  return lccPageTranslateSettings.pageBilingual !== false || lccPageBilingualInlineEnabled();
+}
+// Inline ghost: keep the original visibly under the translated block (no hover needed). Long prose only —
+// labels/buttons would double in size — and final translations only (partials stay clean).
+const LCC_PAGE_INLINE_MIN_CHARS = 40;
+const LCC_PAGE_INLINE_MAX_CHARS = 600;
+function lccPageBilingualInlineEnabled() {
+  return lccPageTranslateSettings.pageBilingualInline === true;
+}
+function lccPageBilingualInlineMark(el) {
+  if (!lccPageBilingualInlineEnabled() || !el) return;
+  const orig = lccBilingualOrig.get(el);
+  if (!orig) return;
+  const trimmed = orig.replace(/\s+/g, " ").trim();
+  if (trimmed.length < LCC_PAGE_INLINE_MIN_CHARS) return;
+  try {
+    el.setAttribute("data-lcc-orig",
+      trimmed.length > LCC_PAGE_INLINE_MAX_CHARS ? trimmed.slice(0, LCC_PAGE_INLINE_MAX_CHARS) + "…" : trimmed);
+    el.classList.add("lcc-bi-inline");
+  } catch (_) {}
+}
+function lccPageBilingualInlineClearAll() {
+  try {
+    for (const el of document.querySelectorAll(".lcc-bi-inline")) {
+      el.classList.remove("lcc-bi-inline");
+      el.removeAttribute("data-lcc-orig");
+    }
+  } catch (_) {}
 }
 function lccPageBilingualCapture(node) {
   if (!lccPageBilingualEnabled()) return;
@@ -1888,6 +1922,7 @@ function lccPageBilingualStop() {
   if (lccBilingualHide) { window.removeEventListener("scroll", lccBilingualHide, true); lccBilingualHide = null; }
   if (lccBilingualGhost) { try { lccBilingualGhost.remove(); } catch (_) {} lccBilingualGhost = null; }
   try { for (const el of document.querySelectorAll(".lcc-bi-src")) el.classList.remove("lcc-bi-src"); } catch (_) {}
+  lccPageBilingualInlineClearAll();
 }
 function lccPageTranslateStart(rawSettings) {
   if (!LCC_IS_TOP) return;
