@@ -83,7 +83,7 @@ bash bridge/run_bridge.sh
 ## Funciones
 - **Memoria de términos (glosario automático)**: los nombres/términos recurrentes de los subtítulos se fijan solos en el glosario — renderizados consistentes + corrección difusa de la ortografía del ASR. Se recuerdan por sitio y se re-siembran en subtítulos y página en tu próxima visita (desactivable en el popup)
 - **Concurrencia de dos modelos**: con RAM suficiente, un traductor E2B pequeño se carga junto al 26B y asume las vistas previas + los lotes del DOM — los finales mantienen la calidad 26B y la traducción de página deja de competir con los subtítulos (`LCC_AUX_LM=off`)
-- **Etiquetado de hablantes (beta)**: etiquetas ①② en los subtítulos para podcasts/entrevistas — embeddings de hablante en CPU + clustering online, el modelo (~25MB) se descarga solo en el primer uso
+- **Etiquetado de hablantes (beta)**: etiquetas ①② en los subtítulos para podcasts/entrevistas — embeddings de hablante en CPU + clustering online, el modelo (~28MB) se descarga solo en el primer uso
 - **Write-back de entrada**: escribe en tu idioma en cualquier campo de texto y pulsa el chip ⇄ o Alt+T para verterlo al idioma de la página (reversión con un clic)
 - **Traducción de imágenes (macOS)**: Alt+hover sobre una imagen → OCR de Apple Vision (ANE, sin descargas) → overlay traducido sobre memes/capturas
 - **Original en línea (inline ghost)**: el original queda tenue bajo los párrafos largos traducidos — sin necesidad de hover

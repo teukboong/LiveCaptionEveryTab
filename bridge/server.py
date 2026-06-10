@@ -2320,7 +2320,8 @@ class Unit:
     pcm: bytearray = field(default_factory=bytearray)   # audio for the optional accuracy-mode 2-pass
     clauses: int = 0             # clauses folded into this unit (2-pass only pays off when >= 2)
     pure: bool = True            # False once a soft/hard cut or split misaligns pcm vs src
-    speaker: int | None = None   # diarize-lite label (first tagged clause wins; None when off/unknown)
+    speaker: int | None = None   # diarize-lite label (tagged at commit; None when off/unknown)
+    spk_pcm: bytes = b""         # longest clause audio — embedding fallback when the 2-pass buffer was dropped
 
     def add_clause_audio(self, audio: bytes, soft: bool):
         """Keep only 2-pass-eligible audio. Once the unit is impure or too long, drop the buffer so a
@@ -2419,6 +2420,7 @@ async def handle(ws):
         unit.start_ms = unit.end_ms = max(0, int(start_ms))
         unit.pcm.clear(); unit.clauses = 0; unit.pure = True   # fresh audio buffer for the new unit
         unit.speaker = None
+        unit.spk_pcm = b""
         return unit.id
 
     def clear_unit():
@@ -2428,6 +2430,7 @@ async def handle(ws):
         unit.rev = 0
         unit.pcm.clear(); unit.clauses = 0; unit.pure = True
         unit.speaker = None
+        unit.spk_pcm = b""
 
     async def emit_source(text, unit_id, rev, start_ms, end_ms, speaker=None):
         if _short_suffix_duplicate(text, last_enqueued_final_source):
@@ -3008,6 +3011,24 @@ async def handle(ws):
             print(f"[asr err] {e}", flush=True)
             return None
 
+    async def tag_unit_speaker():
+        """Commit-time speaker tagging: the unit's WHOLE clean audio (the accuracy-mode 2-pass buffer,
+        usually a full sentence) beats the old first-clause fragment by a wide margin; impure/overlong
+        units fall back to their longest clause. One CPU embedding per unit; never blocks a commit on
+        failure."""
+        if not (diarize_enabled and spk_clusters is not None) or unit.speaker is not None:
+            return
+        min_bytes = int(_diarize().SPK_MIN_SEC * SR) * 2
+        spk_src = bytes(unit.pcm) if (unit.pure and len(unit.pcm) >= min_bytes) else unit.spk_pcm
+        if len(spk_src) < min_bytes:
+            return
+        try:
+            emb = await loop.run_in_executor(_sherpa_pool, _diarize().embed, spk_src)
+            if emb:
+                unit.speaker = spk_clusters.add(emb)
+        except Exception as e:
+            print(f"[diarize err] {e}", flush=True)
+
     async def inference_loop():
         # ASR stays separate from translation: this loop creates fast source atoms and translation units,
         # while translation_loop decides which final/preview jobs deserve the 26B.
@@ -3061,13 +3082,8 @@ async def handle(ws):
                             unit.rev += 1
                         unit.add_clause_audio(audio, _soft)          # bounded audio for optional 2-pass at commit
                         unit.end_ms = max(unit.end_ms, int(end_ms))
-                        if diarize_enabled and spk_clusters is not None and unit.speaker is None:
-                            try:    # one CPU embedding per unit (first clause wins); never blocks on failure
-                                emb = await loop.run_in_executor(_sherpa_pool, _diarize().embed, audio)
-                                if emb:
-                                    unit.speaker = spk_clusters.add(emb)
-                            except Exception as e:
-                                print(f"[diarize err] {e}", flush=True)
+                        if diarize_enabled and len(audio) > len(unit.spk_pcm):
+                            unit.spk_pcm = audio        # embedding fallback for impure/overlong units
                     else:
                         nospeech_count += 1
                 else:                                  # "flush" (long pause) or "eos"
@@ -3092,6 +3108,7 @@ async def handle(ws):
                         clean = await transcribe(bytes(unit.pcm))
                         if clean:
                             commit_src = clean
+                    await tag_unit_speaker()
                     await emit_source(
                         commit_src, unit.id, unit.rev, unit.start_ms, unit.end_ms, unit.speaker
                     )
@@ -3125,6 +3142,7 @@ async def handle(ws):
                         clean = await transcribe(bytes(unit.pcm))
                         if clean:
                             final_src = clean
+                    await tag_unit_speaker()
                     await enqueue_translation(
                         final_src, True, unit.id, unit.rev, unit.start_ms, unit.end_ms, reason,
                         speaker=unit.speaker,
