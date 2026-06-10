@@ -1,7 +1,7 @@
 import os
-import re
 
-from text_helpers import _clean, _src_lang
+from page_markers import _page_block_context_preamble, _page_marker_input
+from text_helpers import _src_lang
 
 
 # Gemma 4 is broadly multilingual (140+ langs); expose a generous set of widely-used targets. Any name here is
@@ -32,10 +32,6 @@ def _translation_context_signature(target, register, hint, glossary_pairs, custo
         tuple(glossary_pairs or ()),
         str(custom or ""),
     )
-
-PAGE_BLOCK_CONTEXT = os.environ.get("LCC_PAGE_BLOCK_CONTEXT", "1") != "0"   # use the client's surrounding-block text as reference context
-PAGE_BLOCK_CTX_MAX = max(80, int(os.environ.get("LCC_PAGE_BLOCK_CTX_MAX", "600")))         # per-block context cap (chars)
-PAGE_BLOCK_CTX_TOTAL = max(200, int(os.environ.get("LCC_PAGE_BLOCK_CTX_TOTAL", "1200")))   # total context cap per batch (chars)
 
 TX_PROFILE = os.environ.get("LCC_TX_PROFILE", "quality").strip().lower()
 TX_FEWSHOT_MAX = max(0, int(os.environ.get("LCC_TX_FEWSHOT_MAX", "0" if TX_PROFILE in ("fast", "compact", "latency") else "3")))
@@ -321,9 +317,6 @@ def _translate_messages(text, recent_pairs=(), target="Korean", hint="", registe
     msgs.append({"role": "user", "content": text})
     return msgs
 
-def _page_marker_input(items):
-    return "\n\n".join(f"@@{i + 1}@@\n{str(it['text'])}" for i, it in enumerate(items))
-
 def _page_marker_system(target: str, hint: str = "", glossary_pairs=(), recent_pairs=(), custom: str = "") -> str:
     s = (
         f"Translate visible web-page text into {target} for direct DOM replacement. The input has numbered "
@@ -347,35 +340,6 @@ def _page_marker_system(target: str, hint: str = "", glossary_pairs=(), recent_p
         recent = "; ".join(f"'{src}'->'{tgt}'" for src, tgt in list(recent_pairs)[-4:])
         s += "Recent page renderings for consistency only: " + recent + ". "
     return s
-
-
-def _page_block_context_preamble(items):
-    """Marker-free reference context: the distinct surrounding-block texts of the batch's fragments. The model
-    uses it for terminology/pronoun/flow when translating segments that were split out of a larger block; the
-    @@n@@ parser ignores these lines, so it can't corrupt output. Lives in the user turn (not the system
-    prefix) so the page KV prefix stays reusable. Deduped + capped."""
-    if not PAGE_BLOCK_CONTEXT:
-        return ""
-    seen, ctxs, total = set(), [], 0
-    for it in items:
-        ctx = _clean(str(it.get("ctx", "")))
-        if not ctx or ctx == _clean(str(it.get("text", ""))):     # ctx == the segment itself adds nothing
-            continue
-        ctx = re.sub(r"@@+", "", ctx).strip()                     # never let marker-looking text into context
-        key = ctx[:120]
-        if not ctx or key in seen:
-            continue
-        seen.add(key)
-        ctxs.append(ctx[:PAGE_BLOCK_CTX_MAX])
-        total += len(ctxs[-1])
-        if len(ctxs) >= 3 or total >= PAGE_BLOCK_CTX_TOTAL:
-            break
-    if not ctxs:
-        return ""
-    return ("[surrounding page text — reference only, DO NOT translate or output these lines]\n"
-            + "\n".join(ctxs)
-            + "\n[now translate ONLY the @@n@@ segments below]\n\n")
-
 
 def _translate_page_batch_messages(items, recent_pairs=(), target="Korean", hint="", register="casual",
                                    glossary_pairs=(), custom: str = ""):
