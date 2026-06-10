@@ -3,6 +3,7 @@
 Run under the bridge venv:
     cd bridge && python test_number_guard.py
 """
+import policy as p
 import server as s
 
 fails = []
@@ -40,7 +41,7 @@ ok("miss.spellout_still_dropped", s._missing_numbers("26 items", "여러 개입�
 ok("miss.over99_digits_only", s._missing_numbers("port 8765", "포트 번호") == ["8765"])
 
 # _guard_numbers (requires LCC_NUMGUARD on): append the missing literal, flag uncertain
-s.NUMGUARD_ON = True
+p.NUMGUARD_ON = True
 disp, unc = s._guard_numbers("the port is 8765", "포트 번호입니다")
 ok("guard.append", disp == "포트 번호입니다 (8765)" and unc is True)
 disp2, unc2 = s._guard_numbers("the port is 8765", "포트는 8765입니다")
@@ -53,7 +54,7 @@ dispk, unck = s._guard_numbers("about 26 people", "스물여섯 명 정도")
 ok("guard.spellout_noop", dispk == "스물여섯 명 정도" and unck is False)
 
 # disabled -> never touches the translation (byte-identical)
-s.NUMGUARD_ON = False
+p.NUMGUARD_ON = False
 d, u = s._guard_numbers("the port is 8765", "포트 번호입니다")
 ok("guard.off", d == "포트 번호입니다" and u is False)
 

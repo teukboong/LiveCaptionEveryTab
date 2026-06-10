@@ -2,6 +2,7 @@
 
 Authority: `.dryforge/004/spec.md` > `.dryforge/004/plan.md` > `.dryforge/004/handoff.md`.
 Generated after the 2026-06-10 F3/A7/INV-16 correction. Code changes in T0: none.
+Updated for the 2026-06-10 T2 approval #2: A10 border adapters stay in `server.py`.
 
 ## 1. External `server` consumers
 
@@ -86,8 +87,8 @@ Line numbers are from `bridge/server.py` before T1.
 | 256-425 | `lm_models`, `asr_models`, memory probes, `_auto_lm_model`, aux helpers, `_resolve_lm_model`, `_finalize_model_config` | `model_runtime` | model registry and selection logic |
 | 428-490 | ASR/model runtime globals, host/ws constants, audio/window constants | split | runtime model globals to `model_runtime`; host/ws and `_active_ws` remain `server`; audio constants stay facade-visible via owning modules |
 | 493-614 | `_diarize`, `_require_mlx`, `_ensure_asr_loaded`, `_load_lm_weights`, `load_models` | `model_runtime` / `asr` | load paths and ASR load seam; mutable runtime state lives in `model_runtime` |
-| 619-680 | pools/locks, translator knobs, latency constants, stream constants | `model_runtime` / `translator` / `policy` | pools to runtime; KV knobs to translator; latency/stream policy to policy |
-| 686-804 | `LatencyProfile`, `_lat_*`, EVS constants, `_evs_step` | `policy` | policy calculators and EVS switches |
+| 619-680 | pools/locks, translator knobs, latency constants, stream constants | `model_runtime` / `translator` / `policy` / `server` | pools to runtime; KV knobs to translator; policy constants to policy except adapter-only `TX_PREVIEW_MAX_TOKENS` stays server |
+| 686-804 | `LatencyProfile`, policy-core `_lat_*`, EVS constants, `_evs_step`; A10 adapters `_lat_tx_max_tokens_for`, `_lat_soft_max_sec`, `_lat_sent_windows_for` | `policy` / `server` | policy core and EVS switches to policy; cross-owner border adapters stay server |
 | 807-827 | `warm_mlx_selected` | seam watch: `server` or `model_runtime` | spec table says model_runtime, but function currently calls seam names `transcribe_pcm`, `translate_once`, `_ensure_asr_loaded`; T6 must satisfy INV-17 without moving `translate_page_long_once` |
 | 829-850 | `_request_header`, `_origin_allowed` | `server` | websocket/request boundary |
 | 853-977 | `_has_hangul`, `_lcp_words`, `_coalesce_batch`, sentence/dedupe/repeat helpers, related constants | `text_helpers` | pure text utilities shared by policy/translator/server |
@@ -106,6 +107,17 @@ Line numbers are from `bridge/server.py` before T1.
 | 2277-2293 | `run_ask` | `translator` | ask translation seam implementation |
 | 2326-3806 | `Unit`, `handle`, `_port_in_use`, `main`, `_is_loopback_host` | `server` | websocket orchestration, native-host entrypoint, and seam runtime |
 
+### T2 A10 border-adapter assignment
+
+| Name | Target module | Reason |
+|---|---|---|
+| `_lat_tx_max_tokens_for` | `server` | reads translator-owned `_TX_GEN_MAX`; all non-self callers are server-resident handle/startup paths |
+| `_lat_soft_max_sec` | `server` | calls model-runtime engine taxonomy `_is_sherpa_engine`; all non-self callers are server-resident |
+| `_lat_sent_windows_for` | `server` | reads server facade audio constants `SEG_SILENCE_MS` / `WINDOW_MS`; all non-self callers are server-resident |
+| `TX_PREVIEW_MAX_TOKENS` | `server` | only the server-resident `_lat_tx_max_tokens_for` adapter reads it |
+| `LatencyProfile`, `_lat_profile`, `_lat_tx_stream_every_for`, `_lat_preview_debounce_ms`, `_lat_pending_cap`, `_lat_pending_max_age_ms`, `_lat_effective_sent_silence_ms`, `_evs_step`, `EVS_*`, `_commit_decision`, `_two_pass_eligible`, `NUMGUARD_ON`, `_sig_numbers`, `_ko_number_forms`, `_missing_numbers`, `_guard_numbers`, `_source_risk`, `InterpretDecision`, `decide_commit`, `_preview_is_stale`, `_stream_visible_chars`, `_stream_partial_substantial`, `_stream_partial_should_emit` | `policy` | policy core with no cross-owner mutable/runtime reads after A10 adapters stay server |
+| `SR`, `WINDOW_*`, `SEG_SILENCE_MS`, `SENT_SILENCE_MS`, `SPEECH_PAD_MS`, `PREROLL_WINDOWS`, `SOFT_*`, `HARD_MAX_SEC`, `MIN_SEC`, `LA_*`, `TWO_PASS_*`, `PENDING_*`, `PREVIEW_*`, `AGG_*`, `BAL_*`, `SPEC_*`, `TX_FINAL_STREAM_EVERY`, `TX_FINAL_STREAM_MIN_*`, `TX_FINAL_STREAM_DELTA_CHARS` | `policy` | read by moved policy core or policy-derived live scheduler constants; server keeps the old surface by importing/reexporting these names |
+
 ### F4 mutable global ownership
 
 | Owner | Names |
@@ -121,7 +133,8 @@ Line numbers are from `bridge/server.py` before T1.
 | Facade names read externally | Owner after extraction |
 |---|---|
 | `_append_text_dedupe`, `_dedupe_commit_overlap`, `_next_sentence_cut`, `_weak_tail`, `_short_suffix_duplicate`, `_src_lang`, `_split_sentences`, `_chunk_text`, `_clean`, `_gr_norm`, `_repeat_cache_eligible`, `_repeat_key`, `MIN_SENT_CHARS`, `_TARGET_LANGS` | `text_helpers` |
-| `_commit_decision`, `_two_pass_eligible`, `_lat_*`, `_evs_step`, `EVS_*`, `NUMGUARD_ON`, `_sig_numbers`, `_missing_numbers`, `_ko_number_forms`, `_guard_numbers`, `_source_risk`, `decide_commit`, `InterpretDecision`, `_preview_is_stale`, `_stream_*`, latency/pending constants | `policy` |
+| `_commit_decision`, `_two_pass_eligible`, policy-core `_lat_*`, `_evs_step`, `EVS_*`, `NUMGUARD_ON`, `_sig_numbers`, `_missing_numbers`, `_ko_number_forms`, `_guard_numbers`, `_source_risk`, `decide_commit`, `InterpretDecision`, `_preview_is_stale`, `_stream_*`, policy latency/pending constants | `policy` |
+| `_lat_tx_max_tokens_for`, `_lat_soft_max_sec`, `_lat_sent_windows_for`, `TX_PREVIEW_MAX_TOKENS` | `server` |
 | `_translation_context_signature`, `_tx_system`, `_page_tx_system`, `_write_tx_system`, `_translate_messages`, `_translate_page_batch_messages`, `_ask_messages`, `_fewshot`, `_parse_glossary`, `_REGISTERS` | `prompts` |
 | `_page_batch_max_tokens`, `_emit_page_markers`, `_parse_page_batch_result`, `_page_marker_*`, page partial constants | `page_markers` |
 | `_mine_terms`, `_update_term_memory`, `_merge_auto_glossary`, `TERM_MEMORY_*` | `term_memory` |
@@ -155,8 +168,9 @@ these names explicitly or use module-qualified owner names where mutable state i
   `_next_sentence_cut`, `_repeat_cache_eligible`, `_repeat_key`, `_short_suffix_duplicate`, `_weak_tail`.
 - From `policy`: `LatencyProfile`, `_commit_decision`, `_guard_numbers`, `_lat_effective_sent_silence_ms`,
   `_lat_pending_cap`, `_lat_pending_max_age_ms`, `_lat_preview_debounce_ms`, `_lat_profile`,
-  `_lat_sent_windows_for`, `_lat_soft_max_sec`, `_lat_tx_max_tokens_for`, `_lat_tx_stream_every_for`,
+  `_lat_tx_stream_every_for`,
   `_preview_is_stale`, `_source_risk`, `_stream_partial_should_emit`, `_two_pass_eligible`, `decide_commit`.
+- Server-resident A10 adapters: `_lat_tx_max_tokens_for`, `_lat_soft_max_sec`, `_lat_sent_windows_for`.
 - From `prompts`: `_translate_messages`, `_translate_page_batch_messages`, `_ask_messages`, `_parse_glossary`.
 - From `page_markers`: `_emit_page_markers`, `_page_batch_max_tokens`, `_parse_page_batch_result`,
   `_page_partial_should_emit`.

@@ -4,6 +4,7 @@
 Run under the bridge venv:
     cd bridge && python test_evs_controller.py
 """
+import policy as p
 import server as s
 
 fails = []
@@ -15,9 +16,9 @@ def ok(name, cond):
 
 
 # Force the controller on with known thresholds (the module reads these globals at call time).
-s.EVS_ON = True
-s.EVS_ENTER_MS = 1800
-s.EVS_EXIT_MS = 900
+p.EVS_ON = True
+p.EVS_ENTER_MS = 1800
+p.EVS_EXIT_MS = 900
 
 # from nominal (0): hold below ENTER, flip to pressured at/above ENTER
 ok("enter.below", s._evs_step(0, 1799) == 0)
@@ -32,14 +33,14 @@ ok("hysteresis.hold_nominal", s._evs_step(0, 1200) == 0)
 ok("hysteresis.hold_pressured", s._evs_step(1, 1200) == 1)
 
 # disabled -> always nominal (byte-identical to the static profile)
-s.EVS_ON = False
+p.EVS_ON = False
 ok("off.from0", s._evs_step(0, 9_999_999) == 0)
 ok("off.from1", s._evs_step(1, 9_999_999) == 0)
-s.EVS_ON = True
+p.EVS_ON = True
 
 # knob modulation: pressure shaves the thresholds; nominal is unchanged
-s.EVS_CAP_DROP = 40
-s.EVS_AGE_DROP = 600
+p.EVS_CAP_DROP = 40
+p.EVS_AGE_DROP = 600
 ok("cap.nominal", s._lat_pending_cap("aggressive", 0) == s.AGG_PENDING_CAP)
 ok("cap.pressured", s._lat_pending_cap("aggressive", 1) == max(40, s.AGG_PENDING_CAP - 40))
 ok("age.nominal", s._lat_pending_max_age_ms("balanced", 0) == s.BAL_PENDING_MAX_AGE_MS)
@@ -48,8 +49,8 @@ ok("age.pressured", s._lat_pending_max_age_ms("balanced", 1) == max(600, s.BAL_P
 ok("cap.default_arg", s._lat_pending_cap("aggressive") == s.AGG_PENDING_CAP)
 
 # floors hold even under an absurd drop (never commit on a 0-char / 0-ms threshold)
-s.EVS_CAP_DROP = 1_000_000
-s.EVS_AGE_DROP = 1_000_000
+p.EVS_CAP_DROP = 1_000_000
+p.EVS_AGE_DROP = 1_000_000
 ok("cap.floor", s._lat_pending_cap("aggressive", 1) == 40)
 ok("age.floor", s._lat_pending_max_age_ms("aggressive", 1) == 600)
 
