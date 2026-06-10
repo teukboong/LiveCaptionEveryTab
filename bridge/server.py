@@ -2772,6 +2772,12 @@ async def handle(ws):
                 preview_drop_count += 1
                 scheduler_stats["preview_drop_tx_error"] += 1
                 return
+        if not _clean(ko or ""):
+            # empty render (small models do this on fragments): showing it would blank the previous
+            # caption — drop the preview instead, the source line keeps growing on its own
+            preview_drop_count += 1
+            scheduler_stats["preview_drop_empty"] += 1
+            return
         if job.get("epoch") != translation_epoch:
             scheduler_stats["drop_translation_epoch"] += 1
             return
@@ -2917,6 +2923,9 @@ async def handle(ws):
                     if job.get("epoch") != translation_epoch:
                         scheduler_stats["drop_translation_epoch"] += 1
                         continue
+                    if tx_ok and not _clean(ko or ""):
+                        tx_ok = False        # empty render: treat like a failed translation
+                        ko = source          # a final then shows the source (degraded) instead of a blank line
                     if tx_ok:
                         cache_put(key, ko)   # don't cache the untranslated fallback
                         repeat_put(source, ko)

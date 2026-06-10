@@ -462,9 +462,13 @@ function lccShowItem(item, now) {
   if (item.kind === "source") {
     setSrc(item.src);                  // update the source line only; keep the previous translation (sticky)
   } else if (item.kind === "preview" || item.kind === "final_stream") {
-    const split = lccKoSplitInto(lccKoState, item.unit, item.ko);   // live stream: lock the confirmed head, dim the tail
-    lccShowSplit(item.src, split.stable, split.draft, debug);
-    if (item.ko) lccLastKoT = now;
+    if (!lccNormKoHyp(item.ko)) {
+      setSrc(item.src);                // empty render must not blank the previous translation (sticky)
+    } else {
+      const split = lccKoSplitInto(lccKoState, item.unit, item.ko);   // live stream: lock the confirmed head, dim the tail
+      lccShowSplit(item.src, split.stable, split.draft, debug);
+      lccLastKoT = now;
+    }
   } else {
     const koShow = (item.degraded && item.ko) ? item.ko + " …" : item.ko;   // degraded = last KO partial on tx failure
     lccShow(item.src, koShow, debug, false, { numUncertain: !!item.number_uncertain });   // committed final: solid
