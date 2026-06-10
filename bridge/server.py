@@ -874,6 +874,30 @@ def _caption_read_ms(text: str) -> int:
     return max(1300, min(7000, len(text or "") * 75))
 
 
+# --- Exact-repeat translation cache (catchphrases) -----------------------------------------------------
+# Streams repeat themselves constantly ("Thanks for the sub!", greetings, stingers). The per-connection
+# translation_cache keys on the rolling recent-pairs context, so an identical line a minute later almost
+# always misses. Short SELF-CONTAINED lines get a second, context-free lookup keyed on normalized words —
+# their rendering doesn't meaningfully depend on conversation context, so reusing it is safe and instant.
+# Longer lines stay context-keyed only. Cleared with the other caches on any translation-context change.
+TX_REPEAT_CACHE_ON = os.environ.get("LCC_TX_REPEAT_CACHE", "1") == "1"
+TX_REPEAT_MAX_CHARS = max(10, int(os.environ.get("LCC_TX_REPEAT_MAX_CHARS", "60")))
+TX_REPEAT_CACHE_MAX = 256
+
+
+def _repeat_cache_eligible(source: str) -> bool:
+    """True for short lines that read as complete on their own: anything tiny, or up to
+    TX_REPEAT_MAX_CHARS when it ends on terminal punctuation. Tested in test_text_helpers.py."""
+    s = (source or "").strip()
+    if not s or len(s) > TX_REPEAT_MAX_CHARS:
+        return False
+    return len(s) <= 30 or bool(SENT_END.fullmatch(s[-2:]) or SENT_END.fullmatch(s[-1:]))
+
+
+def _repeat_key(source: str) -> str:
+    return " ".join(_norm_words(source))
+
+
 def _commit_decision(text, eos_now, finalize_now, age_ms, pending_cap, pending_max_age_ms):
     """Whether the in-progress remainder should be force-committed now, and why (pure; mirrors the inline
     logic in inference_loop). reason is '' when force is False. A weak tail (conjunction/aux/trailing
@@ -2142,6 +2166,7 @@ async def handle(ws):
     translation_epoch = 0        # bumps when target/register/hints change so old-language jobs cannot render later
     preroll = collections.deque(maxlen=PREROLL_WINDOWS)   # pre-onset audio prepended on speech start
     leftover, voiced, in_speech, sil_windows = b"", bytearray(), False, 0
+    repeat_cache = collections.OrderedDict()   # context-free exact-repeat cache (short self-contained lines)
     unit = Unit()               # per-connection translation-unit state (grouped from the nonlocals)
     unit_seq = trans_seq = 0
     work_q = asyncio.Queue(maxsize=WORK_Q_MAX)    # ("clause", audio, start_ms, end_ms, soft) | ("flush"/"eos", None, None, ms, False) | None
@@ -2214,6 +2239,26 @@ async def handle(ws):
         translation_cache.move_to_end(key)
         while len(translation_cache) > TRANSLATION_CACHE_MAX:
             translation_cache.popitem(last=False)
+
+    def repeat_get(source):
+        nonlocal cache_hit_count
+        if not TX_REPEAT_CACHE_ON or not _repeat_cache_eligible(source):
+            return None
+        rk = _repeat_key(source)
+        if rk not in repeat_cache:
+            return None
+        cache_hit_count += 1
+        scheduler_stats["repeat_cache_hit"] += 1
+        repeat_cache.move_to_end(rk)
+        return repeat_cache[rk]
+
+    def repeat_put(source, value):
+        if not TX_REPEAT_CACHE_ON or not _repeat_cache_eligible(source):
+            return
+        repeat_cache[_repeat_key(source)] = value
+        repeat_cache.move_to_end(_repeat_key(source))
+        while len(repeat_cache) > TX_REPEAT_CACHE_MAX:
+            repeat_cache.popitem(last=False)
 
     def _preview_promotable(preview_source, final_source):
         p = _clean(preview_source).lower()
@@ -2470,6 +2515,9 @@ async def handle(ws):
                     ko = cache_get(key)
                     hit = ko is not None
                 if ko is None:
+                    ko = repeat_get(source)              # context-free exact repeat (catchphrases)
+                    hit = ko is not None
+                if ko is None:
                     # MLX ASR shares the MLX worker with translation. Sherpa ASR (Parakeet) has its own
                     # CPU pool, so do not stall translation behind sherpa speech backlog.
                     if not _is_sherpa_engine(asr_engine):
@@ -2536,6 +2584,7 @@ async def handle(ws):
                         continue
                     if tx_ok:
                         cache_put(key, ko)   # don't cache the untranslated fallback
+                        repeat_put(source, ko)
             if not job["final"] and not tx_ok:
                 # preview is UX-only: a failed translation must NOT flash the English source as a caption
                 preview_drop_count += 1
@@ -2831,6 +2880,7 @@ async def handle(ws):
                             translation_epoch += 1
                             recent_pairs.clear()
                             translation_cache.clear()
+                            repeat_cache.clear()
                             preview_results.clear()
                             latest_preview_rev.clear()
                             pending_preview_jobs.clear()

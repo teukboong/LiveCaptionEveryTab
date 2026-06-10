@@ -310,6 +310,17 @@ ok("emit.more_words", s._stream_partial_should_emit("this is a much longer line 
 ok("emit.delta_pass", s._stream_partial_should_emit("12345678", "1234") is True)    # +4 visible == DELTA
 ok("emit.delta_gate", s._stream_partial_should_emit("12345678", "1234567") is False)  # +1 visible < DELTA
 
+# --- exact-repeat translation cache: eligibility + key normalization ---
+ok("repeat.tiny", s._repeat_cache_eligible("Thanks!") is True)
+ok("repeat.short_no_punct", s._repeat_cache_eligible("thanks for the sub") is True)      # <= 30 chars
+ok("repeat.mid_with_punct", s._repeat_cache_eligible("Thanks so much for the donation!") is True)
+ok("repeat.mid_no_punct", s._repeat_cache_eligible("thanks so much for the big donation") is False)
+ok("repeat.too_long", s._repeat_cache_eligible("x" * 61 + ".") is False)
+ok("repeat.empty", s._repeat_cache_eligible("") is False)
+ok("repeat.quote_end", s._repeat_cache_eligible('He said "welcome back everyone!"') is True)
+check("repeat.key_norm", s._repeat_key("Thanks for the Sub!"), s._repeat_key("thanks for the sub"))
+ok("repeat.key_differs", s._repeat_key("hello there") != s._repeat_key("hello here"))
+
 if fails:
     print(f"FAIL ({len(fails)} case(s)):")
     for f in fails:
