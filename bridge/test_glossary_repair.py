@@ -10,6 +10,7 @@ import test_import_stubs
 test_import_stubs.install()
 
 import server as s
+import asr
 
 fails = []
 
@@ -74,9 +75,9 @@ check("repair.two_hits", s._repair_glossary_terms("black well and black well aga
       "Blackwell and Blackwell again")
 
 # kill switch restores identity
-s.GLOSSARY_REPAIR_ON = False
+asr.GLOSSARY_REPAIR_ON = False
 check("repair.killswitch", s._repair_glossary_terms("black well", G), "black well")
-s.GLOSSARY_REPAIR_ON = True
+asr.GLOSSARY_REPAIR_ON = True
 
 if fails:
     print("test_glossary_repair: FAIL")

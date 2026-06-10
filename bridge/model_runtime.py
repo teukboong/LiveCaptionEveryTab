@@ -9,7 +9,6 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 
-from backend_parakeet import ParakeetAsr
 from silero_vad import load_silero_vad
 
 # ASR engine taxonomy (single source of truth). Two families:
@@ -378,51 +377,6 @@ def _require_mlx():
         ) from MLX_IMPORT_ERROR
 
 
-def _ensure_asr_loaded(engine: str):
-    global parakeet_asr, mlxa_model, mlxa_loaded_engine, whisper_loaded_repo
-    _finalize_model_config()   # resolve MLXA_REPOS / qwen3 default before the first load
-    engine = _normalize_asr_engine(engine, ASR_ENGINE)
-    if engine == "parakeet":
-        if not PARAKEET_MODEL_DIR:
-            raise RuntimeError("LCC_PARAKEET_MODEL_DIR is required when LCC_ASR_ENGINE=parakeet")
-        if parakeet_asr is None:
-            print(
-                f"[bridge] loading Parakeet ASR ({PARAKEET_PROVIDER}, threads={PARAKEET_THREADS}) from {PARAKEET_MODEL_DIR}…",
-                flush=True,
-            )
-            parakeet_asr = ParakeetAsr(
-                PARAKEET_MODEL_DIR,
-                num_threads=PARAKEET_THREADS,
-                provider=PARAKEET_PROVIDER,
-            )
-        return engine
-
-    if _is_mlxa_engine(engine):
-        _require_mlx()
-        if mlxa_model is None or mlxa_loaded_engine != engine:
-            from mlx_audio.stt.utils import load_model as _mlxa_load
-            repo = MLXA_REPOS[engine]
-            print(f"[bridge] loading {repo} ({engine} audio ASR)…", flush=True)
-            mlxa_model = _mlxa_load(repo)
-            mlxa_loaded_engine = engine
-        return engine
-
-    if _is_whisper_engine(engine):
-        # Whisper (large-v3) — dedicated ASR via mlx_whisper. The 6bit model is produced/fetched by
-        # install_models (prequant-first, else local quantize); here we just ensure mlx_whisper is present
-        # and record the repo. mlx_whisper.transcribe() lazily loads + caches the model by path, so the
-        # first real transcribe warms it. No prompt (own decode + langID) — INV-7.
-        _require_mlx()
-        repo = WHISPER_REPO
-        if whisper_loaded_repo != repo:
-            import mlx_whisper  # noqa: F401  — fail fast if the dep is missing (install ensures it)
-            print(f"[bridge] using {repo} (whisper ASR)…", flush=True)
-            whisper_loaded_repo = repo
-        return engine
-
-    raise RuntimeError(f"unknown ASR engine: {engine}")
-
-
 def _load_lm_weights(value):
     """Load a translator by repo/served value with the Gemma-4 nano (multimodal) mlx_vlm fallback.
     Returns (model, tok, is_vlm)."""
@@ -439,7 +393,7 @@ def _load_lm_weights(value):
         raise
 
 
-def load_models(asr=True, lm=True, vad=True):
+def load_models(asr=True, lm=True, vad=True, asr_loader=None):
     global ASR_ENGINE, lm_model, lm_tok, silero, _sampler, parakeet_asr, _LM_IS_VLM
     global aux_lm_model, aux_lm_tok, _AUX_LM_IS_VLM
     if BACKEND == "fake":
@@ -460,13 +414,15 @@ def load_models(asr=True, lm=True, vad=True):
         if needs_mlx and _sampler is None:
             _sampler = make_sampler(temp=0.0)
         if asr:
+            if asr_loader is None:
+                raise RuntimeError("ASR loader is required when loading local ASR")
             try:
-                _ensure_asr_loaded(ASR_ENGINE)
+                asr_loader(ASR_ENGINE)
             except Exception as e:
                 if _is_sherpa_engine(ASR_ENGINE):
                     print(f"[bridge] {ASR_ENGINE} ASR unavailable ({e}); falling back to granite ASR", flush=True)
                     ASR_ENGINE = "granite"
-                    _ensure_asr_loaded(ASR_ENGINE)
+                    asr_loader(ASR_ENGINE)
                 else:
                     raise
         if lm and lm_model is None:

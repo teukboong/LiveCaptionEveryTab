@@ -20,10 +20,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import numpy as np
 import websockets
-from silero_vad import load_silero_vad, VADIterator
-from backend_parakeet import ParakeetAsr
+from silero_vad import VADIterator
 import policy
 import model_runtime
+import asr
 from policy import (
     SR, WINDOW_SAMPLES, WINDOW_BYTES, WINDOW_MS, SEG_SILENCE_MS, SENT_SILENCE_MS, SPEECH_PAD_MS,
     PREROLL_WINDOWS, SOFT_MAX_SEC, HARD_MAX_SEC, MIN_SEC, SOFT_OVERLAP_MS, LA_ON, LA_STEP_WINDOWS,
@@ -84,8 +84,12 @@ _MODEL_RUNTIME_DYNAMIC_EXPORTS = {
     "_lm_select_value", "_resolve_lm_model", "AUX_LM", "AUX_LM_HEADROOM_GB", "MLXA_REPOS",
     "LM_MODELS", "ASR_MODELS", "GRANITE_ASR_PROMPT", "WHISPER_REPO", "PARAKEET_MODEL_DIR",
     "PARAKEET_THREADS", "PARAKEET_PROVIDER", "aux_lm_ready", "_aux_runtime", "_diarize",
-    "_require_mlx", "_ensure_asr_loaded", "_load_lm_weights", "_mlx_pool", "_sherpa_pool",
+    "_require_mlx", "_load_lm_weights", "_mlx_pool", "_sherpa_pool",
     "_asr_pool", "_ASR_DEVICE_LOCK", "_aux_lm_pool", "_AUX_LM_DEVICE_LOCK", "_MLX_DEVICE_LOCK",
+}
+
+_ASR_DYNAMIC_EXPORTS = {
+    "GLOSSARY_REPAIR_ON", "ASR_MAX_TOKENS",
 }
 
 
@@ -94,6 +98,8 @@ def __getattr__(name):
         return getattr(policy, name)
     if name in _MODEL_RUNTIME_DYNAMIC_EXPORTS:
         return getattr(model_runtime, name)
+    if name in _ASR_DYNAMIC_EXPORTS:
+        return getattr(asr, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 DOM_TX_MAX_ITEMS = int(os.environ.get("LCC_DOM_TX_MAX_ITEMS", "8"))
@@ -144,12 +150,13 @@ TRANS_Q_MAX = max(8, int(os.environ.get("LCC_TRANS_Q_MAX", "64")))
 
 TRANSLATION_CACHE_MAX = 128
 VAD_THRESH = {0: 0.3, 1: 0.4, 2: 0.5, 3: 0.65}   # vadLevel -> Silero speech-probability threshold
-ASR_MAX_TOKENS = max(32, int(os.environ.get("LCC_ASR_MAX_TOKENS", "64")))   # per-segment generation cap (granite/qwen3)
 
 # Models load lazily via load_models() (called from __main__) so the pure prompt-building helpers
 # (_tx_system / _fewshot / translate_once) can be imported by benches/tests without pulling ~50GB of
 # weights. The bridge loads everything; a translation-only bench can skip ASR/VAD.
-_ensure_asr_loaded = model_runtime._ensure_asr_loaded
+transcribe_pcm = asr.transcribe_pcm
+_ensure_asr_loaded = asr._ensure_asr_loaded
+_repair_glossary_terms = asr._repair_glossary_terms
 
 
 def load_models(asr=True, lm=True, vad=True):
@@ -158,7 +165,7 @@ def load_models(asr=True, lm=True, vad=True):
             import backend_fake
             model_runtime.silero = backend_fake.FAKE_SILERO_SENTINEL
         return
-    return model_runtime.load_models(asr=asr, lm=lm, vad=vad)
+    return model_runtime.load_models(asr=asr, lm=lm, vad=vad, asr_loader=_ensure_asr_loaded)
 
 
 # Single active capture connection (diagnostic only): one client is the intended model. If a second
@@ -258,133 +265,6 @@ def _caption_read_ms(text: str) -> int:
 TX_REPEAT_CACHE_ON = os.environ.get("LCC_TX_REPEAT_CACHE", "1") == "1"
 TX_REPEAT_CACHE_MAX = 256
 
-
-# --- Post-ASR glossary repair (phonetic/fuzzy) ---------------------------------------------------------
-# Granite drops punctuation/casing the moment ANY text hint is appended to its prompt (see transcribe_pcm),
-# so glossary terms cannot bias the ASR itself. Repair downstream instead: fuzzy-match each user glossary
-# source term against the transcript and rewrite near-misses ("black well" / "Blackwel") to the canonical
-# spelling BEFORE translation, where the pinned glossary rendering then applies exactly. Pure; applied in
-# handle()'s transcribe() wrapper. Off: LCC_ASR_GLOSSARY_REPAIR=0. Tested in test_glossary_repair.py.
-GLOSSARY_REPAIR_ON = os.environ.get("LCC_ASR_GLOSSARY_REPAIR", "1") == "1"
-_GR_MIN_TERM_CHARS = 4          # shorter terms ("AI", "Go") are too collision-prone to fuzzy-match
-_GR_RATIO = 0.84                # SequenceMatcher floor on normalized strings (exact match short-circuits)
-_GR_TOKEN_RE = re.compile(r"\S+")
-_GR_EDGE_RE = re.compile(r"^(\W*)(.*?)(\W*)$", re.S)
-
-def _repair_glossary_terms(text: str, glossary_pairs):
-    """Rewrite fuzzy ASR spellings of glossary source terms to their canonical form. Window sizes n-1..n+1
-    around each term's word count catch split ('black well') and merged ('SamAltman') transcriptions; the
-    surrounding punctuation of the matched span is preserved. Replacements never overlap, longest-window
-    match wins, and an exact normalized match of a DIFFERENT glossary term is never rewritten."""
-    if not GLOSSARY_REPAIR_ON or not text or not glossary_pairs:
-        return text
-    terms = []
-    norms = {}
-    for src, _tgt in glossary_pairs:
-        src = (src or "").strip()
-        n = _gr_norm(src)
-        toks = [t for t in (_gr_norm(w) for w in src.split()) if t]
-        if len(n) >= _GR_MIN_TERM_CHARS and toks:
-            terms.append((src, n, toks))
-            norms[n] = src
-    if not terms:
-        return text
-    tokens = list(_GR_TOKEN_RE.finditer(text))
-    if not tokens:
-        return text
-    edits = []                                   # (start, end, replacement) on the original string
-    taken = [False] * len(tokens)
-    def _tok_fuzzy(a, b):
-        if min(len(a), len(b)) < 3:                      # tiny tokens must match exactly
-            return a == b
-        return difflib.SequenceMatcher(None, a, b).ratio() >= _GR_RATIO
-
-    for src, term_norm, term_toks in terms:
-        nwords = len(term_toks)
-        for width in sorted({w for w in (nwords + 1, nwords, nwords - 1) if 1 <= w <= 4}, reverse=True):
-            i = 0
-            while i + width <= len(tokens):
-                if any(taken[i:i + width]):
-                    i += 1
-                    continue
-                span = text[tokens[i].start():tokens[i + width - 1].end()]
-                m = _GR_EDGE_RE.match(span)
-                pre, core, post = m.group(1), m.group(2), m.group(3)
-                cand = _gr_norm(core)
-                if not cand or abs(len(cand) - len(term_norm)) > 3:
-                    i += 1
-                    continue
-                exact = cand == term_norm
-                if not exact and cand in norms:          # exactly some OTHER term -> leave it alone
-                    i += 1
-                    continue
-                if not exact:
-                    # Fuzzy only at the term's own word count, compared TOKEN BY TOKEN — a whole-span ratio
-                    # would let "met SamAltman" absorb the neighboring word. Split/merge windows (n±1)
-                    # must match the normalized term exactly.
-                    wtoks = [_gr_norm(text[t.start():t.end()]) for t in tokens[i:i + width]]
-                    if (width != nwords or len(wtoks) != nwords
-                            or not all(_tok_fuzzy(a, b) for a, b in zip(wtoks, term_toks))):
-                        i += 1
-                        continue
-                if core != src:                          # exact-with-different-surface still canonicalizes
-                    edits.append((tokens[i].start() + len(pre),
-                                  tokens[i + width - 1].end() - len(post), src))
-                for k in range(i, i + width):
-                    taken[k] = True
-                i += width
-    if not edits:
-        return text
-    out = text
-    for start, end, rep in sorted(edits, reverse=True):
-        out = out[:start] + rep + out[end:]
-    return out
-
-
-# ASR prompts now live with the active mlx-audio backend wiring above.
-
-
-def transcribe_pcm(pcm: bytes, hint: str = "", asr_engine=None):
-    engine = model_runtime._normalize_asr_engine(asr_engine, model_runtime.ASR_ENGINE)
-    if engine == "parakeet":
-        if model_runtime.parakeet_asr is None:
-            raise RuntimeError("Parakeet ASR is not loaded")
-        return model_runtime.parakeet_asr.transcribe_pcm(pcm, hint=hint)
-
-    model_runtime.mx.set_default_device(model_runtime.mx.gpu)
-    # 16k mono float32 array straight to the audio model: load_audio()/generate take ndarrays as-is
-    # (no resample), so we skip the per-segment /tmp WAV write+decode round-trip.
-    audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
-    audio *= 1.0 / 32768.0
-
-    if model_runtime._is_mlxa_engine(engine):                          # mlx-audio audio-LLM (granite / qwen3)
-        if model_runtime.mlxa_model is None:
-            raise RuntimeError(f"{engine} ASR is not loaded")
-        # No ASR-side text hint: qwen3 auto-detects language + punctuates with no prompt; granite's punctuation
-        # is fragile — ANY appended hint ("Keywords:"/"Expected names:") suppresses capitalization+punctuation —
-        # so keep the clean instruction. (Glossary still biases the 26B translation; only source-side name
-        # spelling is dropped, and both models already transcribe names well.)
-        gen_kw = {"prompt": model_runtime.GRANITE_ASR_PROMPT} if engine == "granite" else {}
-        res = model_runtime.mlxa_model.generate(audio, temperature=0.0, max_tokens=ASR_MAX_TOKENS, **gen_kw)
-        raw = getattr(res, "text", None)
-    elif model_runtime._is_whisper_engine(engine):                     # Whisper large-v3 — own decode, no prompt (INV-7)
-        import mlx_whisper
-        # Each VAD chunk is independent: don't condition on previous text (avoids cross-chunk drift).
-        res = mlx_whisper.transcribe(audio, path_or_hf_repo=model_runtime.WHISPER_REPO,
-                                     temperature=0.0, condition_on_previous_text=False, verbose=False)
-        raw = res.get("text") if isinstance(res, dict) else getattr(res, "text", None)
-    else:
-        raise RuntimeError(f"unknown ASR engine: {engine}")
-    text = (raw if raw is not None else str(res)).strip()
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    dedup = []
-    for l in lines:                       # collapse consecutive echoed lines; keep distinct content
-        if not dedup or dedup[-1] != l:
-            dedup.append(l)
-    text = " ".join(dedup)
-    if not text or "[no speech]" in text.lower():
-        return None
-    return text
 
 def _reset_tx_cache():
     global _tx_cache, _tx_cache_ids
@@ -956,11 +836,8 @@ async def handle(ws):
         return list(base) + list(auto_glossary_pairs)
 
     def rebuild_asr_hint():
-        # free-text context + user glossary source terms + auto-pinned terms -> ASR name biasing
         nonlocal asr_hint
-        terms = ", ".join(s for s, _ in glossary_pairs)
-        auto = ", ".join(s for s, _ in auto_glossary_pairs)
-        asr_hint = "; ".join(x for x in (context_hint, terms, auto) if x)[:240]
+        asr_hint = asr.build_asr_hint(context_hint, glossary_pairs, auto_glossary_pairs)
 
     def apply_term_seeds():
         # Domain-persisted seeds (tab memory) arrive as glossary-format lines; they pre-qualify as if
