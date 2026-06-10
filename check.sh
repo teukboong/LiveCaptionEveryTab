@@ -38,6 +38,7 @@ for test_file in \
   test_number_guard.py \
   test_policy.py \
   test_scheduler_staleness.py \
+  test_term_memory.py \
   test_text_helpers.py
 do
   "$PY" "$test_file"

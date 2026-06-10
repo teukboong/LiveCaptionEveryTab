@@ -1062,6 +1062,112 @@ def _repair_glossary_terms(text: str, glossary_pairs):
     return out
 
 
+# --- Session term memory (auto-glossary) ---------------------------------------------------------------
+# recent_pairs only carries the last few finals, so on a long stream the 26B forgets how it rendered a name
+# twenty minutes ago and the rendering drifts. Mine recurring proper-noun-ish terms from committed finals
+# and pin them into the glossary clause automatically: a term the model kept VERBATIM in the translation
+# (e.g. "GPT", "Blackwell" left in Latin) pins as an exact pair; everything else pins term-only ("keep
+# consistent" + ASR biasing). User glossary entries always win. Updates are BATCHED (every N finals) because
+# the glossary lives in the system prompt — every change invalidates the translator's KV prefix, so the
+# ~850ms re-prefill is amortized. Off: LCC_TERM_MEMORY=0. Tested in test_term_memory.py.
+TERM_MEMORY_ON = os.environ.get("LCC_TERM_MEMORY", "1") == "1"
+TERM_MEMORY_MAX = max(0, int(os.environ.get("LCC_TERM_MEMORY_MAX", "12")))          # auto terms in the clause
+TERM_MEMORY_MIN_COUNT = max(1, int(os.environ.get("LCC_TERM_MEMORY_MIN_COUNT", "2")))  # recur before pinning
+TERM_MEMORY_UPDATE_EVERY = max(1, int(os.environ.get("LCC_TERM_MEMORY_UPDATE_EVERY", "8")))
+TERM_MEMORY_STATS_MAX = 200
+# Single capitalized words that are ordinary sentence material, not names. Filters SINGLE-word candidates
+# only — multi-word runs ("Sam Altman") and acronyms are kept.
+_TERM_STOPWORDS = frozenset(w.casefold() for w in (
+    "The This That These Those There Here What When Where Which Who Whose Why How If And But Or So Not "
+    "No Yes It Its He She They We You I My Our Your His Her Their Then Now Today Tonight Yesterday "
+    "Tomorrow Okay Oh Hey Hello Hi Thanks Thank Well Right Let Look Listen Just Also Even Still Maybe "
+    "Please Sorry Is Are Was Were Do Does Did Done Have Has Had Can Could Will Would Should May Might "
+    "Must Get Got Go Going Gone Come Coming Welcome Back New One Two Three Four Five First Second Next "
+    "Last Good Great Big Small Many Most More Some All Every Each Other Another Because Before After "
+    "Over Under Again Anyway Actually Basically Literally Honestly Alright Guys Everyone Everybody"
+).split())
+_TERM_CAND_RE = re.compile(r"\b(?:[A-Z]{2,}[0-9]*|[A-Z][a-zA-Z0-9]{2,})\b")
+_TERM_SENT_LEAD_RE = re.compile(r"[.!?。！？…\"'»」』)\]]\s*$")
+
+
+def _mine_terms(source: str, ko: str):
+    """Proper-noun-ish term candidates from one committed (source, translation) pair.
+    Returns [(term, rendering)] where rendering == term when the translation kept the term verbatim
+    (locks the Latin form), else "" (term-only: consistency clause + ASR bias). Adjacent capitalized
+    words merge into one multi-word term; sentence-initial single words are skipped (too often just
+    sentence case), as are stopwords. Latin-script mining only (the dominant EN->KO direction)."""
+    source, ko = source or "", ko or ""
+    matches = list(_TERM_CAND_RE.finditer(source))
+    if not matches:
+        return []
+    runs, cur = [], []
+    for m in matches:
+        if cur and source[cur[-1].end():m.start()] == " ":
+            cur.append(m)
+        else:
+            if cur:
+                runs.append(cur)
+            cur = [m]
+    runs.append(cur)
+    out, seen = [], set()
+    for run in runs:
+        while run and run[0].group(0).casefold() in _TERM_STOPWORDS:
+            run = run[1:]                                   # "The OpenAI" -> "OpenAI"
+        if not run:
+            continue
+        term = source[run[0].start():run[-1].end()]
+        if len(run) == 1:
+            w = run[0].group(0)
+            if w.casefold() in _TERM_STOPWORDS:
+                continue
+            acronym = w.isupper()
+            lead = source[:run[0].start()].strip()
+            initial = not lead or bool(_TERM_SENT_LEAD_RE.search(source[:run[0].start()]))
+            if initial and not acronym:                     # sentence case, not evidence of a name
+                continue
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((term, term if term in ko else ""))
+    return out
+
+
+def _update_term_memory(stats: dict, source: str, ko: str, now: float):
+    """Fold one committed final into the running term stats (mutates; bounded). Returns True when a
+    term reached pin eligibility or gained a verbatim rendering — i.e. the merged clause may change."""
+    notable = False
+    for term, rendering in _mine_terms(source, ko):
+        rec = stats.get(term)
+        if rec is None:
+            rec = stats[term] = {"count": 0, "rendering": "", "seen": 0.0}
+        rec["count"] += 1
+        rec["seen"] = now
+        if rec["count"] == TERM_MEMORY_MIN_COUNT:
+            notable = True
+        if rendering and not rec["rendering"]:
+            rec["rendering"] = rendering
+            if rec["count"] >= TERM_MEMORY_MIN_COUNT:
+                notable = True
+    if len(stats) > TERM_MEMORY_STATS_MAX:                  # bound pathological sessions
+        for k in sorted(stats, key=lambda t: (stats[t]["count"], stats[t]["seen"]))[:len(stats) - TERM_MEMORY_STATS_MAX]:
+            del stats[k]
+    return notable
+
+
+def _merge_auto_glossary(user_pairs, stats: dict, cap: int = None):
+    """The auto-pinned (term, rendering) list: recurring terms not already covered by the user glossary,
+    most-frequent first, capped. Pure — the caller appends this to the user pairs at prompt-build time."""
+    cap = TERM_MEMORY_MAX if cap is None else cap
+    if cap <= 0:
+        return []
+    user_norms = {_gr_norm(s) for s, _ in (user_pairs or ())}
+    cands = [(t, rec) for t, rec in stats.items()
+             if rec["count"] >= TERM_MEMORY_MIN_COUNT and _gr_norm(t) not in user_norms]
+    cands.sort(key=lambda kv: (-kv[1]["count"], -kv[1]["seen"], kv[0]))
+    return [(t, rec["rendering"]) for t, rec in cands[:cap]]
+
+
 # --- Interpretation policy ----------------------------------------------------------------------------
 # The "when to wait / commit / (later) compress / repair" surface, borrowed from simultaneous interpreting.
 # The pieces feed in at different pipeline points and stay separate pure functions: _evs_step (load -> the
@@ -2157,6 +2263,11 @@ async def handle(ws):
     evs_level = 0               # EVS controller pressure (0 nominal / 1 pressured under backlog); see _evs_step
     register = "casual"         # tone preset (casual/lecture/news/chat) -> few-shot + tone instruction
     glossary_pairs = []         # [(source_term, target_rendering)] pinned for consistent translation + ASR biasing
+    term_memory_enabled = True  # session term memory (auto-glossary) — config-gated, default on
+    session_terms = {}          # term -> {"count","rendering","seen"}; mined from committed finals
+    auto_glossary_pairs = []    # _merge_auto_glossary output, appended to the user glossary at prompt time
+    auto_seed_raw = ""          # domain-persisted term seeds pushed by the client config (tab memory)
+    finals_since_terms = 0      # batch auto-glossary refreshes (each one re-prefills the KV prefix)
     custom_prompt = ""          # user custom translation prompt (advanced/preset) -> replaces the descriptive part in _tx_system; applies to caption + page
     page_register = "casual"    # page DOM translation has its own concise UI/text replacement prompt profile
     page_context_hint = ""      # if unset, page translation falls back to context_hint + page title auto-prime
@@ -2259,6 +2370,54 @@ async def handle(ws):
         repeat_cache.move_to_end(_repeat_key(source))
         while len(repeat_cache) > TX_REPEAT_CACHE_MAX:
             repeat_cache.popitem(last=False)
+
+    # --- session term memory: user glossary + auto-pinned recurring terms, one merged view ---
+    def effective_glossary():
+        return list(glossary_pairs) + list(auto_glossary_pairs)
+
+    def effective_page_glossary():
+        base = page_glossary_pairs if page_glossary_pairs is not None else glossary_pairs
+        return list(base) + list(auto_glossary_pairs)
+
+    def rebuild_asr_hint():
+        # free-text context + user glossary source terms + auto-pinned terms -> ASR name biasing
+        nonlocal asr_hint
+        terms = ", ".join(s for s, _ in glossary_pairs)
+        auto = ", ".join(s for s, _ in auto_glossary_pairs)
+        asr_hint = "; ".join(x for x in (context_hint, terms, auto) if x)[:240]
+
+    def apply_term_seeds():
+        # Domain-persisted seeds (tab memory) arrive as glossary-format lines; they pre-qualify as if
+        # already seen TERM_MEMORY_MIN_COUNT times so a returning visitor gets consistency from line one.
+        for s_, t_ in _parse_glossary(auto_seed_raw):
+            rec = session_terms.get(s_)
+            if rec is None:
+                rec = session_terms[s_] = {"count": 0, "rendering": "", "seen": 0.0}
+            rec["count"] = max(rec["count"], TERM_MEMORY_MIN_COUNT)
+            if t_ and not rec["rendering"]:
+                rec["rendering"] = t_
+
+    def refresh_auto_glossary():
+        """Recompute the auto-pinned list, keeping the PRIOR ORDER of retained terms so the glossary
+        clause (and with it the translator's KV prefix) doesn't churn every time counts reshuffle."""
+        if not (TERM_MEMORY_ON and term_memory_enabled):
+            changed = bool(auto_glossary_pairs)
+            auto_glossary_pairs.clear()
+            if changed:
+                rebuild_asr_hint()
+            return changed
+        newmap = {_gr_norm(s): (s, t) for s, t in _merge_auto_glossary(glossary_pairs, session_terms)}
+        ordered = []
+        for s, _t in auto_glossary_pairs:
+            k = _gr_norm(s)
+            if k in newmap:
+                ordered.append(newmap.pop(k))
+        ordered.extend(newmap.values())
+        if ordered == auto_glossary_pairs:
+            return False
+        auto_glossary_pairs[:] = ordered
+        rebuild_asr_hint()
+        return True
 
     def _preview_promotable(preview_source, final_source):
         p = _clean(preview_source).lower()
@@ -2467,7 +2626,7 @@ async def handle(ws):
         preview_task = asyncio.create_task(delayed_preview(unit_id, rev, source, start_ms, end_ms))
 
     async def translation_loop():
-        nonlocal preview_drop_count, active_tx_job
+        nonlocal preview_drop_count, active_tx_job, finals_since_terms
         while True:
             _prio, _seq, job = await trans_q.get()
             if job is None:
@@ -2497,7 +2656,7 @@ async def handle(ws):
             else:
                 recent_ctx = tx_recent_for(job["final"])
                 key = (
-                    target_lang, register, context_hint, tuple(glossary_pairs),
+                    target_lang, register, context_hint, tuple(effective_glossary()),
                     tuple(recent_ctx), source,
                 )
                 ko = None
@@ -2555,7 +2714,7 @@ async def handle(ws):
                                 try:
                                     ko = await loop.run_in_executor(
                                         _mlx_pool, translate_once, source, recent_ctx,
-                                        target_lang, context_hint, register, list(glossary_pairs), _on_tx,
+                                        target_lang, context_hint, register, effective_glossary(), _on_tx,
                                         None, tx_max_tokens_for(True), tx_stream_every_for(True), "caption", custom_prompt)
                                 except Exception as e:
                                     print(f"[trans err] {e}", flush=True); tx_ok = False   # never kill the loop
@@ -2572,7 +2731,7 @@ async def handle(ws):
                                 try:
                                     ko = await loop.run_in_executor(
                                         _mlx_pool, translate_once, source, recent_ctx,
-                                        target_lang, context_hint, register, list(glossary_pairs), None,
+                                        target_lang, context_hint, register, effective_glossary(), None,
                                         None, tx_max_tokens_for(job["final"]), tx_stream_every_for(job["final"]), "caption", custom_prompt)
                                 except Exception as e:
                                     # preview is UX-only — leave ko unset and drop below; never flash the source
@@ -2634,6 +2793,16 @@ async def handle(ws):
             if job["final"]:
                 if not ko_src and tx_ok:                       # skip Korean->Korean + don't poison context on tx failure
                     recent_pairs.append((source[:160], ko[:160]))
+                    if TERM_MEMORY_ON and term_memory_enabled:
+                        notable = _update_term_memory(session_terms, source, ko, time.perf_counter())
+                        finals_since_terms += 1
+                        # refresh on a NOTABLE change (new pin / new verbatim rendering) or every N finals;
+                        # each refresh that changes the clause re-prefills the translator KV prefix once.
+                        if notable or finals_since_terms >= TERM_MEMORY_UPDATE_EVERY:
+                            finals_since_terms = 0
+                            if refresh_auto_glossary():
+                                await send_json({"type": "term_memory",
+                                                 "terms": [[s, t] for s, t in auto_glossary_pairs]})
                 print(
                     f"[cap {time.perf_counter()-t0:.1f}s wait={wait_ms}ms cache={hit} "
                     f"q={len(pending_final_jobs)} backlog={final_backlog_age_ms()}ms "
@@ -2869,9 +3038,14 @@ async def handle(ws):
                             page_glossary_pairs = _parse_glossary(raw_page_glossary) if raw_page_glossary.strip() else None
                         if d.get("accuracyMode") is not None:
                             accuracy_mode = _config_bool(d.get("accuracyMode"), accuracy_mode)
-                        # ASR biasing hint = free-text context + glossary source terms (helps the model spell names)
-                        _gloss_terms = ", ".join(s for s, _ in glossary_pairs)
-                        asr_hint = "; ".join(x for x in (context_hint, _gloss_terms) if x)[:240]
+                        if d.get("termMemory") is not None:
+                            term_memory_enabled = _config_bool(d.get("termMemory"), term_memory_enabled)
+                        if d.get("autoGlossary") is not None:     # domain-persisted term seeds (tab memory)
+                            auto_seed_raw = str(d.get("autoGlossary") or "")[:4000]
+                            if TERM_MEMORY_ON and term_memory_enabled:
+                                apply_term_seeds()
+                        refresh_auto_glossary()                   # also folds seeds in / clears when disabled
+                        rebuild_asr_hint()   # free-text context + glossary terms + auto-pinned terms -> ASR name biasing
                         new_tx_sig = _translation_context_signature(target_lang, register, context_hint, glossary_pairs, custom_prompt)
                         new_page_glossary = page_glossary_pairs if page_glossary_pairs is not None else glossary_pairs
                         new_page_sig = _translation_context_signature(
@@ -2885,6 +3059,15 @@ async def handle(ws):
                             latest_preview_rev.clear()
                             pending_preview_jobs.clear()
                             pending_final_jobs.clear()
+                            # mined renderings belonged to the OLD translation context -> re-mine; the
+                            # domain seeds (user-blessed by persistence) re-apply immediately.
+                            session_terms.clear()
+                            auto_glossary_pairs.clear()
+                            finals_since_terms = 0
+                            if TERM_MEMORY_ON and term_memory_enabled:
+                                apply_term_seeds()
+                                refresh_auto_glossary()
+                            rebuild_asr_hint()
                             print(f"[cfg] translation context reset epoch={translation_epoch} target={target_lang}", flush=True)
                         if new_page_sig != prev_page_sig:
                             dom_recent_pairs.clear()
@@ -2938,7 +3121,7 @@ async def handle(ws):
                         if not items:
                             await send_json({"type": "dom_translate_done", "request_id": request_id, "count": 0})
                             continue
-                        page_glossary = page_glossary_pairs if page_glossary_pairs is not None else glossary_pairs
+                        page_glossary = effective_page_glossary()   # user page/caption glossary + auto-pinned terms
                         page_hint = page_context_hint or context_hint
                         # short items ride the marker microbatch; long paragraphs take the sentence-chunked,
                         # context-preserving path (translated separately so the batch call never goes huge).
