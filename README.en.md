@@ -81,6 +81,13 @@ bash bridge/run_bridge.sh
 5. Stop again with **`Stop captions`**. (tabCapture requires a user click gesture → no auto-start)
 
 ## Features
+- **Term memory (auto-glossary)**: recurring names/terms mined from captions pin into the glossary automatically — consistent renderings + fuzzy ASR spelling repair. Remembered per site and re-seeded into both caption and page translation on your next visit (toggle in popup)
+- **Dual-model concurrency**: with enough RAM, a small E2B translator loads next to the 26B and takes previews + page-DOM batches — finals stay 26B quality, and page translation stops competing with captions (`LCC_AUX_LM=off`)
+- **Speaker tagging (beta)**: ①② speaker labels on captions for podcasts/interviews — CPU speaker embeddings + online clustering, ~25MB model auto-downloads on first use
+- **Input write-back**: compose in your language in any text field, press the ⇄ chip or Alt+T to render it in the page's language (one-click revert) — the reading lens becomes participation
+- **Image translation (macOS)**: Alt+hover an image → Apple Vision OCR (ANE, no model download) → translated overlay over memes/screenshots
+- **Inline original (inline ghost)**: keep the original faintly under translated long paragraphs — no hover needed
+- **Page translation in iframes**: embedded widgets and iframe bodies translate too (real content frames auto-detected)
 - **Auto term priming**: auto-injects the page/video title as ASR·translation hints (toggle off in the popup).
 - **Page-translation mode**: enable `Page translation` alone in the popup and it replaces the current tab's actual DOM text nodes with the translation directly, no overlay. Turn on `Page translation` + `Video translation` together and they share the same bridge connection, with page translation running as an auxiliary lane that yields and retries when final/preview caption translation is busy. You can give it its own page-specific register/glossary/hints, choose output between `live partial` / `final only`, hover the translated text to see the original (bilingual view), and `idle re-verify of cached translation` re-checks cached translations while idle and patches that spot if the model now disagrees. Page translation binds to the tab you started it on and does not follow tab switches (only that tab is translated); leave the page hint/glossary blank to inherit the video settings.
 - **Content-type presets**: pick a content type once (general·chat / conference·lecture / news·interview / personal streaming) and it bundles register (tone) + latency mode — lecture=formal·stable, news=balanced, streaming=colloquial·instant. Tone·sentence-endings·few-shot anchors adapt to the content, and the source language (EN/JA) is auto-detected to pick matching examples.

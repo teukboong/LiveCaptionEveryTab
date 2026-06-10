@@ -76,8 +76,15 @@ source DOM node + page context + target + register + glossary
 
 - **Bilingual Ghost Mode (hover)** — 팝업 `원문 보기 (번역 위에 마우스)`(`pageBilingual`). 번역된 text node에 마우스를 올리면 원문을 가볍게 되살려, 번역을 신뢰하되 원문을 잃지 않는다.
 - **cache-then-verify** — 팝업 `캐시 번역 idle 재확인`(`pageVerify`). 캐시된 번역은 즉시 표시하고, idle time에 모델이 다시 확인해서 바뀐 경우에만 조용히 patch한다.
+- **Inline ghost** — 팝업 `원문 같이 보기`(`pageBilingualInline`). 번역 적용된 긴 문단 블록 아래에 원문을 옅게 상시 표시(`data-lcc-orig` + CSS `::after`, 복원 가능). Bilingual Lens의 inline 변형.
+- **semantic block batching** — Policy A(anchor-collapse: 스타일로 쪼개진 leaf 블록을 한 segment로 번역해 anchor에 접기) + Policy R(⟦n⟧ placeholder로 링크/버튼을 자리 보존하며 블록을 한 문장으로 번역). per-node 경로도 주변 블록 텍스트를 reference-only ctx로 싣는다.
+- **탭 의미 메모리 (Archive Lens의 용어판)** — 자막 final에서 채굴한 반복 용어가 도메인별로 영속화되어(`term-memory.js`), 같은 사이트 재방문 시 자막·페이지 양쪽 glossary에 자동 시드된다.
+- **듀얼 모델 라우팅** — aux 번역기 상주 시 짧은 DOM 배치는 aux(즉시), 긴 문단·verify는 main(품질). `dom_translate_result.engine` + pageVerify 조합으로 "speed layer 페인트 → quality layer 확인"이 Trust Gradient의 실행판이 된다.
+- **iframe 커버리지** — 실콘텐츠 프레임 전부에서 페이지 번역이 돈다(프레임별 큐/캐시·요청 id 태그).
+- **write-back (역방향 렌즈)** — 입력창에서 내 글을 페이지 언어로(⇄ 칩/Alt+T, main 모델, 되돌리기 지원). 읽기 렌즈를 '참여'로 확장.
+- **이미지 OCR 번역** — Alt+이미지 hover → 렌더된 픽셀 캡처 → Apple Vision OCR → 페이지 번역 경로 → 위치 맞춘 오버레이. DOM 밖 텍스트(짤·스크린샷)까지 렌즈가 닿는다.
 
 남은 다음 단계 후보:
 
-- **Inline ghost** — 지금 ghost는 hover overlay뿐이다. 최종 번역 text node *옆*에 원문을 항상 아주 가볍게 보존하는 inline 변형을 더하면, hover 없이도 원문이 보인다.
-- **semantic block batching** — 지금은 text node 중심으로 microbatch를 만들지만, paragraph/list/card 단위로 주변 sibling text를 함께 hint로 보내면 긴 글 번역 품질이 오른다. 실제 replacement는 node별로 하되, prompt에는 block context를 준다.
+- **Trust Gradient 시각화** — engine/cached/glossary-hit이 이미 데이터로 흐르므로, CSS class/data attribute로 살짝 노출하면 §4의 시각적 등급이 완성된다.
+- **Reading Lens 고도화** — 스크롤 속도/방향 예측으로 prefetch 우선순위를 더 똑똑하게.
