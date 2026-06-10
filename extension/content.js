@@ -1622,8 +1622,12 @@ function lccPageMaybePrefetch() {
     lccPageStartScan(true);                    // whole-doc relaxed scan -> off-screen text queued as cold
   }, 1500);
 }
+// On a dual-model bridge the speed layer (aux/E2B) paints first — the quality re-check on the main
+// model is part of the DESIGN, not an option, so seeing any engine:"aux" result enables the verify
+// pipeline for the session. The pageVerify toggle still opts single-model setups in (cached labels).
+let lccPageAuxSeen = false;
 function lccPageVerifyEnabled() {
-  return lccPageTranslateSettings.pageVerify === true;   // opt-in (re-translates cached content)
+  return lccPageTranslateSettings.pageVerify === true || lccPageAuxSeen;
 }
 function lccPageVerifyEnqueue(node, source, shown) {
   if (!lccPageVerifyEnabled()) return;
@@ -2052,6 +2056,9 @@ function lccPageTranslatePartial(msg) {
 }
 function lccPageTranslateApply(msg) {
   if (!lccPageTranslateOn) return;
+  if (msg.engine === "aux" && !lccPageAuxSeen) {
+    lccPageAuxSeen = true;          // dual-model bridge detected -> idle 26B re-check becomes implicit
+  }
   lccPageTranslateStats.resultSeen += 1;
   const key = String(msg.item_id || "");
   const requestId = String(msg.request_id || "");
