@@ -36,11 +36,13 @@ REPOS = {
     "granite": os.environ.get("LCC_CUDA_ASR_GRANITE_REPO", "ibm-granite/granite-speech-4.1-2b"),
     "qwen3": os.environ.get("LCC_CUDA_ASR_QWEN3_REPO", "Qwen/Qwen3-ASR-1.7B"),
 }
-# Supply-chain pin: set a commit SHA per engine to load a reproducible, audited revision instead of whatever
-# 'main' currently points at. Empty -> latest (current behavior). Recommended when trust_remote_code is on.
+# Supply-chain pin: default to the 2026-06-10 HF main commits so remote model code stays reproducible.
+# granite=cc6d93aa7fc3b7b41816b8f9bc619b222415d313, qwen3=7278e1e70fe206f11671096ffdd38061171dd6e5.
 REVISIONS = {
-    "granite": os.environ.get("LCC_CUDA_ASR_GRANITE_REVISION", "").strip() or None,
-    "qwen3": os.environ.get("LCC_CUDA_ASR_QWEN3_REVISION", "").strip() or None,
+    "granite": os.environ.get(
+        "LCC_CUDA_ASR_GRANITE_REVISION", "cc6d93aa7fc3b7b41816b8f9bc619b222415d313").strip() or None,
+    "qwen3": os.environ.get(
+        "LCC_CUDA_ASR_QWEN3_REVISION", "7278e1e70fe206f11671096ffdd38061171dd6e5").strip() or None,
 }
 # granite-speech ships custom modeling code, so it REQUIRES trust_remote_code to load (pin a REVISION above to
 # make that code reproducible). Set LCC_ASR_TRUST_REMOTE_CODE=0 to refuse remote code (granite then won't load).

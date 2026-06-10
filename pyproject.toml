@@ -35,9 +35,9 @@ mlx = [
     "mlx-lm",                                  # Gemma 26B-A4B translator (text loader)
     "mlx-vlm",                                 # Gemma-4 nano E4B/E2B translator — multimodal ckpts (auto-fallback in load_models)
     "mlx-whisper",                             # Whisper Large v3 transcription engine (6bit; install quantizes if no prequant)
-    # mlx-audio runs the granite/qwen3 ASR engines. granite-speech-4.1's conv fix is only on git main (not PyPI
-    # 0.4.3), so pin a main commit for reproducibility; swap to "mlx-audio>=0.4.4" once that releases.
-    "mlx-audio @ git+https://github.com/Blaizzy/mlx-audio.git@a7ef98604cfd752e9e5c9011bcee8ec8c67228be",
+    # mlx-audio runs the granite/qwen3 ASR engines. PyPI 0.4.4 was available on 2026-06-10, so use the
+    # released package instead of the prior main-branch SHA pin.
+    "mlx-audio==0.4.4",
 ]
 # Windows + NVIDIA via WSL2: the BRIDGE itself talks OpenAI-compatible HTTP (stdlib urllib) to the model servers,
 # so it needs no extra Python deps beyond core.

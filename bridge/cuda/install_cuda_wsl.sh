@@ -12,7 +12,8 @@ RUNTIME_ROOT="${LCC_RUNTIME_ROOT:-$HOME/runtime}"
 VENV="${LCC_PYTHON_VENV:-$HOME/.venvs/lcc-asr}"
 LLAMA_DIR="${LCC_LLAMA_DIR:-$RUNTIME_ROOT/llama.cpp-live-caption}"
 LLAMA_REPO="${LCC_LLAMA_REPO:-https://github.com/ggml-org/llama.cpp.git}"
-LLAMA_REF="${LCC_LLAMA_REF:-master}"
+# Pinned to the latest llama.cpp release seen on 2026-06-10; LCC_LLAMA_REF can still override.
+LLAMA_REF="${LCC_LLAMA_REF:-b9587}"
 LLAMA_BIN="$LLAMA_DIR/build/bin/llama-server"
 
 TIER="${1:-${LCC_LM_TIER:-mid}}"
