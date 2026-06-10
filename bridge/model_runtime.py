@@ -130,6 +130,12 @@ BACKEND = _normalize_backend(os.environ.get("LCC_BACKEND"), "mlx")   # mlx (Appl
 # in load_models() — they are fully loadable, just need mlx_vlm installed. (Gemma 4 / Whisper = OSS.)
 LM_MODELS = {   # translation. mlx: repo loaded in-process. cuda: 'repo' = HF GGUF source, 'served' = OpenAI model label.
     "mlx": [
+        # tx_http: served by an external bridge-owned process (llama.cpp diffusion-gemma-http on Metal),
+        # not loaded in-process — selecting it flips server.py's tx-only seam (translate/ask via HTTP,
+        # ASR stays MLX). Excluded from Auto and aux pairing: experimental, opt-in only.
+        {"id": "diffusiongemma-26b", "label": "DiffusionGemma 26B (실험·디퓨전)", "tx_http": True,
+         "repo": "unsloth/diffusiongemma-26B-A4B-it-GGUF",
+         "footprint_gb": _clamp_float(os.environ.get("LCC_LM_NEED_DIFFUSION"), 19.0, 4.0, 512.0)},
         {"id": "gemma-26b", "label": "Gemma 26B", "repo": "mlx-community/gemma-4-26b-a4b-it-4bit",
          "footprint_gb": _clamp_float(os.environ.get("LCC_LM_NEED_FULL"), 18.0, 4.0, 512.0)},
         {"id": "gemma-e4b", "label": "Gemma E4B",
@@ -247,7 +253,7 @@ def _auto_lm_model():
     the smallest; else the largest when memory is unprobable. Returns a model dict from the registry.
     Replaces the old tier auto-select (chooses a model, not a tier) — this is what keeps 'Auto' working
     after the tier vocabulary was removed."""
-    models = lm_models()
+    models = [m for m in lm_models() if not m.get("tx_http")]   # external/experimental: opt-in only
     avail = _free_mem_gb_cuda() if BACKEND == "cuda" else _free_mem_gb_mlx()
     if avail is None:
         print("[bridge] model: free-memory probe failed -> largest (set LCC_LM_MODEL to pin)", flush=True)
@@ -286,7 +292,7 @@ def _aux_lm_choice(main_value, avail_gb, setting=None):
     s = (AUX_LM if setting is None else setting).strip()
     if s.lower() in ("", "0", "off", "no", "none", "false"):
         return None
-    models = lm_models()
+    models = [m for m in lm_models() if not m.get("tx_http")]   # aux pairs in-process MLX models only
     if s.lower() != "auto":
         choice = _resolve_lm_model(s)                       # explicit id/repo: the user owns the RAM math
         return None if choice == main_value else choice
@@ -310,6 +316,86 @@ MLXA_REPOS = {
     "granite": os.environ.get("LCC_GRANITE_MODEL", "ibm-granite/granite-speech-4.1-2b"),
     "qwen3":   os.environ.get("LCC_QWEN3_MODEL", ""),       # "" -> 1.7B (full/mid) or 0.6B (lite), set at warm
 }
+
+def tx_lm_entry():
+    """The tx_http registry entry in effect, or None when translation stays in-process. Selected by the
+    popup pinning a tx_http id (LCC_LM_MODEL) or by the legacy LCC_TX_BACKEND=cuda env. server.py's
+    backend seam keys off this to rebind translate/ask to the HTTP client (ASR stays MLX)."""
+    if os.environ.get("LCC_TX_BACKEND") == "cuda":
+        return next((m for m in lm_models() if m.get("tx_http")), {"id": "tx-env"})
+    pin = os.environ.get("LCC_LM_MODEL", "").strip()
+    return next((m for m in lm_models() if m.get("tx_http") and pin == m["id"]), None) if pin else None
+
+
+# --- External diffusion translator (tx_http) lifecycle --------------------------------------------------
+# The server holds ~17GB resident, so it follows the bridge's lifetime exactly like the in-process
+# models: selected -> spawned (or adopted) at seam-bind time and waited for /health; bridge exit (atexit
+# or the host's SIGTERM) -> stopped. run_bridge.sh additionally clears orphans on non-tx launches.
+_dg_proc = None
+
+def _dg_base_url():
+    url = os.environ.get("LCC_CUDA_CHAT_URL", "http://127.0.0.1:8090/v1/chat/completions")
+    return url.split("/v1/")[0]
+
+def _dg_healthy():
+    import urllib.request
+    try:
+        with urllib.request.urlopen(_dg_base_url() + "/health", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+def ensure_diffusion_server():
+    """Start (or adopt) the external diffusion translator and own its lifetime with the bridge."""
+    import atexit
+    import signal as _signal
+    import subprocess
+    import time as _time
+    global _dg_proc
+    if not _dg_healthy():
+        dg_dir = os.environ.get("LCC_DG_DIR", os.path.expanduser("~/llama.cpp-diffusion"))
+        script = os.path.join(dg_dir, "run-diffusion-server.sh")
+        if not os.access(script, os.X_OK):
+            raise RuntimeError(f"diffusion translator launcher missing: {script} (set LCC_DG_DIR)")
+        log_path = os.environ.get("LCC_DG_LOG", "/tmp/dgemma-http.log")
+        with open(log_path, "ab") as logf:
+            _dg_proc = subprocess.Popen([script], stdin=subprocess.DEVNULL, stdout=logf, stderr=logf)
+        print(f"[bridge] diffusion translator starting ({script})…", flush=True)
+        for _ in range(90):
+            if _dg_healthy():
+                break
+            if _dg_proc.poll() is not None:
+                raise RuntimeError(f"diffusion translator exited rc={_dg_proc.returncode} (log: {log_path})")
+            _time.sleep(2)
+        else:
+            raise RuntimeError(f"diffusion translator not healthy after 180s (log: {log_path})")
+    print(f"[bridge] diffusion translator ready at {_dg_base_url()} (stops with the bridge)", flush=True)
+    atexit.register(stop_diffusion_server)
+    prev = _signal.getsignal(_signal.SIGTERM)   # default action skips atexit — chain our stop in front
+    def _term(signum, frame):
+        stop_diffusion_server()
+        if callable(prev) and prev not in (_signal.SIG_IGN, _signal.SIG_DFL):
+            prev(signum, frame)
+        else:
+            os._exit(0)
+    _signal.signal(_signal.SIGTERM, _term)
+
+def stop_diffusion_server():
+    """Stop the external translator — ours or adopted; the bridge owns the caption stack's RAM."""
+    import subprocess
+    global _dg_proc
+    if _dg_proc is not None and _dg_proc.poll() is None:
+        _dg_proc.terminate()
+        try:
+            _dg_proc.wait(5)
+        except Exception:
+            _dg_proc.kill()
+    else:
+        subprocess.run(["pkill", "-f", "llama-diffusion-gemma-http"], check=False)
+    if _dg_proc is not None or not _dg_healthy():
+        print("[bridge] diffusion translator stopped", flush=True)
+    _dg_proc = None
+
 
 def _lm_select_value(m):
     """The string the runtime loads for a registry entry: the served label on CUDA, else the HF repo."""
@@ -425,6 +511,10 @@ def load_models(asr=True, lm=True, vad=True, asr_loader=None):
                     asr_loader(ASR_ENGINE)
                 else:
                     raise
+        if lm and tx_lm_entry() is not None:
+            # translation is served by the external tx_http process (diffusion server) — there is no
+            # in-process translator to load, whatever the caller asked for (startup eager-load included)
+            lm = False
         if lm and lm_model is None:
             print(f"[bridge] loading translator ({LM_MODEL})…", flush=True)
             lm_model, lm_tok, _LM_IS_VLM = _load_lm_weights(LM_MODEL)

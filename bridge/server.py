@@ -370,10 +370,10 @@ elif model_runtime.BACKEND == "fake":
     warm_mlx_selected, _ensure_asr_loaded = backend_fake.warm_selected, backend_fake.ensure_asr_loaded
     VADIterator = backend_fake.FakeVADIterator
     print("[bridge] backend=fake (test-only)", flush=True)
-elif os.environ.get("LCC_TX_BACKEND") == "cuda":
-    import backend_cuda  # EXPERIMENTAL tx-only hybrid: translate/ask via HTTP, ASR stays MLX (see bind_tx_only)
+elif model_runtime.tx_lm_entry() is not None:
+    import backend_cuda  # tx_http model (popup pick or LCC_TX_BACKEND=cuda): translate/ask via HTTP, ASR stays MLX
     translate_once, translate_page_batch_once, run_ask, warm_mlx_selected = backend_cuda.bind_tx_only(warm_mlx_selected)
-    print(f"[bridge] tx-backend=cuda (translate/ask only; asr stays mlx)  chat={backend_cuda.CHAT_URL}", flush=True)
+    print(f"[bridge] tx-backend=http (translate/ask only; asr stays mlx)  chat={backend_cuda.CHAT_URL}", flush=True)
 # ------------------------------------------------------------------------------------------------------
 
 

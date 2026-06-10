@@ -16,9 +16,12 @@ def ok(name, cond):
         fails.append(f"{name}: condition failed")
 
 
-MAIN_26B = s._lm_select_value(s.lm_models()[0])
-SMALL = s._lm_select_value(s.lm_models()[-1])
-NEED = s.lm_models()[-1]["footprint_gb"] + s.AUX_LM_HEADROOM_GB
+# aux pairs IN-PROCESS MLX models only — tx_http entries (external diffusion server) are excluded,
+# so index against the same filtered view _aux_lm_choice uses.
+_INPROC = [m for m in s.lm_models() if not m.get("tx_http")]
+MAIN_26B = s._lm_select_value(_INPROC[0])
+SMALL = s._lm_select_value(_INPROC[-1])
+NEED = _INPROC[-1]["footprint_gb"] + s.AUX_LM_HEADROOM_GB
 
 # off in every spelling
 for off in ("", "0", "off", "no", "none", "false", "OFF"):
@@ -31,7 +34,7 @@ ok("choice.auto_tight", s._aux_lm_choice(MAIN_26B, NEED - 0.5, "auto") is None)
 ok("choice.auto_no_probe", s._aux_lm_choice(MAIN_26B, None, "auto") is None)
 # auto never pairs under an already-small main pick
 ok("choice.auto_small_main", s._aux_lm_choice(SMALL, 64.0, "auto") is None)
-ok("choice.auto_mid_main", s._aux_lm_choice(s._lm_select_value(s.lm_models()[1]), 64.0, "auto") is None)
+ok("choice.auto_mid_main", s._aux_lm_choice(s._lm_select_value(_INPROC[1]), 64.0, "auto") is None)
 
 # explicit id resolves through the registry; user owns the RAM math (no memory gate)
 ok("choice.explicit_id", s._aux_lm_choice(MAIN_26B, 0.1, "gemma-e2b") == SMALL)

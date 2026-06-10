@@ -29,6 +29,26 @@ ok("registry: asr has whisper", "whisper-large-v3" in asr_ids)
 ok("registry: asr has qwen3 variants", "qwen3-1.7b" in asr_ids and "qwen3-0.6b" in asr_ids)
 _footprints = [m["footprint_gb"] for m in s.lm_models("mlx")]
 ok("registry: lm largest-first", _footprints == sorted(_footprints, reverse=True))
+ok("registry: lm has diffusiongemma (tx_http external)", "diffusiongemma-26b" in lm_ids)
+
+# --- tx_lm_entry: tx_http selection (popup pin or legacy LCC_TX_BACKEND env); auto never picks it -------
+import os as _os
+_saved = {k: _os.environ.pop(k, None) for k in ("LCC_TX_BACKEND", "LCC_LM_MODEL")}
+try:
+    ok("tx: none by default", rt.tx_lm_entry() is None)
+    _os.environ["LCC_LM_MODEL"] = "diffusiongemma-26b"
+    ok("tx: popup pin selects the tx_http entry", (rt.tx_lm_entry() or {}).get("id") == "diffusiongemma-26b")
+    _os.environ["LCC_LM_MODEL"] = "gemma-26b"
+    ok("tx: in-process pin stays in-process", rt.tx_lm_entry() is None)
+    del _os.environ["LCC_LM_MODEL"]
+    _os.environ["LCC_TX_BACKEND"] = "cuda"
+    ok("tx: legacy env selects", rt.tx_lm_entry() is not None)
+finally:
+    _os.environ.pop("LCC_TX_BACKEND", None)
+    _os.environ.pop("LCC_LM_MODEL", None)
+    for k, v in _saved.items():
+        if v is not None:
+            _os.environ[k] = v
 
 # --- whisper ASR family taxonomy (INV-3) ---------------------------------------------------------------
 ok("whisper: in ASR_ENGINES", "whisper" in s._ASR_ENGINES)

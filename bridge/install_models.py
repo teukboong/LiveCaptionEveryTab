@@ -171,6 +171,11 @@ def is_installed(role, model, backend):
     backend = "cuda" if str(backend).lower() in ("cuda", "nvidia", "gpu", "http") else "mlx"
     entry = find_entry(role, model, backend)
     repo = (entry or {}).get("repo") or str(model)
+    if entry and entry.get("tx_http"):
+        # external llama.cpp diffusion server: installed = its launcher + a local GGUF in its models dir
+        dg = os.environ.get("LCC_DG_DIR", os.path.expanduser("~/llama.cpp-diffusion"))
+        return os.access(os.path.join(dg, "run-diffusion-server.sh"), os.X_OK) and bool(
+            glob.glob(os.path.join(dg, "models", "*.gguf")))
     if backend == "cuda":
         # cuda translation/asr artifacts live under CUDA_MODEL_ROOT (gguf); presence is best-effort.
         return _hf_cached(repo) or bool(glob.glob(os.path.join(CUDA_MODEL_ROOT, "**", "*.gguf"), recursive=True))
@@ -185,6 +190,10 @@ def install_lm(model, backend, dry):
     entry = find_entry("lm", model, backend)
     repo = (entry or {}).get("repo") or str(model)
     label = (entry or {}).get("label") or model
+    if entry and entry.get("tx_http"):
+        # the external diffusion server needs a llama.cpp build, not just weights — manual setup
+        raise RuntimeError(f"{label}: 자동 설치 미지원 — llama.cpp diffusion 브랜치 빌드 + GGUF를 "
+                           f"LCC_DG_DIR(기본 ~/llama.cpp-diffusion)에 준비하세요")
     write_status(backend=backend, role="lm", model=model, done=False, ok=True, total=1, index=0,
                  current=f"Translate · {label}  ({repo})", pid=os.getpid())
     if backend == "cuda":

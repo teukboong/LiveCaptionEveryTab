@@ -254,10 +254,18 @@ def run_ask(mode, transcript_text, question="", target="Korean", on_partial=None
 
 
 def bind_tx_only(warm_native):
-    """EXPERIMENTAL hybrid seam (LCC_TX_BACKEND=cuda): translation/ask go to CHAT_URL while ASR stays on
-    the native MLX path. The lm warm becomes an HTTP ping so the MLX 26B translator never loads — RAM
-    stays free for an external local server (e.g. llama.cpp diffusion-gemma-http on Metal). Returns
-    (translate_once, translate_page_batch_once, run_ask, warm) for server.py's seam to rebind."""
+    """Hybrid tx_http seam (popup tx_http model pick or LCC_TX_BACKEND=cuda): translation/ask go to
+    CHAT_URL while ASR stays on the native MLX path. The external server is spawned (or adopted) HERE
+    and dies with the bridge — model_runtime.ensure_diffusion_server owns the process exactly like the
+    in-process models' lifetimes. The lm warm becomes an HTTP ping so the MLX 26B translator never
+    loads. Returns (translate_once, translate_page_batch_once, run_ask, warm) for server.py to rebind."""
+    import model_runtime
+    model_runtime.ensure_diffusion_server()
+    global CHAT_URL
+    if not os.environ.get("LCC_CUDA_CHAT_URL"):
+        # popup flow sets only LCC_LM_MODEL: aim the chat client at the diffusion server we just
+        # started (its port), not the full-cuda default (8080)
+        CHAT_URL = model_runtime._dg_base_url() + "/v1/chat/completions"
     def warm(asr=False, lm=False, asr_engine=None):
         if asr:
             warm_native(asr=True, lm=False, asr_engine=asr_engine)

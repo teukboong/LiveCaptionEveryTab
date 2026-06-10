@@ -16,28 +16,15 @@ ENV_FILE="${LCC_ENV_FILE:-$ROOT/.env}"
 POLICY_ENV="$ROOT/.env.policy"
 [ -f "$POLICY_ENV" ] && { set -a; . "$POLICY_ENV"; set +a; }
 
-# EXPERIMENTAL diffusion translator lifecycle (LCC_TX_BACKEND=cuda; see server.py's tx-only seam).
-# The external server holds the model resident (~17GB) — exactly the kind of thing you forget about,
-# so the bridge owns it: diffusion mode auto-starts it and waits for /health; normal mode stops a
-# leftover instance BEFORE the memory-tier check, or the translator silently downgrades for lack of RAM.
-DG_BIN="llama-diffusion-gemma-http"
-DG_DIR="${LCC_DG_DIR:-$HOME/llama.cpp-diffusion}"
-DG_PORT="${DG_PORT:-8090}"
-if [ "${LCC_TX_BACKEND:-}" = "cuda" ] && [ -x "$DG_DIR/run-diffusion-server.sh" ]; then
-  if ! curl -fsS -m 2 "http://127.0.0.1:${DG_PORT}/health" >/dev/null 2>&1; then
-    echo "[bridge] starting diffusion translator ($DG_DIR, port $DG_PORT)…"
-    ("$DG_DIR/run-diffusion-server.sh" >> "${LCC_DG_LOG:-/tmp/dgemma-http.log}" 2>&1 &)
-    for _ in $(seq 1 60); do
-      curl -fsS -m 2 "http://127.0.0.1:${DG_PORT}/health" >/dev/null 2>&1 && break
-      sleep 2
-    done
-    curl -fsS -m 2 "http://127.0.0.1:${DG_PORT}/health" >/dev/null 2>&1 \
-      || { echo "[bridge] diffusion translator failed to come up (${LCC_DG_LOG:-/tmp/dgemma-http.log})"; exit 1; }
-  fi
-  # left running across bridge restarts on purpose: reloading 17GB per restart is the worse default
-elif pgrep -f "$DG_BIN" >/dev/null 2>&1; then
-  echo "[bridge] stopping leftover diffusion translator (frees its RAM before the MLX tier check)"
-  pkill -f "$DG_BIN" || true
+# Diffusion translator (tx_http registry model / LCC_TX_BACKEND=cuda): the PYTHON bridge owns the
+# external server's lifetime (spawned at seam-bind, stopped at exit — model_runtime.ensure_diffusion_
+# server), so it loads/unloads with the bridge like the in-process models. Here we only clear an
+# ORPHAN on non-tx launches: a leftover instance holds ~17GB and silently downgrades the MLX
+# translator tier. On tx launches a healthy leftover is left for the bridge to adopt (skips ~20s load).
+if [ "${LCC_TX_BACKEND:-}" != "cuda" ] && [ "${LCC_LM_MODEL:-}" != "diffusiongemma-26b" ] \
+   && pgrep -f "llama-diffusion-gemma-http" >/dev/null 2>&1; then
+  echo "[bridge] stopping orphaned diffusion translator (frees its RAM before the MLX tier check)"
+  pkill -f "llama-diffusion-gemma-http" || true
   sleep 1
 fi
 
