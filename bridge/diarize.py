@@ -30,15 +30,16 @@ import urllib.request
 
 _SPK_URL_BASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
 SPK_DIR = os.path.expanduser("~/.local/share/models/live-caption")
-# Per-model cosine thresholds (hi = join+update, lo = label-only floor); calibrate live with LCC_SPK_DEBUG=1.
+# Per-model centered-cosine thresholds (hi = join+update, lo = label-only floor);
+# calibrate live with LCC_SPK_DEBUG=1 (the log prints centered sims plus raw=...).
 SPK_MODELS = {
     "resnet293": {  # default: WeSpeaker ResNet293 VoxCeleb LM (109MB) — strongest sherpa-onnx asset
         "file": "wespeaker_en_voxceleb_resnet293_LM.onnx",   # (VoxCeleb1-O EER ~0.45%); ~190ms per 4s clip on CPU
         "url": _SPK_URL_BASE + "wespeaker_en_voxceleb_resnet293_LM.onnx",
-        # Calibrated on two-voice TTS clips: same-speaker cos 0.85-0.97, different-speaker 0.45-0.53.
-        # lo MUST clear the impostor range — the original 0.35 put different speakers inside the
-        # label-only band, so a second speaker could never open ("화자 구분이 안 됨" bug).
-        "hi": 0.66, "lo": 0.58,
+        # bench_spk_fixture.py (Alex/Samantha/Fred x2, 2026-06-10): raw diff_max=0.761 still crosses
+        # centered same_min=0.875 and diff_max=-0.053. Adopt hi=0.60, lo=0.27; prev_bonus=0.03 keeps
+        # diff_max+bonus below lo by 0.293, and merge_at=0.60 stays below same_min by 0.275.
+        "hi": 0.60, "lo": 0.27,
     },
     "campplus": {   # WeSpeaker CAM++ VoxCeleb LM (28MB) — measured POOR separation on the same calibration
         "file": "wespeaker_en_voxceleb_CAM++_LM.onnx",       # (same-speaker min 0.19 < diff max 0.79) — avoid;
@@ -60,10 +61,10 @@ SPK_MODEL_ID = os.environ.get("LCC_SPK_MODEL_ID", "resnet293").strip().lower()
 SPK_MODEL_PATH = os.environ.get("LCC_SPK_MODEL", "")     # explicit .onnx path overrides the registry
 SPK_MAX_SPEAKERS = max(2, int(os.environ.get("LCC_SPK_MAX", "6")))
 SPK_MIN_SEC = float(os.environ.get("LCC_SPK_MIN_SEC", "1.2"))   # shorter audio gives junk embeddings
-SPK_PREV_BONUS = float(os.environ.get("LCC_SPK_PREV_BONUS", "0.07"))
+SPK_PREV_BONUS = float(os.environ.get("LCC_SPK_PREV_BONUS", "0.03"))
 SPK_TOPK = max(2, int(os.environ.get("LCC_SPK_TOPK", "10")))    # embeddings kept per speaker (centroid = mean)
 SPK_MERGE_EVERY = max(2, int(os.environ.get("LCC_SPK_MERGE_EVERY", "8")))
-SPK_MERGE_AT = float(os.environ.get("LCC_SPK_MERGE_AT", "0.70"))
+SPK_MERGE_AT = float(os.environ.get("LCC_SPK_MERGE_AT", "0.60"))
 SPK_THREADS = max(1, int(os.environ.get("LCC_SPK_THREADS", "2")))
 SPK_DEBUG = os.environ.get("LCC_SPK_DEBUG", "0") == "1"          # per-clip similarity log -> calibrate thresholds
 SPK_CENTER = os.environ.get("LCC_SPK_CENTER", "1") != "0"        # off => raw-cosine behavior for regression escape
