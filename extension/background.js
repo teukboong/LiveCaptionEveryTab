@@ -145,7 +145,7 @@ async function resendStart() {
   }
 }
 
-const LCC_CONTENT_FILES = ["protocol.js", "pcm.js", "page-seed.js", "content.js", "delay.js"];
+const LCC_CONTENT_FILES = ["protocol.js", "pcm.js", "page-seed.js", "caption-overlay.js", "content.js", "delay.js"];
 function unsupportedTabReason(tab) {
   const url = String(tab && tab.url || "");
   const scheme = (url.match(/^([a-z][a-z0-9+.-]*):/i) || [])[1];
