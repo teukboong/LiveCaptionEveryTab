@@ -66,6 +66,9 @@ SPK_MERGE_EVERY = max(2, int(os.environ.get("LCC_SPK_MERGE_EVERY", "8")))
 SPK_MERGE_AT = float(os.environ.get("LCC_SPK_MERGE_AT", "0.70"))
 SPK_THREADS = max(1, int(os.environ.get("LCC_SPK_THREADS", "2")))
 SPK_DEBUG = os.environ.get("LCC_SPK_DEBUG", "0") == "1"          # per-clip similarity log -> calibrate thresholds
+SPK_CENTER = os.environ.get("LCC_SPK_CENTER", "1") != "0"        # off => raw-cosine behavior for regression escape
+SPK_CENTER_MIN_COUNT = 2
+SPK_CENTER_EPS = 1e-6
 SR = 16000
 
 _extractor = None
@@ -105,7 +108,7 @@ class OnlineSpeakerClusters:
     merged labels disappear from the books but already-emitted labels on screen are not rewritten."""
 
     def __init__(self, hi=None, lo=None, max_speakers=None, prev_bonus=None,
-                 topk=None, merge_every=None, merge_at=None):
+                 topk=None, merge_every=None, merge_at=None, center=None):
         m = _active_model()
         self.hi = _env_float("LCC_SPK_THRESHOLD", m["hi"]) if hi is None else float(hi)
         self.lo = _env_float("LCC_SPK_THRESHOLD_LOW", m["lo"]) if lo is None else float(lo)
@@ -115,6 +118,9 @@ class OnlineSpeakerClusters:
         self.topk = SPK_TOPK if topk is None else int(topk)
         self.merge_every = SPK_MERGE_EVERY if merge_every is None else int(merge_every)
         self.merge_at = SPK_MERGE_AT if merge_at is None else float(merge_at)
+        self.center = SPK_CENTER if center is None else bool(center)
+        self.session_sum = None       # running sum of every valid unit-norm embedding that entered add()
+        self.session_count = 0
         self.speakers = {}            # label -> {"embs": [unit vecs], "centroid": unit vec}
         self.next_label = 1
         self.last_label = None        # previous unit's speaker -> turn-continuity bonus
@@ -139,6 +145,37 @@ class OnlineSpeakerClusters:
         self.speakers[label] = {"embs": list(embs)[-self.topk:], "centroid": self._centroid(list(embs))}
         return label
 
+    def _remember_session(self, v):
+        if not self.center:
+            return
+        if self.session_sum is None or len(self.session_sum) != len(v):
+            self.session_sum = [0.0] * len(v)
+            self.session_count = 0
+        for i, x in enumerate(v):
+            self.session_sum[i] += x
+        self.session_count += 1
+
+    def _session_mean(self):
+        if not self.session_sum or self.session_count <= 0:
+            return None
+        return [x / self.session_count for x in self.session_sum]
+
+    def _centered(self, v, mean):
+        c = [x - m for x, m in zip(v, mean)]
+        n = math.sqrt(sum(x * x for x in c))
+        if n <= SPK_CENTER_EPS:
+            return None
+        return [x / n for x in c]
+
+    def _sim(self, a, b):
+        if self.center and self.session_count >= SPK_CENTER_MIN_COUNT:
+            mean = self._session_mean()
+            ca = self._centered(a, mean) if mean is not None else None
+            cb = self._centered(b, mean) if mean is not None else None
+            if ca is not None and cb is not None:
+                return _dot(ca, cb)
+        return _dot(a, b)
+
     def merge_overlapping(self):
         """Collapse clusters whose centroids converged above merge_at into the EARLIER label — heals a
         voice that got split while its clusters were still forming. Future clips get the merged label."""
@@ -149,7 +186,7 @@ class OnlineSpeakerClusters:
             for i in range(len(labels)):
                 for j in range(i + 1, len(labels)):
                     a, b = labels[i], labels[j]
-                    if _dot(self.speakers[a]["centroid"], self.speakers[b]["centroid"]) >= self.merge_at:
+                    if self._sim(self.speakers[a]["centroid"], self.speakers[b]["centroid"]) >= self.merge_at:
                         merged = (self.speakers[a]["embs"] + self.speakers[b]["embs"])[-self.topk:]
                         self.speakers[a] = {"embs": merged, "centroid": self._centroid(merged)}
                         del self.speakers[b]
@@ -171,18 +208,22 @@ class OnlineSpeakerClusters:
             self.merge_overlapping()
         if not self.speakers:
             self.last_label = self._new_speaker([v])
+            self._remember_session(v)
             return self.last_label
-        sims = {label: _dot(rec["centroid"], v) for label, rec in self.speakers.items()}
+        sims = {label: self._sim(rec["centroid"], v) for label, rec in self.speakers.items()}
+        raw_sims = {label: _dot(rec["centroid"], v) for label, rec in self.speakers.items()}
         eff = {label: s + (self.prev_bonus if label == self.last_label else 0.0)
                for label, s in sims.items()}
         best = max(eff, key=eff.get)
         if SPK_DEBUG:
             shown = ", ".join(f"{l}:{sims[l]:.2f}" for l in sorted(sims))
-            print(f"[spk] sims=({shown}) prev={self.last_label} -> ", end="", flush=True)
+            raw = ", ".join(f"{l}:{raw_sims[l]:.2f}" for l in sorted(raw_sims))
+            print(f"[spk] sims=({shown}) raw=({raw}) prev={self.last_label} -> ", end="", flush=True)
         if eff[best] >= self.hi:
             self._join(best, v)
             self.pending = None
             self.last_label = best
+            self._remember_session(v)
             if SPK_DEBUG:
                 print(f"join {best}", flush=True)
             return best
@@ -191,19 +232,22 @@ class OnlineSpeakerClusters:
             # of a NEW speaker either, so the pending buffer resets.
             self.pending = None
             self.last_label = best
+            self._remember_session(v)
             if SPK_DEBUG:
                 print(f"assign {best}", flush=True)
             return best
         confirm = (self.hi + self.lo) / 2.0
-        if (self.pending is not None and _dot(self.pending, v) >= confirm
+        if (self.pending is not None and self._sim(self.pending, v) >= confirm
                 and len(self.speakers) < self.max_speakers):
             label = self._new_speaker([self.pending, v])
             self.pending = None
             self.last_label = label
+            self._remember_session(v)
             if SPK_DEBUG:
                 print(f"new {label}", flush=True)
             return label
         self.pending = v               # first strike (or at capacity): hold the voice, tag nothing
+        self._remember_session(v)
         if SPK_DEBUG:
             print("pending", flush=True)
         return None
