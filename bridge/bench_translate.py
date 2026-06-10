@@ -6,7 +6,7 @@ and the draft acceptance rate (GenerationResponse.from_draft).
 
 Run AFTER stopping the bridge (no concurrent 26B). Single process, one model resident.
 """
-import time, gc
+import time, gc, sys
 import mlx.core as mx
 from mlx_lm import load as lm_load, stream_generate
 from mlx_lm.sample_utils import make_sampler
@@ -82,6 +82,7 @@ def main():
           f"({base_wall/len(SRC):.2f}s/line)\n", flush=True)
 
     results = [("baseline", None, base_tps, base_wall, 0.0, base_out)]
+    ok = True
     for dname, dpath in DRAFTS.items():
         print(f"[bench] loading draft {dname} {dpath} …", flush=True)
         try:
@@ -102,6 +103,7 @@ def main():
                       f"  {tps:.1f} tok/s ({wall/len(SRC):.2f}s/line)  "
                       f"speedup x{tps/base_tps:.2f}  accept={rate*100:.0f}%  "
                       f"lossless={ident}", flush=True)
+                ok = ok and ident
                 results.append((f"{dname} nd={nd}", rate, tps, wall, rate, out))
             except Exception as e:
                 print(f"=== {dname} ndraft={nd} === FAILED: {e}", flush=True)
@@ -118,6 +120,7 @@ def main():
     print(" base :", base_out[0])
     if len(results) > 1:
         print(" draft:", results[-1][5][0], "  (identical)" if results[-1][5][0] == base_out[0] else "  (DIFFERS!)")
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

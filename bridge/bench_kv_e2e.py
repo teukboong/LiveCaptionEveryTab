@@ -48,6 +48,8 @@ async def main():
 
     print(f"\nsource={src} caption_partial={parts} caption={caps} errs={len(errs)}")
     print(f"last_ko: {last_ko}")
-    print(f"\nPASS (got Korean + no err): {got_ko and not errs}")
+    ok = got_ko and not errs
+    print(f"\nPASS (got Korean + no err): {ok}")
+    return ok
 
-asyncio.run(main())
+sys.exit(0 if asyncio.run(main()) else 1)

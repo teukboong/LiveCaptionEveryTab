@@ -79,3 +79,4 @@ print(f"invariant fails (offset != len(_tx_cache_ids)): {inv_fail}  -> MUST be e
 print(f"\nsaved total: {sum(t_off)-sum(t_on):.0f}ms ({100*(sum(t_off)-sum(t_on))/sum(t_off):.0f}%)")
 ok = (not reg_div) and (not inv_fail)
 print(f"\nPASS: {ok}")
+sys.exit(0 if ok else 1)
