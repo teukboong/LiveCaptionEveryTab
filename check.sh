@@ -69,6 +69,7 @@ cd "$ROOT"
 for js_file in extension/*.js; do
   node --check "$js_file"
 done
+node extension/test_content_load.js
 node extension/test_protocol.js
 node extension/test_term_memory.js
 node extension/test_extension_actions.js
