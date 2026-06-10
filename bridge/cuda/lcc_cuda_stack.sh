@@ -35,6 +35,18 @@ BRIDGE_HOST="${LCC_BRIDGE_HOST:-${LCC_HOST:-127.0.0.1}}"   # loopback by default
 BRIDGE_PID="$STATE_DIR/bridge-${BRIDGE_PORT}.pid"
 BRIDGE_LOG="$LOG_DIR/bridge-popup-$(date -u +%Y%m%dT%H%M%SZ).log"
 
+rotate_start_logs() {
+  local pattern old
+  # Keep popup-managed CUDA logs bounded; rm inputs come only from LOG_DIR-scoped globs.
+  for pattern in bridge-popup-*.log translation-popup-*.log asr-switch-*.log; do
+    while IFS= read -r old; do
+      case "$old" in
+        "$LOG_DIR"/*) rm -f -- "$old" ;;
+      esac
+    done < <(ls -t -- "$LOG_DIR"/$pattern 2>/dev/null | tail -n +6)
+  done
+}
+
 is_listening() {
   local port="$1"
   ss -ltn "( sport = :$port )" 2>/dev/null | awk 'NR > 1 { found=1 } END { exit found ? 0 : 1 }'
@@ -156,6 +168,7 @@ status_json() {
 
 case "$CMD" in
   start)
+    rotate_start_logs
     start_translation
     start_asr
     start_bridge
