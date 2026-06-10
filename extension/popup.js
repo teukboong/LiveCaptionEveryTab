@@ -46,6 +46,7 @@ const UI_TEXT = Object.freeze({
     modelAuto: "자동 (메모리 맞춤)",
     modelCustom: "직접 입력…",
     modelsHint: "자동=메모리에 맞춰 알아서. 안 받은 모델은 다운로드로 (Whisper는 받을 때 6bit 자동 양자화). 번역·전사 모델 변경은 다시 시작 시 적용.",
+    diarize: "화자 구분 (베타 · 첫 사용 시 모델 ~25MB 자동 다운로드)",
     sectionPreset: "프리셋",
     labelUserPreset: "내 프리셋",
     userPresetHint: "advanced에서 저장한 번역 설정 묶음을 골라 적용 (말투·대상 언어·용어집·커스텀 프롬프트).",
@@ -192,6 +193,7 @@ const UI_TEXT = Object.freeze({
     modelAuto: "Auto (fit memory)",
     modelCustom: "Custom…",
     modelsHint: "Auto fits the model to free memory. Download any model that isn't installed (Whisper is auto-quantized to 6bit on download). Model changes apply after a bridge restart.",
+    diarize: "Speaker tagging (beta · auto-downloads ~25MB model on first use)",
     sectionPreset: "Presets",
     labelUserPreset: "My presets",
     userPresetHint: "Apply a translation bundle you saved in Advanced (tone, target language, glossary, custom prompt).",
@@ -433,6 +435,7 @@ async function loadSettings() {
   document.getElementById("pageVerify").checked = settings.pageVerify === true;
   document.getElementById("writeBack").checked = settings.writeBack !== false;
   document.getElementById("termMemory").checked = settings.termMemory !== false;
+  document.getElementById("diarize").checked = settings.diarize === true;
   document.getElementById("debugSync").checked = settings.debugSync;
   document.getElementById("contextHint").value = settings.contextHint;
   document.getElementById("glossary").value = settings.glossary;
@@ -800,6 +803,7 @@ document.getElementById("pageBilingualInline").addEventListener("change", (e) =>
 document.getElementById("pageVerify").addEventListener("change", (e) => { settings.pageVerify = e.target.checked; saveSettings(true); });
 document.getElementById("writeBack").addEventListener("change", (e) => { settings.writeBack = e.target.checked; saveSettings(true); });
 document.getElementById("termMemory").addEventListener("change", (e) => { settings.termMemory = e.target.checked; saveSettings(true); });
+document.getElementById("diarize").addEventListener("change", (e) => { settings.diarize = e.target.checked; saveSettings(true); });
 document.getElementById("debugSync").addEventListener("change", (e) => { settings.debugSync = e.target.checked; saveSettings(); });
 document.getElementById("contextHint").addEventListener("input", (e) => { settings.contextHint = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });
 document.getElementById("glossary").addEventListener("input", (e) => { settings.glossary = e.target.value; saveSettings(); pushBridgeConfigDebounced(400, true); });

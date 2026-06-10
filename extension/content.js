@@ -285,6 +285,22 @@ try {
   }, true);
 } catch (_) {}
 
+// ---- speaker tagging (diarize lite): prefix the KO line once a second speaker appears ----
+const lccSpeakersSeen = new Set();
+const LCC_SPEAKER_MARKS = ["\u2460", "\u2461", "\u2462", "\u2463", "\u2464", "\u2465", "\u2466", "\u2467"];  // ①..⑧
+function lccSpeakerPrefix(sp) {
+  if (sp == null || !(sp >= 1)) return "";
+  lccSpeakersSeen.add(sp);
+  if (lccSpeakersSeen.size < 2) return "";   // single-speaker content stays clean
+  return (LCC_SPEAKER_MARKS[(sp - 1) % LCC_SPEAKER_MARKS.length]) + " ";
+}
+function lccApplySpeaker(msg) {
+  if (msg && msg.speaker != null && msg.ko) {
+    const p = lccSpeakerPrefix(msg.speaker);
+    if (p && !msg.ko.startsWith(p)) msg.ko = p + msg.ko;
+  }
+}
+
 // ---- caption display controller: committed captions are durable; source/preview are coalesced ----
 const lccFinalQ = [];               // committed sentences waiting their turn on screen
 const lccLatestRev = new Map();     // unit_id -> latest source/preview rev
@@ -589,6 +605,7 @@ function lccHandleBridgeMessage(msg) {
       });
     }
   } else if (msg.type === "caption_partial") {
+    lccApplySpeaker(msg);
     if (lccFresh(msg)) {
       const v = lccVideoSub();
       if (v) v.live(msg);
@@ -606,6 +623,7 @@ function lccHandleBridgeMessage(msg) {
       }
     }
   } else if (msg.type === "caption") {
+    lccApplySpeaker(msg);
     const unit = lccUnit(msg);
     if (unit) {
       lccCommittedUnits.add(unit);

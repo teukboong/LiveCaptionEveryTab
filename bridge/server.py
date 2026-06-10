@@ -490,6 +490,12 @@ mlxa_loaded_engine = None
 whisper_loaded_repo = None   # the whisper repo whose model is warm (mlx_whisper caches the model by path)
 
 
+def _diarize():
+    """Lazy diarize-module import: sherpa/numpy stay out of model-free test imports."""
+    import diarize
+    return diarize
+
+
 def _require_mlx():
     if MLX_IMPORT_ERROR is not None:
         raise RuntimeError(
@@ -2314,6 +2320,7 @@ class Unit:
     pcm: bytearray = field(default_factory=bytearray)   # audio for the optional accuracy-mode 2-pass
     clauses: int = 0             # clauses folded into this unit (2-pass only pays off when >= 2)
     pure: bool = True            # False once a soft/hard cut or split misaligns pcm vs src
+    speaker: int | None = None   # diarize-lite label (first tagged clause wins; None when off/unknown)
 
     def add_clause_audio(self, audio: bytes, soft: bool):
         """Keep only 2-pass-eligible audio. Once the unit is impure or too long, drop the buffer so a
@@ -2366,6 +2373,9 @@ async def handle(ws):
     page_glossary_pairs = None  # None = inherit glossary_pairs; [] = intentionally no page-specific glossary
     asr_hint = ""               # context_hint + glossary source terms, fed to the ASR prompt (recomputed on config)
     accuracy_mode = False       # 2-pass: re-transcribe the whole sentence's audio at commit (cleaner finals, +~0.7s)
+    diarize_enabled = False     # speaker tagging lite (config-gated; model auto-downloads on first enable)
+    diarize_loading = False
+    spk_clusters = None         # per-connection OnlineSpeakerClusters (labels reset with the session)
     translation_epoch = 0        # bumps when target/register/hints change so old-language jobs cannot render later
     preroll = collections.deque(maxlen=PREROLL_WINDOWS)   # pre-onset audio prepended on speech start
     leftover, voiced, in_speech, sil_windows = b"", bytearray(), False, 0
@@ -2408,6 +2418,7 @@ async def handle(ws):
         unit.rev = 0
         unit.start_ms = unit.end_ms = max(0, int(start_ms))
         unit.pcm.clear(); unit.clauses = 0; unit.pure = True   # fresh audio buffer for the new unit
+        unit.speaker = None
         return unit.id
 
     def clear_unit():
@@ -2416,8 +2427,9 @@ async def handle(ws):
         unit.id = None
         unit.rev = 0
         unit.pcm.clear(); unit.clauses = 0; unit.pure = True
+        unit.speaker = None
 
-    async def emit_source(text, unit_id, rev, start_ms, end_ms):
+    async def emit_source(text, unit_id, rev, start_ms, end_ms, speaker=None):
         if _short_suffix_duplicate(text, last_enqueued_final_source):
             scheduler_stats["source_drop_suffix_dup"] += 1
             return
@@ -2428,6 +2440,7 @@ async def handle(ws):
             "rev": rev,
             "start_ms": start_ms,
             "end_ms": end_ms,
+            "speaker": speaker,
         })
 
     def cache_get(key):
@@ -2635,7 +2648,7 @@ async def handle(ws):
     def preview_is_stale(job):   # thin adapter over the pure _preview_is_stale (test_scheduler_staleness.py)
         return _preview_is_stale(job, finalized_units, unit.id, unit.rev, latest_preview_rev)
 
-    async def enqueue_translation(source, final, unit_id, rev, start_ms, end_ms, reason):
+    async def enqueue_translation(source, final, unit_id, rev, start_ms, end_ms, reason, speaker=None):
         nonlocal trans_seq, preview_task, last_enqueued_final_source, preview_drop_count
         source = source.strip()
         if not source:
@@ -2674,6 +2687,7 @@ async def handle(ws):
                 "start_ms": int(start_ms),
                 "end_ms": int(end_ms),
                 "reason": reason,
+                "speaker": speaker,
                 "queued_at": time.perf_counter(),
                 "latency_mode": latency_mode,
                 "epoch": translation_epoch,
@@ -2684,7 +2698,7 @@ async def handle(ws):
         else:
             pending_preview_jobs[trans_seq] = time.perf_counter()
 
-    def schedule_preview(source, unit_id, rev, start_ms, end_ms):
+    def schedule_preview(source, unit_id, rev, start_ms, end_ms, speaker=None):
         nonlocal preview_task
         source = source.strip()
         if latency_mode == "stable" or unit_id in finalized_units:
@@ -2701,7 +2715,7 @@ async def handle(ws):
         if preview_task and not preview_task.done():
             preview_task.cancel()
 
-        async def delayed_preview(c_unit, c_rev, c_source, c_start, c_end):
+        async def delayed_preview(c_unit, c_rev, c_source, c_start, c_end, c_speaker):
             nonlocal preview_drop_count
             try:
                 await asyncio.sleep(preview_debounce_ms() / 1000)
@@ -2718,9 +2732,9 @@ async def handle(ws):
             if len(preview_sent) > 512:                          # bound long sessions
                 for k in list(preview_sent)[:-256]:
                     del preview_sent[k]
-            await enqueue_translation(c_source, False, c_unit, c_rev, c_start, c_end, "preview")
+            await enqueue_translation(c_source, False, c_unit, c_rev, c_start, c_end, "preview", speaker=c_speaker)
 
-        preview_task = asyncio.create_task(delayed_preview(unit_id, rev, source, start_ms, end_ms))
+        preview_task = asyncio.create_task(delayed_preview(unit_id, rev, source, start_ms, end_ms, speaker))
 
     async def aux_preview(job):
         """Preview rendered by the AUX translator as its own task: the scheduler loop moves straight on
@@ -2767,6 +2781,7 @@ async def handle(ws):
             "type": "caption_partial", "kind": "preview", "phase": "preview",
             "unit_id": job["unit_id"], "rev": job["rev"], "source": source, "ko": ko,
             "start_ms": job["start_ms"], "end_ms": job["end_ms"], "display_ms": _caption_read_ms(ko),
+            "speaker": job.get("speaker"),
             "reason": job["reason"], "risk": _source_risk(source), "scheduler_mode": latency_mode,
             "evs": evs_level, "cache_hit": engine == "main", "preview_promoted": False,
             "degraded": False, "number_uncertain": False, "translation_error": False,
@@ -2861,7 +2876,7 @@ async def handle(ws):
                                                 "type": "caption_partial", "kind": "final_stream", "phase": "final_stream",
                                                 "unit_id": job["unit_id"], "rev": job["rev"], "source": source,
                                                 "ko": p, "start_ms": job["start_ms"], "end_ms": job["end_ms"],
-                                                "display_ms": _caption_read_ms(p),
+                                                "display_ms": _caption_read_ms(p), "speaker": job.get("speaker"),
                                             })
                                 tpt = asyncio.create_task(_tx_pump())
                                 try:
@@ -2928,6 +2943,7 @@ async def handle(ws):
                 "start_ms": job["start_ms"],
                 "end_ms": job["end_ms"],
                 "display_ms": _caption_read_ms(disp_ko),
+                "speaker": job.get("speaker"),
                 "translation_wait_ms": wait_ms,
                 "translation_ms": int((time.perf_counter() - t0) * 1000),
                 "translation_queue_depth": len(pending_final_jobs),
@@ -3028,7 +3044,7 @@ async def handle(ws):
                         unit.rev += 1                        # source revision bumps as confirmed prefix grows
                         unit.end_ms = max(unit.end_ms, int(end_ms))
                         await emit_source(" ".join(la_stable), unit.id, unit.rev,
-                                          unit.start_ms, unit.end_ms)
+                                          unit.start_ms, unit.end_ms, unit.speaker)
                     continue
                 if kind == "clause":
                     src = await transcribe(audio)
@@ -3045,6 +3061,13 @@ async def handle(ws):
                             unit.rev += 1
                         unit.add_clause_audio(audio, _soft)          # bounded audio for optional 2-pass at commit
                         unit.end_ms = max(unit.end_ms, int(end_ms))
+                        if diarize_enabled and spk_clusters is not None and unit.speaker is None:
+                            try:    # one CPU embedding per unit (first clause wins); never blocks on failure
+                                emb = await loop.run_in_executor(_sherpa_pool, _diarize().embed, audio)
+                                if emb:
+                                    unit.speaker = spk_clusters.add(emb)
+                            except Exception as e:
+                                print(f"[diarize err] {e}", flush=True)
                     else:
                         nospeech_count += 1
                 else:                                  # "flush" (long pause) or "eos"
@@ -3070,10 +3093,11 @@ async def handle(ws):
                         if clean:
                             commit_src = clean
                     await emit_source(
-                        commit_src, unit.id, unit.rev, unit.start_ms, unit.end_ms
+                        commit_src, unit.id, unit.rev, unit.start_ms, unit.end_ms, unit.speaker
                     )
                     await enqueue_translation(
-                        commit_src, True, unit.id, unit.rev, unit.start_ms, unit.end_ms, "punct"
+                        commit_src, True, unit.id, unit.rev, unit.start_ms, unit.end_ms, "punct",
+                        speaker=unit.speaker,
                     )
                     commit_carry["tail"], commit_carry["end_ms"] = _norm_words(commit_src)[-3:], unit.end_ms
                 first_split = False
@@ -3086,7 +3110,7 @@ async def handle(ws):
             # the in-progress remainder: show it growing, or commit on a real pause / eos / length cap
             evs_level = _evs_step(evs_level, final_backlog_age_ms())   # EVS: shift the commit band under sustained backlog
             if unit.src:
-                await emit_source(unit.src, unit.id, unit.rev, unit.start_ms, unit.end_ms)
+                await emit_source(unit.src, unit.id, unit.rev, unit.start_ms, unit.end_ms, unit.speaker)
                 age_ms = max(0, int((boundary_ms or unit.end_ms) - unit.start_ms))
                 decision = decide_commit(
                     unit.src, eos_now, finalize_now, age_ms, pending_cap(), pending_max_age_ms())
@@ -3102,12 +3126,13 @@ async def handle(ws):
                         if clean:
                             final_src = clean
                     await enqueue_translation(
-                        final_src, True, unit.id, unit.rev, unit.start_ms, unit.end_ms, reason
+                        final_src, True, unit.id, unit.rev, unit.start_ms, unit.end_ms, reason,
+                        speaker=unit.speaker,
                     )
                     commit_carry["tail"], commit_carry["end_ms"] = _norm_words(final_src)[-3:], unit.end_ms
                     clear_unit()
                 else:
-                    schedule_preview(unit.src, unit.id, unit.rev, unit.start_ms, unit.end_ms)
+                    schedule_preview(unit.src, unit.id, unit.rev, unit.start_ms, unit.end_ms, unit.speaker)
             if stop_after_batch:
                 break
 
@@ -3191,6 +3216,29 @@ async def handle(ws):
                             page_glossary_pairs = _parse_glossary(raw_page_glossary) if raw_page_glossary.strip() else None
                         if d.get("accuracyMode") is not None:
                             accuracy_mode = _config_bool(d.get("accuracyMode"), accuracy_mode)
+                        if d.get("diarize") is not None:
+                            _want_diarize = _config_bool(d.get("diarize"), diarize_enabled)
+                            if not _want_diarize:
+                                diarize_enabled = False
+                            elif spk_clusters is not None:
+                                diarize_enabled = True
+                            elif not diarize_loading:
+                                diarize_loading = True
+
+                                async def _enable_diarize():
+                                    nonlocal diarize_enabled, diarize_loading, spk_clusters
+                                    try:
+                                        await loop.run_in_executor(_sherpa_pool, _diarize().ensure_extractor)
+                                        spk_clusters = _diarize().OnlineSpeakerClusters()
+                                        diarize_enabled = True
+                                        await send_json({"type": "notice", "text": "화자 구분 켜짐"})
+                                    except Exception as e:
+                                        await send_json({"type": "err", "text": f"화자 구분 사용 불가: {e}"})
+                                        print(f"[diarize] enable failed: {e}", flush=True)
+                                    finally:
+                                        diarize_loading = False
+
+                                asyncio.create_task(_enable_diarize())
                         if d.get("termMemory") is not None:
                             term_memory_enabled = _config_bool(d.get("termMemory"), term_memory_enabled)
                         if d.get("autoGlossary") is not None:     # domain-persisted term seeds (tab memory)

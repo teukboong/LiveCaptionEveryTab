@@ -41,6 +41,7 @@ const LCC_DEFAULT_SETTINGS = Object.freeze({
   pageVerify: false,
   termMemory: true,          // session term memory + per-domain persistence (auto-glossary)
   writeBack: true,           // input write-back: translate my draft into the page's language on demand
+  diarize: false,            // speaker tagging lite (bridge; model auto-downloads on first enable)
   syncOffsetMs: 0,
   debugSync: false,
   uiMode: "simple",
@@ -204,6 +205,7 @@ globalThis.lccNormalizeSettings = function lccNormalizeSettings(settings) {
   out.pageVerify = lccCanonicalBoolean(out.pageVerify, LCC_DEFAULT_SETTINGS.pageVerify);
   out.termMemory = lccCanonicalBoolean(out.termMemory, LCC_DEFAULT_SETTINGS.termMemory);
   out.writeBack = lccCanonicalBoolean(out.writeBack, LCC_DEFAULT_SETTINGS.writeBack);
+  out.diarize = lccCanonicalBoolean(out.diarize, LCC_DEFAULT_SETTINGS.diarize);
   out.customPrompt = lccCanonicalCustomPrompt(out.customPrompt);
   return out;
 };
@@ -240,6 +242,7 @@ globalThis.lccBuildBridgeConfig = function lccBuildBridgeConfig(settings, pageCo
     pageBilingualInline: s.pageBilingualInline === true,   // content-only: original kept under translated prose
     pageVerify: s.pageVerify === true,            // content-only: re-check cached labels in idle
     termMemory: s.termMemory === true,            // bridge: mine + auto-pin recurring terms
+    diarize: s.diarize === true,                  // bridge: per-clause speaker tagging (CPU)
     autoGlossary: String(s.autoGlossary || ""),   // bridge: domain term seeds injected by the SW (not user-edited)
 
     accuracyMode: s.accuracyMode === true,
