@@ -142,6 +142,48 @@ function sendOffscreenMessage(harness, msg) {
   });
   assert.deepEqual(plain(failedBatchResponse), { ok: false, error: "bad item id" });
 
+  const normalBatch = await loadOffscreen();
+  const normalStartResponse = await sendOffscreenMessage(normalBatch, { target: "offscreen", cmd: "start-page", pageContext: "", config: {} });
+  assert.deepEqual(plain(normalStartResponse), { ok: true });
+  normalBatch.sockets[0].open();
+  await flushMicrotasks();
+  const normalBatchResponse = await sendOffscreenMessage(normalBatch, {
+    target: "offscreen",
+    cmd: "dom-translate-batch",
+    requestId: "normal-1",
+    items: [{ id: "node-1", text: "Hello world" }],
+  });
+  assert.deepEqual(plain(normalBatchResponse), { ok: true });
+  await flushMicrotasks();
+  assert.equal(normalBatch.runtimeMessages.filter((m) => m.type === "dom_translate_err").length, 0);
+
+  const overflowBatch = await loadOffscreen();
+  const largeText = "x".repeat(20000);
+  for (let i = 0; i < 12; i += 1) {
+    const requestId = "overflow-" + i;
+    const overflowResponse = await sendOffscreenMessage(overflowBatch, {
+      target: "offscreen",
+      cmd: "dom-translate-batch",
+      requestId,
+      items: [{ id: "node-" + i, text: largeText }],
+    });
+    assert.deepEqual(plain(overflowResponse), { ok: true });
+    await flushMicrotasks();
+  }
+  const droppedIds = overflowBatch.runtimeMessages
+    .filter((m) => m.type === "dom_translate_err")
+    .map((m) => m.request_id);
+  assert.ok(droppedIds.length >= 1, "overflow should synthesize at least one dom_translate_err");
+  assert.deepEqual(
+    plain(overflowBatch.runtimeMessages.filter((m) => m.type === "dom_translate_err")),
+    droppedIds.map((request_id) => ({
+      route: "background",
+      type: "dom_translate_err",
+      request_id,
+      error: "페이지 번역 대기열 포화 — 일부 배치 재시도",
+    })),
+  );
+
   const bridgeParseFailure = await loadOffscreen();
   const startPageResponse = await sendOffscreenMessage(bridgeParseFailure, { target: "offscreen", cmd: "start-page", pageContext: "", config: {} });
   await flushMicrotasks();

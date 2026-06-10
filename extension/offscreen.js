@@ -203,6 +203,22 @@ function resetDomBatches() {
   domBatchQueue = [];
   domBatchBytes = 0;
 }
+function notifyDroppedDomBatch(raw) {
+  try {
+    const d = JSON.parse(raw);
+    const requestId = String(d && d.request_id || "");
+    if (requestId) {
+      sendBackgroundBestEffort({
+        route: "background",
+        type: "dom_translate_err",
+        request_id: requestId,
+        error: "페이지 번역 대기열 포화 — 일부 배치 재시도",
+      }, "dom_translate_err");
+    }
+  } catch (e) {
+    console.warn("[lcc-offscreen] dropped DOM batch parse failed:", errorText(e));
+  }
+}
 function resetStreamClock() {
   streamClockWall = 0;
   streamClockSent = false;
@@ -353,6 +369,7 @@ function queueOrSendDomBatch(msg) {
   while (domBatchBytes > DOM_BATCH_QUEUE_BYTES && domBatchQueue.length) {
     const old = domBatchQueue.shift();
     domBatchBytes -= old.length * 2;
+    notifyDroppedDomBatch(old);
   }
   flushDomBatches();
 }
