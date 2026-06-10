@@ -3585,7 +3585,9 @@ async def handle(ws):
 
                             def _ocr(_img=ocr_img):
                                 import ocr_mac
-                                return ocr_mac.recognize(_img)
+                                # group Vision's per-line fragments into reading blocks: fewer marker
+                                # segments (the small model keeps the format) + sentence-level context
+                                return ocr_mac.group_lines(ocr_mac.recognize(_img))
 
                             ocr_lines = await loop.run_in_executor(_sherpa_pool, _ocr)
                             ocr_lines = [l for l in ocr_lines if re.search(r"[^\W\d_]", l["text"])]
@@ -3613,12 +3615,30 @@ async def handle(ws):
                                     target=target_lang, hint=ocr_hint, register=page_register,
                                     glossary_pairs=list(ocr_glossary), custom=custom_prompt,
                                     runtime=(_aux_runtime() if use_aux_ocr else None))
-                                async with ocr_lock:
-                                    ocr_out.update(await loop.run_in_executor(ocr_pool, ocr_tx))
+                                try:
+                                    async with ocr_lock:
+                                        ocr_out.update(await loop.run_in_executor(ocr_pool, ocr_tx))
+                                except Exception as e:
+                                    # broken markers etc. — same recovery as the DOM path: per item
+                                    print(f"[ocr batch fallback] {e}", flush=True)
+                                    for it in items:
+                                        try:
+                                            ocr_tx1 = functools.partial(
+                                                translate_once, it["text"], [],
+                                                target=target_lang, hint=ocr_hint, register=page_register,
+                                                glossary_pairs=list(ocr_glossary), kv_reuse=False,
+                                                profile="page", max_tokens=_page_batch_max_tokens([dict(it)]),
+                                                custom=custom_prompt,
+                                                runtime=(_aux_runtime() if use_aux_ocr else None))
+                                            async with ocr_lock:
+                                                ocr_out[it["id"]] = await loop.run_in_executor(ocr_pool, ocr_tx1)
+                                        except Exception as e1:
+                                            print(f"[ocr item err] {e1}", flush=True)
                             blocks = []
                             for i, l in enumerate(ocr_lines):
                                 tgt = _clean(str(ocr_out.get(str(i + 1), "")))
-                                blocks.append({"box": l["box"], "source": l["text"], "target": tgt or l["text"]})
+                                blocks.append({"box": l["box"], "source": l["text"], "target": tgt or l["text"],
+                                               "line_h": l.get("line_h", l["box"][3])})
                             await send_json({"type": "ocr_translate_result", "request_id": request_id, "blocks": blocks})
                             print(f"[ocr {time.perf_counter()-t0:.1f}s] lines={len(blocks)} engine={'aux' if use_aux_ocr else 'main'}", flush=True)
                         except Exception as e:

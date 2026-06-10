@@ -10,6 +10,46 @@ Pure-ish: import stays stdlib-only (pyobjc loads lazily inside recognize) so mod
 import the geometry helper. Install: pip install '.[ocr]' (pyobjc-framework-Vision/-Quartz).
 """
 OCR_MAX_LINES = 60
+OCR_BLOCK_MAX_CHARS = 400        # split a runaway merged block (keeps each translation call clean)
+OCR_BLOCK_GAP_RATIO = 0.8        # join lines when the vertical gap < this x the taller line's height
+
+
+def _x_overlap(a, b):
+    """Horizontal overlap (normalized units) between two [x, y, w, h] boxes; <= 0 means disjoint."""
+    return min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0])
+
+
+def group_lines(lines):
+    """Merge Vision's LINE observations into reading blocks. A tweet screenshot yields dozens of tiny
+    lines ('@handle · 4h', each body line separately); translating those one marker per line both
+    overflows the marker batch format and loses sentence context. Lines (already sorted top-to-bottom)
+    join the block whose bottom edge is vertically close (gap < OCR_BLOCK_GAP_RATIO x line height) and
+    horizontally overlapping — multi-column layouts stay separate via the x-overlap test. Each block:
+    {"text", "box" (union), "line_h" (tallest member line, for overlay font sizing)}. Pure; tested in
+    test_ocr_geometry.py."""
+    blocks = []
+    for ln in lines or []:
+        x, y, w, h = ln["box"]
+        best = None
+        best_overlap = 0.0
+        for b in blocks:
+            bx, by, bw, bh = b["box"]
+            gap = y - (by + bh)
+            if gap > OCR_BLOCK_GAP_RATIO * max(h, b["line_h"]) or gap < -0.6 * max(h, b["line_h"]):
+                continue
+            ov = _x_overlap((x, y, w, h), b["box"])
+            if ov > 0 and ov > best_overlap and len(b["text"]) + len(ln["text"]) + 1 <= OCR_BLOCK_MAX_CHARS:
+                best, best_overlap = b, ov
+        if best is None:
+            blocks.append({"text": ln["text"], "box": [x, y, w, h], "line_h": h})
+            continue
+        bx, by, bw, bh = best["box"]
+        nx, ny = min(bx, x), min(by, y)
+        best["box"] = [round(nx, 4), round(ny, 4),
+                       round(max(bx + bw, x + w) - nx, 4), round(max(by + bh, y + h) - ny, 4)]
+        best["text"] += " " + ln["text"]
+        best["line_h"] = max(best["line_h"], h)
+    return blocks
 
 
 def vision_box_to_top_left(box):

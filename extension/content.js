@@ -2392,15 +2392,15 @@ function lccOcrShowOverlay(img, blocks) {
     `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;`;
   for (const b of blocks) {
     if (!b || !Array.isArray(b.box) || b.box.length < 4 || !b.target) continue;
-    const bh = b.box[3] * r.height;
+    const lineH = (Number(b.line_h) || b.box[3]) * r.height;   // blocks merge multiple lines -> size by LINE height
     const d = document.createElement("div");
     d.textContent = b.target;
     d.title = b.source || "";
     d.style.cssText = "position:absolute;background:rgba(10,10,14,.82);color:#fff;border-radius:3px;" +
-      "padding:0 3px;line-height:1.2;white-space:pre-wrap;overflow:visible;" +
+      "padding:0 3px;line-height:1.25;white-space:pre-wrap;overflow:visible;" +
       `left:${(b.box[0] * 100).toFixed(2)}%;top:${(b.box[1] * 100).toFixed(2)}%;` +
-      `min-width:${(b.box[2] * 100).toFixed(2)}%;` +
-      `font-size:${Math.max(10, Math.min(26, Math.round(bh * 0.72)))}px;`;
+      `min-width:${(b.box[2] * 100).toFixed(2)}%;max-width:100%;` +
+      `font-size:${Math.max(10, Math.min(26, Math.round(lineH * 0.72)))}px;`;
     ov.appendChild(d);
   }
   ov.addEventListener("click", () => lccOcrHideOverlay());
