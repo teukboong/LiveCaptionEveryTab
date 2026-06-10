@@ -950,6 +950,94 @@ def _guard_numbers(source: str, ko: str):
     return f"{ko} ({' '.join(missing)})", True
 
 
+# --- Post-ASR glossary repair (phonetic/fuzzy) ---------------------------------------------------------
+# Granite drops punctuation/casing the moment ANY text hint is appended to its prompt (see transcribe_pcm),
+# so glossary terms cannot bias the ASR itself. Repair downstream instead: fuzzy-match each user glossary
+# source term against the transcript and rewrite near-misses ("black well" / "Blackwel") to the canonical
+# spelling BEFORE translation, where the pinned glossary rendering then applies exactly. Pure; applied in
+# handle()'s transcribe() wrapper. Off: LCC_ASR_GLOSSARY_REPAIR=0. Tested in test_glossary_repair.py.
+GLOSSARY_REPAIR_ON = os.environ.get("LCC_ASR_GLOSSARY_REPAIR", "1") == "1"
+_GR_MIN_TERM_CHARS = 4          # shorter terms ("AI", "Go") are too collision-prone to fuzzy-match
+_GR_RATIO = 0.84                # SequenceMatcher floor on normalized strings (exact match short-circuits)
+_GR_TOKEN_RE = re.compile(r"\S+")
+_GR_EDGE_RE = re.compile(r"^(\W*)(.*?)(\W*)$", re.S)
+
+
+def _gr_norm(s: str) -> str:
+    """Casefold + strip everything non-alphanumeric, so 'black well' / 'Black-Well' both read 'blackwell'."""
+    return re.sub(r"[^0-9a-z가-힣]+", "", (s or "").casefold())
+
+
+def _repair_glossary_terms(text: str, glossary_pairs):
+    """Rewrite fuzzy ASR spellings of glossary source terms to their canonical form. Window sizes n-1..n+1
+    around each term's word count catch split ('black well') and merged ('SamAltman') transcriptions; the
+    surrounding punctuation of the matched span is preserved. Replacements never overlap, longest-window
+    match wins, and an exact normalized match of a DIFFERENT glossary term is never rewritten."""
+    if not GLOSSARY_REPAIR_ON or not text or not glossary_pairs:
+        return text
+    terms = []
+    norms = {}
+    for src, _tgt in glossary_pairs:
+        src = (src or "").strip()
+        n = _gr_norm(src)
+        toks = [t for t in (_gr_norm(w) for w in src.split()) if t]
+        if len(n) >= _GR_MIN_TERM_CHARS and toks:
+            terms.append((src, n, toks))
+            norms[n] = src
+    if not terms:
+        return text
+    tokens = list(_GR_TOKEN_RE.finditer(text))
+    if not tokens:
+        return text
+    edits = []                                   # (start, end, replacement) on the original string
+    taken = [False] * len(tokens)
+    def _tok_fuzzy(a, b):
+        if min(len(a), len(b)) < 3:                      # tiny tokens must match exactly
+            return a == b
+        return difflib.SequenceMatcher(None, a, b).ratio() >= _GR_RATIO
+
+    for src, term_norm, term_toks in terms:
+        nwords = len(term_toks)
+        for width in sorted({w for w in (nwords + 1, nwords, nwords - 1) if 1 <= w <= 4}, reverse=True):
+            i = 0
+            while i + width <= len(tokens):
+                if any(taken[i:i + width]):
+                    i += 1
+                    continue
+                span = text[tokens[i].start():tokens[i + width - 1].end()]
+                m = _GR_EDGE_RE.match(span)
+                pre, core, post = m.group(1), m.group(2), m.group(3)
+                cand = _gr_norm(core)
+                if not cand or abs(len(cand) - len(term_norm)) > 3:
+                    i += 1
+                    continue
+                exact = cand == term_norm
+                if not exact and cand in norms:          # exactly some OTHER term -> leave it alone
+                    i += 1
+                    continue
+                if not exact:
+                    # Fuzzy only at the term's own word count, compared TOKEN BY TOKEN — a whole-span ratio
+                    # would let "met SamAltman" absorb the neighboring word. Split/merge windows (n±1)
+                    # must match the normalized term exactly.
+                    wtoks = [_gr_norm(text[t.start():t.end()]) for t in tokens[i:i + width]]
+                    if (width != nwords or len(wtoks) != nwords
+                            or not all(_tok_fuzzy(a, b) for a, b in zip(wtoks, term_toks))):
+                        i += 1
+                        continue
+                if core != src:                          # exact-with-different-surface still canonicalizes
+                    edits.append((tokens[i].start() + len(pre),
+                                  tokens[i + width - 1].end() - len(post), src))
+                for k in range(i, i + width):
+                    taken[k] = True
+                i += width
+    if not edits:
+        return text
+    out = text
+    for start, end, rep in sorted(edits, reverse=True):
+        out = out[:start] + rep + out[end:]
+    return out
+
+
 # --- Interpretation policy ----------------------------------------------------------------------------
 # The "when to wait / commit / (later) compress / repair" surface, borrowed from simultaneous interpreting.
 # The pieces feed in at different pipeline points and stay separate pure functions: _evs_step (load -> the
@@ -2519,7 +2607,12 @@ async def handle(ws):
         if len(audio) < int(MIN_SEC * SR) * 2:
             return None
         try:
-            return await _on_asr_pool(asr_engine, transcribe_pcm, audio, asr_hint, asr_engine)
+            out = await _on_asr_pool(asr_engine, transcribe_pcm, audio, asr_hint, asr_engine)
+            # Glossary spelling repair runs on every ASR product (clauses, LA partials, 2-pass) so the
+            # canonical term reaches translation no matter which path produced the text.
+            if out and glossary_pairs:
+                out = _repair_glossary_terms(out, glossary_pairs)
+            return out
         except Exception as e:
             # A transient ASR failure (OOM, a malformed frame, a model hiccup) must never kill
             # inference_loop — it has no other guard, and a dead loop silently freezes all captions

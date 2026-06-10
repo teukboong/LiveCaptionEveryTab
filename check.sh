@@ -32,6 +32,7 @@ for test_file in \
   test_assembler_decisions.py \
   test_backend_cuda.py \
   test_evs_controller.py \
+  test_glossary_repair.py \
   test_latency_profile.py \
   test_model_select.py \
   test_number_guard.py \
