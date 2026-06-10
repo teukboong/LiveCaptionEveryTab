@@ -2450,14 +2450,50 @@ function lccOcrHandleResult(msg) {
   if (req.img.isConnected) lccOcrShowOverlay(req.img, blocks);
   lccOcrChipHide();
 }
+// Detection is coordinate-based, not event-target-based: real sites cover images with links/overlay
+// divs (e.target is never the IMG), and mouseover doesn't re-fire when Alt is pressed over an already-
+// hovered image. So we track the pointer, and on Alt (keydown or move) walk elementsFromPoint for the
+// topmost eligible IMG. The chip itself in the stack keeps the current target (so it stays clickable).
+const lccOcrMouse = { x: -1, y: -1 };
+let lccOcrLastCheck = 0;
+function lccOcrFindImgAt(x, y) {
+  if (x < 0 || y < 0) return null;
+  let els;
+  try { els = document.elementsFromPoint(x, y) || []; } catch (_) { return null; }
+  for (const el of els.slice(0, 10)) {
+    if (el === lccOcrChip) return lccOcrImg;             // hovering the chip -> keep the current image
+    if (el && el.tagName === "IMG" && lccOcrEligible(el)) return el;
+  }
+  return null;
+}
+function lccOcrHoverCheck(altHeld) {
+  if (!lccOcrEnabled()) return;
+  if (!altHeld) {
+    if (lccOcrImg && !lccOcrRequests.size) lccOcrChipHide();
+    return;
+  }
+  const img = lccOcrFindImgAt(lccOcrMouse.x, lccOcrMouse.y);
+  if (img) {
+    if (img !== lccOcrImg) lccOcrShowChipFor(img);
+  } else if (lccOcrImg && !lccOcrRequests.size) {
+    lccOcrChipHide();
+  }
+}
 try {
-  document.addEventListener("mouseover", (e) => {
+  document.addEventListener("mousemove", (e) => {
+    lccOcrMouse.x = e.clientX;
+    lccOcrMouse.y = e.clientY;
     if (!lccOcrEnabled()) return;
-    if (e.altKey && lccOcrEligible(e.target)) lccOcrShowChipFor(e.target);
-    else if (lccOcrImg && e.target !== lccOcrChip && !lccOcrRequests.size) lccOcrChipHide();
-  }, true);
-  window.addEventListener("scroll", () => { lccOcrChipHide(); lccOcrHideOverlay(); }, { passive: true, capture: true });
+    const now = Date.now();
+    if (e.altKey && now - lccOcrLastCheck < 80) return;   // throttle elementsFromPoint while Alt is held
+    lccOcrLastCheck = now;
+    lccOcrHoverCheck(e.altKey);
+  }, { passive: true, capture: true });
   window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && lccOcrOverlay) lccOcrHideOverlay();
+    if (e.key === "Escape" && lccOcrOverlay) { lccOcrHideOverlay(); return; }
+    if (e.altKey) lccOcrHoverCheck(true);                 // Alt pressed while already hovering an image
   }, true);
+  window.addEventListener("keyup", (e) => { if (!e.altKey) lccOcrHoverCheck(false); }, true);
+  window.addEventListener("blur", () => lccOcrHoverCheck(false));
+  window.addEventListener("scroll", () => { lccOcrChipHide(); lccOcrHideOverlay(); }, { passive: true, capture: true });
 } catch (_) {}
