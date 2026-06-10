@@ -1308,7 +1308,7 @@ function lccPageQueueBlockUnit(unit) {
   lccPageScheduleFlush();
   return true;
 }
-function lccPageApplyBlockResult(key, work, source, target) {
+function lccPageApplyBlockResult(key, work, source, target, engine) {
   if (work.block.kind === "R") { lccPageApplyBlockResultR(key, work, target); return; }
   const { anchor, members } = work.block;
   if (!target) {
@@ -1320,6 +1320,7 @@ function lccPageApplyBlockResult(key, work, source, target) {
       lccPageRememberCache(work.text, target);
       lccPageTranslateStats.applied += applied;
       lccPageBilingualInlineMark(work.block.el);
+      if (engine === "aux") lccPageVerifyEnqueue(anchor, source || work.text, target);   // speed layer painted -> quality layer re-checks in idle
     }
     else lccPageTranslateStats.dropChanged += 1;
   }
@@ -1633,9 +1634,9 @@ function lccPageBatchRouteFailed(requestId, reason) {
   if (lccPageVerifyRequests.has(requestId)) { lccPageVerifyDone(requestId); return; }
   lccPageTranslateRetry({ request_id: requestId, retry_ms: 500 });
 }
-function lccPageSendBatch(requestId, items) {
+function lccPageSendBatch(requestId, items, verify) {
   try {
-    const sent = chrome.runtime.sendMessage({ type: "page-translate-batch", requestId, items });
+    const sent = chrome.runtime.sendMessage({ type: "page-translate-batch", requestId, items, verify: verify === true });
     if (sent && typeof sent.then === "function") {
       sent
         .then((res) => { if (res && (res.ok === false || res.routed === false)) lccPageBatchRouteFailed(requestId, res); })
@@ -1668,7 +1669,7 @@ function lccPageVerifyFlush() {
   const timer = setTimeout(() => lccPageVerifyDone(requestId), 30000);
   lccPageVerifyRequests.set(requestId, { keys, timer });
   lccPageVerifyInflight = requestId;
-  lccPageSendBatch(requestId, items);
+  lccPageSendBatch(requestId, items, true);   // verify rides the MAIN model (quality re-check)
 }
 function lccPageVerifyApply(msg) {
   const key = String(msg.item_id || "");
@@ -2038,7 +2039,7 @@ function lccPageTranslateApply(msg) {
   const sourceNorm = lccPageSourceNorm(source);
   const target = String(msg.target || "").trim();
   const work = lccPageWork.get(key);
-  if (work && work.block) { lccPageApplyBlockResult(key, work, source, target); return; }   // Policy A collapse
+  if (work && work.block) { lccPageApplyBlockResult(key, work, source, target, msg.engine); return; }   // Policy A collapse
   const nodes = work ? work.nodes : null;
   if (!nodes || !nodes.size) { lccPageTranslateStats.dropNoNode += 1; if (work) lccPageWork.delete(key); return; }
   if (!target) {
@@ -2065,7 +2066,13 @@ function lccPageTranslateApply(msg) {
     lccPageApplyToNode(node, state, source, target, expectedForState, pre, post);
     applied += 1;
   }
-  if (applied > 0) lccPageRememberCache(source, target);
+  if (applied > 0) {
+    lccPageRememberCache(source, target);
+    if (msg.engine === "aux") {                 // speed layer painted -> quality layer re-checks in idle
+      const first = [...nodes].find((n) => n && n.isConnected);
+      if (first) lccPageVerifyEnqueue(first, source, target);
+    }
+  }
   lccPageTranslateStats.applied += applied;
   lccPageWork.delete(key);
 }

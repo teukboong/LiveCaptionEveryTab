@@ -442,7 +442,7 @@ function runBackgroundClearTranscript(options) {
   const backgroundPageBatch = await runBackgroundMessage(pageBatch, { pageTranslating: true, senderTabId: 123 });
   assert.deepEqual(plain(backgroundPageBatch.response), { ok: true, routed: true });
   assert.deepEqual(plain(backgroundPageBatch.runtimeMessages), [
-    { target: "offscreen", cmd: "dom-translate-batch", tabId: 123, requestId: "ptr1", items: [{ id: "n1", text: "Hello" }] },
+    { target: "offscreen", cmd: "dom-translate-batch", tabId: 123, requestId: "ptr1", items: [{ id: "n1", text: "Hello" }], verify: false },
   ]);
 
   const backgroundPageBatchInactive = await runBackgroundMessage(pageBatch, { pageTranslating: true, senderTabId: 999 });

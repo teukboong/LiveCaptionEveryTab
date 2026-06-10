@@ -281,6 +281,7 @@ function queueOrSendDomBatch(msg) {
     type: "dom_translate_batch",
     request_id: String(msg.requestId),
     partial: String((currentConfig && currentConfig.pageTranslateStream) || "partial") === "partial",
+    ...(msg.verify === true ? { verify: true } : {}),   // verify re-checks ride the bridge's MAIN model
     items: msg.items.slice(0, 8).map((it) => {   // server caps a DOM batch at 8 (DOM_TX_MAX_ITEMS); keep the wire aligned so items aren't silently dropped
       const o = { id: String(it.id || ""), text: String(it.text || "") };
       if (it.ctx) o.ctx = String(it.ctx);

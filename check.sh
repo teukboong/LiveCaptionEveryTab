@@ -30,6 +30,7 @@ cd "$ROOT/bridge"
 for test_file in \
   test_import_stubs.py \
   test_assembler_decisions.py \
+  test_aux_lm.py \
   test_backend_cuda.py \
   test_evs_controller.py \
   test_glossary_repair.py \

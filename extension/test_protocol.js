@@ -246,7 +246,7 @@ assert.match(
 );
 assert.match(
   contentJs,
-  /function lccPageSendBatch\(requestId, items\) \{[\s\S]*chrome\.runtime\.sendMessage\(\{ type: "page-translate-batch", requestId, items \}\)[\s\S]*res\.ok === false \|\| res\.routed === false[\s\S]*lccPageBatchRouteFailed\(requestId, res\)[\s\S]*\.catch\(\(e\) => lccPageBatchRouteFailed\(requestId, e\)\)[\s\S]*catch \(e\) \{[\s\S]*lccPageBatchRouteFailed\(requestId, e\);[\s\S]*\}/,
+  /function lccPageSendBatch\(requestId, items, verify\) \{[\s\S]*chrome\.runtime\.sendMessage\(\{ type: "page-translate-batch", requestId, items, verify: verify === true \}\)[\s\S]*res\.ok === false \|\| res\.routed === false[\s\S]*lccPageBatchRouteFailed\(requestId, res\)[\s\S]*\.catch\(\(e\) => lccPageBatchRouteFailed\(requestId, e\)\)[\s\S]*catch \(e\) \{[\s\S]*lccPageBatchRouteFailed\(requestId, e\);[\s\S]*\}/,
   "content page batch sender consumes routing acknowledgements",
 );
 assert.match(
@@ -272,7 +272,7 @@ assert.match(
 );
 assert.match(
   contentJs,
-  /if \(work && work\.block\) \{ lccPageApplyBlockResult\(key, work, source, target\); return; \}/,
+  /if \(work && work\.block\) \{ lccPageApplyBlockResult\(key, work, source, target, msg\.engine\); return; \}/,
   "page result handler routes block-unit results to the collapse path",
 );
 assert.match(

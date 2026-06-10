@@ -190,11 +190,14 @@ def _postprocess_asr(text):
 # --- Backend interface (the names server.py rebinds to) -----------------------------------------------
 def translate_once(text, recent_pairs=(), target="Korean", hint="", register="casual",
                    glossary_pairs=(), on_update=None, kv_reuse=None, max_tokens=None, stream_every=None,
-                   profile="caption", custom=""):
+                   profile="caption", custom="", runtime=None):
     """Stateless per-clause translation. Same prompt as the MLX path (shared _translate_messages), streamed
     so the live loop's on_update preview works identically. kv_reuse is ignored — the remote server manages
     its own prefix/KV caching (llama.cpp prompt cache, vLLM automatic prefix caching). custom mirrors the MLX
-    signature so the live loop can pass the user's custom translation prompt on the CUDA path too (INV-11)."""
+    signature so the live loop can pass the user's custom translation prompt on the CUDA path too (INV-11).
+    runtime (the MLX aux-translator redirect) is accepted for signature parity and ignored — CUDA serves one
+    GGUF, and the live loop never routes aux work here (aux_lm_ready() is False off MLX)."""
+    del runtime
     import server as _srv
     msgs = _srv._translate_messages(text, recent_pairs, target, hint, register, glossary_pairs, profile, custom)
     gen_max = max(1, int(max_tokens or TX_GEN_MAX))
@@ -203,12 +206,12 @@ def translate_once(text, recent_pairs=(), target="Korean", hint="", register="ca
 
 def translate_page_batch_once(items, recent_pairs=(), target="Korean", hint="", register="casual",
                               glossary_pairs=(), max_tokens=None, kv_reuse=None, on_segment=None, on_partial=None,
-                              custom=""):
+                              custom="", runtime=None):
     """DOM page microbatch translation. Same @@n@@-marker prompt/parser as the MLX path. kv_reuse is ignored
-    (remote CUDA text servers handle prefix caching). When on_segment is given, segments stream back via the
-    chat stream's incremental marker parse just like the MLX path; on_partial streams the still-growing
-    current segment as speculative UI."""
-    del kv_reuse
+    (remote CUDA text servers handle prefix caching); runtime (MLX aux redirect) likewise — see translate_once.
+    When on_segment is given, segments stream back via the chat stream's incremental marker parse just like
+    the MLX path; on_partial streams the still-growing current segment as speculative UI."""
+    del kv_reuse, runtime
     import server as _srv
     clean_items = [
         {"id": str(it.get("id", ""))[:80], "text": str(it.get("text", "")).strip(),

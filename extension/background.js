@@ -400,7 +400,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then(({ pageTranslating, pageTabId }) => {
         if (!pageTranslating || tabId == null || pageTabId !== tabId) return { ok: true, routed: false };
         return ensureOffscreen()
-          .then(() => chrome.runtime.sendMessage({ target: "offscreen", cmd: "dom-translate-batch", tabId, requestId: msg.requestId, items: msg.items || [] }))
+          .then(() => chrome.runtime.sendMessage({ target: "offscreen", cmd: "dom-translate-batch", tabId, requestId: msg.requestId, items: msg.items || [], verify: msg.verify === true }))
           .then((res) => (res && res.ok === false) ? res : { ok: true, routed: true });
       })
       .then((res) => sendResponse(res || { ok: true, routed: false }))

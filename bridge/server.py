@@ -344,6 +344,46 @@ LM_MODEL = os.environ.get("LCC_LM_MODEL", "")               # "" -> memory-fit a
 _LM_RESOLVED = False
 _LM_IS_VLM = False   # set True at load when the translator is a Gemma-4 nano (multimodal) loaded via mlx_vlm
 
+# --- Aux translator (dual-model concurrency) ------------------------------------------------------------
+# A second, SMALL resident translator (E2B) that takes the latency-tolerant-quality / latency-critical-UX
+# work off the 26B: caption previews and page-DOM microbatches run on their own pool + device lock and
+# OVERLAP the 26B exactly like ASR does (26B decode is bandwidth-bound; a small model slots into the
+# compute gap). Finals, long page paragraphs, verify passes, and ask/summary stay on the main model —
+# aux is the speed layer, main is the quality layer. MLX only (CUDA serves one GGUF); auto-enabled when
+# the main pick is the 26B and free memory still fits the smallest curated model + headroom.
+# LCC_AUX_LM: "auto" (default) | "off"/"0" | explicit registry id / HF repo.
+AUX_LM = os.environ.get("LCC_AUX_LM", "auto")
+AUX_LM_HEADROOM_GB = _clamp_float(os.environ.get("LCC_AUX_LM_HEADROOM_GB"), 2.0, 0.0, 64.0)
+aux_lm_model = aux_lm_tok = None
+_AUX_LM_IS_VLM = False
+
+
+def _aux_lm_choice(main_value, avail_gb, setting=None):
+    """Resolve the aux translator to load (repo/served string) or None. Pure given inputs; tested in
+    test_aux_lm.py. Auto pairs the SMALLEST curated translator under the LARGEST one only — when the
+    main pick already had to shrink, there is no spare memory worth betting on."""
+    s = (AUX_LM if setting is None else setting).strip()
+    if s.lower() in ("", "0", "off", "no", "none", "false"):
+        return None
+    models = lm_models()
+    if s.lower() != "auto":
+        choice = _resolve_lm_model(s)                       # explicit id/repo: the user owns the RAM math
+        return None if choice == main_value else choice
+    if main_value != _lm_select_value(models[0]):
+        return None
+    small = models[-1]
+    if avail_gb is None or avail_gb < small["footprint_gb"] + AUX_LM_HEADROOM_GB:
+        return None
+    return _lm_select_value(small)
+
+
+def aux_lm_ready():
+    return BACKEND == "mlx" and aux_lm_model is not None
+
+
+def _aux_runtime():
+    return (aux_lm_model, aux_lm_tok, _AUX_LM_IS_VLM)
+
 # mlx-audio audio-LLM ASR engines (granite/qwen3): native punctuation + multilingual, loaded via mlx_audio.
 MLXA_REPOS = {
     "granite": os.environ.get("LCC_GRANITE_MODEL", "ibm-granite/granite-speech-4.1-2b"),
@@ -502,8 +542,25 @@ def _ensure_asr_loaded(engine: str):
     raise RuntimeError(f"unknown ASR engine: {engine}")
 
 
+def _load_lm_weights(value):
+    """Load a translator by repo/served value with the Gemma-4 nano (multimodal) mlx_vlm fallback.
+    Returns (model, tok, is_vlm)."""
+    try:
+        model, tok = lm_load(value)
+        return model, tok, False
+    except Exception as e:
+        # Gemma-4 nano (E4B/E2B) ships as a multimodal checkpoint (language_model.* prefix) the mlx_lm
+        # text loader can't read — but it loads via mlx_vlm. Auto-fall back so the small tiers work.
+        if "not in model" in str(e) and vlm_load is not None:
+            print(f"[bridge] {value} is multimodal (Gemma-4 nano) -> loading via mlx_vlm", flush=True)
+            model, tok = vlm_load(value)
+            return model, tok, True
+        raise
+
+
 def load_models(asr=True, lm=True, vad=True):
     global ASR_ENGINE, lm_model, lm_tok, silero, _sampler, parakeet_asr, _LM_IS_VLM
+    global aux_lm_model, aux_lm_tok, _AUX_LM_IS_VLM
     _finalize_model_config()   # size translator/ASR to available memory (lazy: not at import — tests import server)
     if BACKEND == "cuda":
         # Models live on the remote inference servers (llama.cpp / vLLM); the bridge only needs the endpoints
@@ -528,18 +585,19 @@ def load_models(asr=True, lm=True, vad=True):
                     raise
         if lm and lm_model is None:
             print(f"[bridge] loading translator ({LM_MODEL})…", flush=True)
-            try:
-                lm_model, lm_tok = lm_load(LM_MODEL)
-                _LM_IS_VLM = False
-            except Exception as e:
-                # Gemma-4 nano (E4B/E2B, mid/lite) ships as a multimodal checkpoint (language_model.* prefix) the
-                # mlx_lm text loader can't read — but it loads via mlx_vlm. Auto-fall back so the small tiers work.
-                if "not in model" in str(e) and vlm_load is not None:
-                    print(f"[bridge] {LM_MODEL} is multimodal (Gemma-4 nano) -> loading via mlx_vlm", flush=True)
-                    lm_model, lm_tok = vlm_load(LM_MODEL)
-                    _LM_IS_VLM = True
-                else:
-                    raise
+            lm_model, lm_tok, _LM_IS_VLM = _load_lm_weights(LM_MODEL)
+        if lm and aux_lm_model is None:
+            # Aux pick happens AFTER the main translator is resident so the free-memory probe reflects it.
+            choice = _aux_lm_choice(LM_MODEL, _free_mem_gb_mlx())
+            if choice:
+                try:
+                    print(f"[bridge] loading aux translator ({choice})…", flush=True)
+                    aux_lm_model, aux_lm_tok, _AUX_LM_IS_VLM = _load_lm_weights(choice)
+                    print("[bridge] aux translator ready — previews + page DOM overlap the main model", flush=True)
+                except Exception as e:                      # aux is an enhancement; main path must survive
+                    print(f"[bridge] aux translator unavailable ({e}); single-model mode", flush=True)
+                    aux_lm_model = aux_lm_tok = None
+                    _AUX_LM_IS_VLM = False
     if vad and silero is None:
         print("[bridge] loading Silero VAD…", flush=True)
         silero = load_silero_vad(onnx=True)
@@ -559,6 +617,11 @@ _sherpa_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sherpa")
 # so they run concurrently (RAM ~25GB peak on a 64GB box). _tx_cache stays confined to _mlx_pool (no race).
 _asr_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="asr")
 _ASR_DEVICE_LOCK = asyncio.Lock()
+# Aux translator pool/lock — third concurrent MLX user (after main LM and ASR), same overlap rationale.
+# Aux calls always use a FRESH per-call prompt cache (runtime path forces kv_reuse off), so nothing here
+# can race the main worker's persistent _tx_cache/_page_tx_cache.
+_aux_lm_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="auxlm")
+_AUX_LM_DEVICE_LOCK = asyncio.Lock()
 # Single MLX device: _MLX_DEVICE_LOCK serializes TRANSLATION (+ ask / warm / engine-load) across connections;
 # ASR uses its own lock above so the two overlap. A live engine switch restarts the capture, so warm/engine-load
 # on this lock won't race a concurrent transcribe on _ASR_DEVICE_LOCK.
@@ -746,6 +809,11 @@ def warm_mlx_selected(asr=False, lm=False, asr_engine=None):
             translate_once("hello world")
         except Exception as e:
             print("[warm] mlx lm:", e, flush=True)
+        if aux_lm_ready():
+            try:
+                translate_once("hello world", runtime=_aux_runtime())
+            except Exception as e:
+                print("[warm] aux lm:", e, flush=True)
 
 def _request_header(ws, name: str):
     headers = getattr(ws, "request_headers", None)
@@ -1904,17 +1972,19 @@ def _usable_tx_partial(s):
         return False
     return True
 
-def _vlm_generate_text(msgs, gen_max, on_update=None):
+def _vlm_generate_text(msgs, gen_max, on_update=None, model=None, proc=None):
     """mlx_vlm translation path for Gemma-4 nano tiers (mid/lite). Text-only chat -> mlx_vlm.generate. No
-    KV-reuse / token streaming (those are mlx_lm-specific) -> a single final update. lm_model is the vlm model,
-    lm_tok the processor. Same _translate_messages prompt as the mlx_lm path, so output is consistent."""
+    KV-reuse / token streaming (those are mlx_lm-specific) -> a single final update. Defaults to the main
+    translator globals; an aux runtime passes its own (model, proc). Same _translate_messages prompt as the
+    mlx_lm path, so output is consistent."""
     mx.set_default_device(mx.gpu)
-    proc = lm_tok
+    model = lm_model if model is None else model
+    proc = lm_tok if proc is None else proc
     try:
         prompt = proc.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
     except Exception:
         prompt = proc.tokenizer.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
-    res = vlm_generate(lm_model, proc, prompt, max_tokens=int(gen_max), verbose=False)
+    res = vlm_generate(model, proc, prompt, max_tokens=int(gen_max), verbose=False)
     text = _clean(getattr(res, "text", None) or (res if isinstance(res, str) else str(res)))
     if on_update is not None and text:
         on_update(text)
@@ -1923,24 +1993,28 @@ def _vlm_generate_text(msgs, gen_max, on_update=None):
 
 def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str = "",
                    register: str = "casual", glossary_pairs=(), on_update=None, kv_reuse=None,
-                   max_tokens=None, stream_every=None, profile: str = "caption", custom: str = ""):
+                   max_tokens=None, stream_every=None, profile: str = "caption", custom: str = "",
+                   runtime=None):
     """Stateless per-clause translation, primed for quality: a strong register-aware instruction,
     source-language-matched few-shot anchors, a pinned glossary, and the last few (source -> target)
     pairs as conversation context so terminology/tone stay consistent across the stream. Re-callable on
     a growing clause (EN->KO reverses word order, so we re-translate the whole clause). Runs on _mlx_pool
-    (single worker -> the module-level _tx_cache has no race)."""
+    (single worker -> the module-level _tx_cache has no race). runtime=(model, tok, is_vlm) redirects the
+    call to the AUX translator on its own pool — that path always uses a fresh per-call cache (no shared
+    KV state, so it is safe off the main worker thread)."""
     global _tx_cache, _tx_cache_ids, _TX_KV_WINDOW
     msgs = _translate_messages(text, recent_pairs, target, hint, register, glossary_pairs, profile, custom)
-    if _LM_IS_VLM:
-        return _vlm_generate_text(msgs, max(1, int(max_tokens or _TX_GEN_MAX)), on_update)
+    model, tok, is_vlm = (lm_model, lm_tok, _LM_IS_VLM) if runtime is None else runtime
+    if is_vlm:
+        return _vlm_generate_text(msgs, max(1, int(max_tokens or _TX_GEN_MAX)), on_update, model, tok)
     mx.set_default_device(mx.gpu)
     try:
-        prompt = lm_tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False)
+        prompt = tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False)
     except TypeError:
-        prompt = lm_tok.apply_chat_template(msgs, add_generation_prompt=True)
+        prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
     prompt = _ensure_ids(prompt)
     gen_max = max(1, int(max_tokens or _TX_GEN_MAX))
-    if _TX_KV_WINDOW is None:                              # learn the sliding window once (fail-safe on unknown caches)
+    if runtime is None and _TX_KV_WINDOW is None:          # learn the sliding window once (fail-safe on unknown caches)
         _TX_KV_WINDOW = _learn_tx_window(_tx_cache if _tx_cache is not None else make_prompt_cache(lm_model))
     # Reuse the KV of the static prefix (system + few-shot + recent_pairs ~= 95% of the prompt, identical
     # across calls): trim the persistent cache to the longest prefix it still shares with this prompt, then
@@ -1951,7 +2025,7 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
     # reuse only while the whole call (prompt + generation + margin) stays INSIDE the sliding window: past it
     # the rotating layers go non-trimmable AND a trim+append prefill no longer matches a fresh prefill.
     use_reuse = _TX_KVREUSE if kv_reuse is None else kv_reuse
-    reuse = use_reuse and (len(prompt) + gen_max + _TX_WINDOW_MARGIN) <= min(_TX_KV_MAX, _TX_KV_WINDOW)
+    reuse = (runtime is None) and use_reuse and (len(prompt) + gen_max + _TX_WINDOW_MARGIN) <= min(_TX_KV_MAX, _TX_KV_WINDOW)
     if reuse:
         if _tx_cache is not None:                              # preflight: cache must still hold exactly _tx_cache_ids
             pre = _tx_cache_offset(_tx_cache)
@@ -1970,12 +2044,12 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
                 common -= 1; feed = prompt[common:]
         cache = _tx_cache
     else:
-        cache = make_prompt_cache(lm_model, max_kv_size=2048)
+        cache = make_prompt_cache(model, max_kv_size=2048)
         feed = prompt
     out, since = [], 0
     try:
         every = max(1, int(stream_every or 4))
-        for r in lm_stream(lm_model, lm_tok, feed, max_tokens=gen_max, sampler=_sampler, prompt_cache=cache):
+        for r in lm_stream(model, tok, feed, max_tokens=gen_max, sampler=_sampler, prompt_cache=cache):
             out.append(r.text)
             since += 1
             if on_update is not None and since >= every:
@@ -2009,12 +2083,13 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
 
 def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hint: str = "",
                               register: str = "casual", glossary_pairs=(), max_tokens=None, kv_reuse=None,
-                              on_segment=None, on_partial=None, custom: str = ""):
+                              on_segment=None, on_partial=None, custom: str = "", runtime=None):
     """Translate a DOM batch in one model call. Uses a page-only prefix KV cache so page DOM work never
     disturbs the live-caption translator cache. Output is @@n@@-marked; when on_segment is given each segment
     is streamed back the instant its following marker appears, and on_partial streams the still-growing
     current segment as speculative UI. Returns {id: target}; raises on a missing segment so callers can fall
-    back to per-item translation."""
+    back to per-item translation. runtime=(model, tok, is_vlm) redirects to the AUX translator (fresh
+    per-call cache, no shared KV state — safe off the main worker thread)."""
     global _page_tx_cache, _page_tx_cache_ids, _TX_KV_WINDOW
     clean_items = [
         {"id": str(it.get("id", ""))[:80], "text": str(it.get("text", "")).strip(),
@@ -2038,22 +2113,23 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
                     on_segment(str(it["id"]), str(it["text"]), result[str(it["id"])])
         return result
 
-    if _LM_IS_VLM:
-        raw = _vlm_generate_text(msgs, gen_max, None)
+    model, tok, is_vlm = (lm_model, lm_tok, _LM_IS_VLM) if runtime is None else runtime
+    if is_vlm:
+        raw = _vlm_generate_text(msgs, gen_max, None, model, tok)
         return _finish(raw)
     mx.set_default_device(mx.gpu)
     try:
-        prompt = lm_tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False)
+        prompt = tok.apply_chat_template(msgs, add_generation_prompt=True, enable_thinking=False)
     except TypeError:
-        prompt = lm_tok.apply_chat_template(msgs, add_generation_prompt=True)
+        prompt = tok.apply_chat_template(msgs, add_generation_prompt=True)
     prompt = _ensure_ids(prompt)
-    if _TX_KV_WINDOW is None:
+    if runtime is None and _TX_KV_WINDOW is None:
         _TX_KV_WINDOW = _learn_tx_window(_page_tx_cache if _page_tx_cache is not None else make_prompt_cache(lm_model))
     # Streamed DOM segments are applied immediately by the content script; if a persistent KV invariant
     # later forces a fresh retry, there is no safe way to "unsend" already-painted replacements. Use a
     # fresh per-call cache for streaming unless the caller explicitly opts back into reuse.
     use_reuse = (False if on_segment is not None else _PAGE_TX_KVREUSE) if kv_reuse is None else kv_reuse
-    reuse = use_reuse and (len(prompt) + gen_max + _TX_WINDOW_MARGIN) <= min(_TX_KV_MAX, _TX_KV_WINDOW)
+    reuse = (runtime is None) and use_reuse and (len(prompt) + gen_max + _TX_WINDOW_MARGIN) <= min(_TX_KV_MAX, _TX_KV_WINDOW)
     if reuse:
         if _page_tx_cache is not None:
             pre = _tx_cache_offset(_page_tx_cache)
@@ -2072,12 +2148,12 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
                 common -= 1; feed = prompt[common:]
         cache = _page_tx_cache
     else:
-        cache = make_prompt_cache(lm_model, max_kv_size=max(2048, min(_TX_KV_MAX, len(prompt) + gen_max + _TX_WINDOW_MARGIN)))
+        cache = make_prompt_cache(model, max_kv_size=max(2048, min(_TX_KV_MAX, len(prompt) + gen_max + _TX_WINDOW_MARGIN)))
         feed = prompt
     out = []
     since = 0
     try:
-        for r in lm_stream(lm_model, lm_tok, feed, max_tokens=gen_max, sampler=_sampler, prompt_cache=cache):
+        for r in lm_stream(model, tok, feed, max_tokens=gen_max, sampler=_sampler, prompt_cache=cache):
             out.append(r.text)
             if on_segment is not None:
                 since += 1
@@ -2278,6 +2354,7 @@ async def handle(ws):
     preroll = collections.deque(maxlen=PREROLL_WINDOWS)   # pre-onset audio prepended on speech start
     leftover, voiced, in_speech, sil_windows = b"", bytearray(), False, 0
     repeat_cache = collections.OrderedDict()   # context-free exact-repeat cache (short self-contained lines)
+    aux_tasks = set()           # in-flight aux-translator preview tasks (cancelled at teardown)
     unit = Unit()               # per-connection translation-unit state (grouped from the nonlocals)
     unit_seq = trans_seq = 0
     work_q = asyncio.Queue(maxsize=WORK_Q_MAX)    # ("clause", audio, start_ms, end_ms, soft) | ("flush"/"eos", None, None, ms, False) | None
@@ -2511,9 +2588,13 @@ async def handle(ws):
     def preview_startable():
         if latency_mode == "stable":
             return False
-        if active_tx_job is not None or final_backlog_count() > 0 or pending_final_jobs:
-            return False
         if pending_preview_jobs:
+            return False
+        if aux_lm_ready():
+            # Previews run on the aux translator's own pool/lock — they no longer steal the main model,
+            # so let them fire even while finals are in flight (bandwidth-shared, UX-only).
+            return latency_mode == "aggressive" or ((not in_speech) and work_q.empty())
+        if active_tx_job is not None or final_backlog_count() > 0 or pending_final_jobs:
             return False
         if latency_mode == "balanced":
             return (not in_speech) and work_q.empty()
@@ -2625,6 +2706,56 @@ async def handle(ws):
 
         preview_task = asyncio.create_task(delayed_preview(unit_id, rev, source, start_ms, end_ms))
 
+    async def aux_preview(job):
+        """Preview rendered by the AUX translator as its own task: the scheduler loop moves straight on
+        to finals while the small model draws the throwaway preview in parallel (own pool + lock). Aux
+        output is NEVER written to the caches and never promotion-eligible — finals stay main-quality."""
+        nonlocal preview_drop_count
+        source = job["source"]
+        ko_src = target_lang == "Korean" and _src_lang(source) == "Korean"
+        recent_ctx = tx_recent_for(False)
+        key = (target_lang, register, context_hint, tuple(effective_glossary()), tuple(recent_ctx), source)
+        engine = "main" if ko_src else "aux"
+        ko = source if ko_src else cache_get(key)
+        if ko is None:
+            ko = repeat_get(source)
+        if ko is not None and not ko_src:
+            engine = "main"                                  # cached text came from the main model
+        if ko is None:
+            try:
+                async with _AUX_LM_DEVICE_LOCK:
+                    ko = await loop.run_in_executor(_aux_lm_pool, functools.partial(
+                        translate_once, source, recent_ctx, target=target_lang, hint=context_hint,
+                        register=register, glossary_pairs=effective_glossary(),
+                        max_tokens=tx_max_tokens_for(False), stream_every=tx_stream_every_for(False),
+                        profile="caption", custom=custom_prompt, runtime=_aux_runtime()))
+            except Exception as e:
+                print(f"[trans err aux] {e}", flush=True)
+                preview_drop_count += 1
+                scheduler_stats["preview_drop_tx_error"] += 1
+                return
+        if job.get("epoch") != translation_epoch:
+            scheduler_stats["drop_translation_epoch"] += 1
+            return
+        if preview_is_stale(job):
+            preview_drop_count += 1
+            scheduler_stats["preview_drop_stale"] += 1
+            return
+        preview_results[job["unit_id"]] = {"rev": job["rev"], "source": source, "ko": ko,
+                                           "at": time.perf_counter(), "engine": engine}
+        if len(preview_results) > 256:
+            for k in list(preview_results)[:-128]:
+                preview_results.pop(k, None)
+        scheduler_stats["preview_aux"] += 1
+        await send_json({
+            "type": "caption_partial", "kind": "preview", "phase": "preview",
+            "unit_id": job["unit_id"], "rev": job["rev"], "source": source, "ko": ko,
+            "start_ms": job["start_ms"], "end_ms": job["end_ms"], "display_ms": _caption_read_ms(ko),
+            "reason": job["reason"], "risk": _source_risk(source), "scheduler_mode": latency_mode,
+            "evs": evs_level, "cache_hit": engine == "main", "preview_promoted": False,
+            "degraded": False, "number_uncertain": False, "translation_error": False,
+        })
+
     async def translation_loop():
         nonlocal preview_drop_count, active_tx_job, finals_since_terms
         while True:
@@ -2643,6 +2774,11 @@ async def handle(ws):
             if not job["final"] and not preview_startable():
                 preview_drop_count += 1
                 scheduler_stats["preview_drop_busy"] += 1
+                continue
+            if not job["final"] and aux_lm_ready():
+                t = asyncio.create_task(aux_preview(job))    # don't block finals behind a preview
+                aux_tasks.add(t)
+                t.add_done_callback(aux_tasks.discard)
                 continue
             t0 = time.perf_counter()
             wait_ms = int((t0 - job["queued_at"]) * 1000)
@@ -2663,7 +2799,8 @@ async def handle(ws):
                 hit = False
                 if job["final"]:
                     prev = preview_results.get(job["unit_id"])
-                    if prev and _preview_promotable(prev["source"], source):
+                    # aux previews are speed-layer output; never promote them into a final
+                    if prev and prev.get("engine", "main") != "aux" and _preview_promotable(prev["source"], source):
                         ko = prev["ko"]
                         hit = True
                         preview_promoted = True
@@ -3130,13 +3267,22 @@ async def handle(ws):
                         short = [it for it in items if len(it["text"]) <= PAGE_LONG_CHARS or "⟦" in it["text"]]
                         longs = [it for it in items if len(it["text"]) > PAGE_LONG_CHARS and "⟦" not in it["text"]]
                         partial_requested = bool(d.get("partial"))
-                        print(f"[dom-tx] request={request_id} items={len(items)} short={len(short)} long={len(longs)} partial={int(partial_requested)}", flush=True)
+                        verify_requested = _config_bool(d.get("verify"), False)
+                        # Aux routing: short microbatches + per-item shorts go to the AUX translator when
+                        # resident — page DOM stops contending with captions entirely (no busy deference).
+                        # Long paragraphs and verify re-checks stay on the MAIN model (quality layer).
+                        use_aux = aux_lm_ready() and not verify_requested
+                        dom_lock = _AUX_LM_DEVICE_LOCK if use_aux else mlx_lock
+                        dom_pool = _aux_lm_pool if use_aux else _mlx_pool
+                        dom_engine = "aux" if use_aux else "main"
+                        print(f"[dom-tx] request={request_id} items={len(items)} short={len(short)} long={len(longs)} "
+                              f"partial={int(partial_requested)} engine={dom_engine}", flush=True)
                         sent = [0]
                         sent_ids = set()
                         last_partial = {}
                         deferred = False
 
-                        async def _send_seg(item_id, source, target):
+                        async def _send_seg(item_id, source, target, engine=None):
                             out = _clean(target)
                             if out and out != source:
                                 dom_recent_pairs.append((source[:160], out[:160]))
@@ -3144,6 +3290,7 @@ async def handle(ws):
                             await send_json({
                                 "type": "dom_translate_result", "request_id": request_id,
                                 "item_id": item_id, "source": source, "target": out,
+                                "engine": engine or dom_engine,
                             })
 
                         async def _send_partial(item_id, source, target):   # speculative UI only; never cached
@@ -3157,7 +3304,7 @@ async def handle(ws):
                             })
 
                         if len(short) > 1:
-                            if not await wait_aux_translation_slot(1200):
+                            if not use_aux and not await wait_aux_translation_slot(1200):
                                 await send_json({"type": "dom_translate_busy", "request_id": request_id, "retry_ms": 1800})
                                 print("[dom-tx defer] live caption backlog has priority", flush=True)
                                 deferred = True
@@ -3181,14 +3328,15 @@ async def handle(ws):
                                             glossary_pairs=list(page_glossary), on_segment=_on_segment,
                                             on_partial=(_on_partial if partial_requested else None),
                                             custom=custom_prompt,
+                                            runtime=(_aux_runtime() if use_aux else None),
                                         )
                                     finally:
                                         loop.call_soon_threadsafe(_q.put_nowait, _done)
 
                                 batch_t0 = time.perf_counter()
                                 batch_out = {}
-                                async with mlx_lock:                 # GPU busy for the whole batch; segments stream out as they land
-                                    fut = loop.run_in_executor(_mlx_pool, _worker)
+                                async with dom_lock:                 # GPU busy for the whole batch; segments stream out as they land
+                                    fut = loop.run_in_executor(dom_pool, _worker)
                                     while True:
                                         seg = await seg_q.get()
                                         if seg is _SEG_DONE:
@@ -3218,7 +3366,7 @@ async def handle(ws):
                             for item in short:                       # per-item fallback: single short item, or batch misses
                                 if item["id"] in sent_ids:
                                     continue
-                                if not await wait_aux_translation_slot(1200):
+                                if not use_aux and not await wait_aux_translation_slot(1200):
                                     await send_json({"type": "dom_translate_busy", "request_id": request_id, "retry_ms": 1800})
                                     print("[dom-tx defer] live caption backlog has priority", flush=True)
                                     deferred = True
@@ -3256,12 +3404,13 @@ async def handle(ws):
                                         kv_reuse=False, profile="page", stream_every=3,
                                         max_tokens=_page_batch_max_tokens([dict(item)]),   # _TX_GEN_MAX(64) would truncate
                                         custom=custom_prompt,
+                                        runtime=(_aux_runtime() if use_aux else None),
                                     )
                                     if want_partial:
                                         partial_task = asyncio.create_task(_single_partial_pump())
                                     try:
-                                        async with mlx_lock:
-                                            out = await loop.run_in_executor(_mlx_pool, page_tx)
+                                        async with dom_lock:
+                                            out = await loop.run_in_executor(dom_pool, page_tx)
                                     finally:
                                         if partial_task is not None:
                                             partial_q.put_nowait(_PARTIAL_DONE)
@@ -3318,7 +3467,7 @@ async def handle(ws):
                                             lp_q.put_nowait(_LP_DONE)
                                             await asyncio.gather(lp_task, return_exceptions=True)
                                     sent_ids.add(item["id"])
-                                    await _send_seg(item["id"], source, out)
+                                    await _send_seg(item["id"], source, out, "main")   # long paragraphs always render on the main model
                                     print(f"[dom-tx long ok] request={request_id} chars={len(source)} ms={int((time.perf_counter()-t0)*1000)}", flush=True)
                                 except Exception as e:
                                     print(f"[dom-tx long err] {e}", flush=True)
@@ -3409,6 +3558,9 @@ async def handle(ws):
             trans_seq += 1
             await trans_q.put((99, trans_seq, None))
             await asyncio.gather(trans_task, return_exceptions=True)
+            for t in list(aux_tasks):
+                t.cancel()
+            await asyncio.gather(*aux_tasks, return_exceptions=True)
             el = time.perf_counter() - t_conn
             rate = (100 * nospeech_count / seg_count) if seg_count else 0
             print(f"[bridge] client disconnected — {seg_count} segs, {nospeech_count} no-speech "
