@@ -26,6 +26,21 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
+STUB_DIR="$(mktemp -d)"
+cleanup() {
+  rm -rf "$STUB_DIR"
+}
+trap cleanup EXIT
+cat > "$STUB_DIR/silero_vad.py" <<'PY'
+def load_silero_vad(*_args, **_kwargs):
+    raise RuntimeError("silero_vad stub: model loading is outside model-free check.sh")
+
+class VADIterator:
+    def __init__(self, *_args, **_kwargs):
+        raise RuntimeError("silero_vad stub: VADIterator is outside model-free check.sh")
+PY
+export PYTHONPATH="$STUB_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
 cd "$ROOT/bridge"
 for test_file in \
   test_import_stubs.py \
@@ -46,6 +61,7 @@ for test_file in \
 do
   "$PY" "$test_file"
 done
+"$PY" test_e2e_fake.py
 
 cd "$ROOT"
 "$PY" tools/quality_gate.py
