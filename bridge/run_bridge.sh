@@ -1,4 +1,5 @@
 #!/bin/bash
+set -eo pipefail
 # Start the local caption bridge (ASR + Gemma-4 translate).
 # Default interpreter is the repo-local venv (.venv); override with LCC_PYTHON=/path/to/python ./run_bridge.sh
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
