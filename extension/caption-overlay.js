@@ -138,6 +138,7 @@ try {
 
 // ---- speaker tagging (diarize lite): prefix the KO line once a second speaker appears ----
 const lccSpeakersSeen = new Set();
+function lccResetSpeakers() { lccSpeakersSeen.clear(); }   // new session: a past 2-speaker run must not mark a 1-speaker one
 const LCC_SPEAKER_MARKS = ["\u2460", "\u2461", "\u2462", "\u2463", "\u2464", "\u2465", "\u2466", "\u2467"];  // ①..⑧
 function lccSpeakerPrefix(sp) {
   if (sp == null || !(sp >= 1)) return "";

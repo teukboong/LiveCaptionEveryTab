@@ -268,11 +268,21 @@ function lccStopPacer() { if (lccPaceTimer != null) { clearInterval(lccPaceTimer
 // and a false reset drops the queue and scrambles display order (flicker + old/new captions interleaving).
 // So fire only when end_ms is back near zero while the stream is well past it — a real clock restart, not
 // lateness. Audio overlay only; video mode re-anchors via delay.js.
+let lccRewindStreak = 0;
 function lccStreamResetIfRewound(endMs) {
   if (lccDelayMode === "video" || !Number.isFinite(endMs)) return;
   if (lccMaxEndMs >= 30000 && endMs < 5000) {
-    lccPaceReset();
-    lccStreamStartPerf = lccNow() - endMs - lccPlaybackDelayMs - lccSyncOffsetMs();
+    // One low message can still be a merely-LATE final of an early unit (a 30s+ cold-load backlog on the
+    // first utterance) — firing on it drops the queue and anchors ~30s in the past with no correcting
+    // signal. A real audio_ms restart makes every following message low too: require two in a row.
+    lccRewindStreak += 1;
+    if (lccRewindStreak >= 2) {
+      lccRewindStreak = 0;
+      lccPaceReset();
+      lccStreamStartPerf = lccNow() - endMs - lccPlaybackDelayMs - lccSyncOffsetMs();
+    }
+  } else {
+    lccRewindStreak = 0;
   }
   if (endMs > lccMaxEndMs) lccMaxEndMs = endMs;
 }
@@ -295,6 +305,7 @@ function lccFlushTranscript() {   // serialize up to 1000 entries at most ~1/sec
 function resetTranscript() {
   lccTranscript.length = 0;
   lccSessionStart = 0;
+  lccResetSpeakers();   // caption-overlay.js loads first; speaker marks are per-session state
   if (lccStoreTimer != null) { clearTimeout(lccStoreTimer); lccStoreTimer = null; }   // drop a pending flush so it can't re-write after reset
   try { chrome.storage.local.remove(["lcc-transcript", "lcc-session"]); } catch (_) {}
 }

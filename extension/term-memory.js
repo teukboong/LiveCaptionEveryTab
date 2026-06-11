@@ -64,7 +64,7 @@ globalThis.lccTermSeedLines = function lccTermSeedLines(store, urls) {
 };
 
 // --- chrome.storage wrappers (service worker only; node tests exercise the pure parts above) ---
-globalThis.lccTermMemorySave = async function lccTermMemorySave(terms, url) {
+async function lccTermMemorySaveNow(terms, url) {
   const domain = globalThis.lccTermDomainOf(url);
   if (!domain || !Array.isArray(terms) || !terms.length) return;
   const raw = (await chrome.storage.local.get("lcc-settings"))["lcc-settings"] || {};
@@ -73,6 +73,15 @@ globalThis.lccTermMemorySave = async function lccTermMemorySave(terms, url) {
   await chrome.storage.local.set({
     [LCC_TERM_MEMORY_KEY]: globalThis.lccTermMemoryMerge(store, domain, terms, Date.now()),
   });
+}
+let lccTermSaveChain = Promise.resolve();
+globalThis.lccTermMemorySave = function lccTermMemorySave(terms, url) {
+  // read-modify-write on a shared store: two close term_memory messages (caption mining + page mining)
+  // interleave at the awaits and the later set() overwrites the earlier merge — chain saves instead.
+  lccTermSaveChain = lccTermSaveChain
+    .then(() => lccTermMemorySaveNow(terms, url))
+    .catch((e) => console.warn("[lcc] term-memory save failed:", e && e.message || e));
+  return lccTermSaveChain;
 };
 
 globalThis.lccTermMemorySeeds = async function lccTermMemorySeeds(urls) {
