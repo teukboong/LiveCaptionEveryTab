@@ -14,13 +14,15 @@ Commands:
   {"cmd":"stop"}    -> SIGTERM then SIGKILL the process holding the port
   {"cmd":"restart"} -> stop (if running) then start
 """
-import sys, os, json, struct, subprocess, time, signal, shutil, shlex
+import sys, os, json, struct, subprocess, time, signal, shutil, shlex, fcntl
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUN_BRIDGE = os.path.normpath(os.path.join(HERE, "..", "..", "bridge", "run_bridge.sh"))
 CUDA_STACK_CMD = os.environ.get("LCC_CUDA_STACK_CMD", "").strip()
 PORT = 8765
 LOG = os.path.join(os.path.expanduser("~"), ".lcc-bridge.log")
+START_LOCK = os.path.join(os.path.expanduser("~"), ".lcc-bridge-start.lock")   # start mutex (port is global anyway)
+START_PID = os.path.join(os.path.expanduser("~"), ".lcc-bridge-start.json")    # last spawned launcher pid + ts
 HOST_LOG = os.path.join(os.path.expanduser("~"), ".lcc-bridge-host.log")
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))                     # repo root
 INSTALLER = os.path.join(ROOT, "bridge", "install_models.py")
@@ -113,7 +115,15 @@ def _cmd_has_path(cmd, path):
 
 
 def _cmd_matches_this_bridge(cmd):
-    return _cmd_has_path(cmd, os.path.join(ROOT, "bridge", "server.py"))
+    if not _cmd_has_path(cmd, os.path.join(ROOT, "bridge", "server.py")):
+        return False
+    # only an interpreter actually RUNNING server.py counts — `vim .../server.py`, `tail -f`, `less`
+    # etc. also carry the path in argv and must never be reported as the bridge (or SIGKILLed by stop)
+    try:
+        head = os.path.basename(shlex.split(cmd)[0]).lower()
+    except Exception:
+        head = os.path.basename((cmd.split() or [""])[0]).lower()
+    return head.startswith("python") or head in ("bash", "sh", "zsh", "dash")
 
 
 def _this_bridge_pids(pids):
@@ -146,9 +156,31 @@ def bridge_pids():
     return sorted(pids)
 
 
+def _starting_pid():
+    """The launcher pid recorded by the last do_start, while it is still alive and still ours. Covers the
+    run_bridge.sh bash preamble (~1s before exec server.py) during which the bridge is invisible to ps —
+    the window where a second start used to pass every guard and double-load the 26B model."""
+    try:
+        with open(START_PID) as f:
+            data = json.loads(f.read())
+        pid, ts = int(data["pid"]), float(data["ts"])
+    except Exception:
+        return None
+    if time.time() - ts > 180:                  # stale file: don't trust a recycled pid
+        return None
+    try:
+        os.kill(pid, 0)
+    except Exception:
+        return None
+    cmd = _pid_command(pid)
+    if _cmd_matches_this_bridge(cmd) or _cmd_has_path(cmd, RUN_BRIDGE):
+        return pid
+    return None
+
+
 def do_status():
     listener_pids = _own_listener_pids()
-    pids = bridge_pids()
+    pids = bridge_pids() or ([p for p in (_starting_pid(),) if p])   # preamble: only the pidfile sees it
     foreign = _foreign_listener_pids()
     reply = {
         "ok": True,
@@ -232,36 +264,61 @@ def do_start(msg=None):
             "msg": "CUDA 스택 기동 완료" if data.get("ok", True) else data.get("error", "CUDA 스택 실패"),
             "detail": data,
         }
-    listener_pids = _own_listener_pids()
-    if listener_pids:
-        return {"ok": True, "running": True, "already": True, "pid": listener_pids[0], "msg": "이미 실행 중"}
-    foreign = _foreign_listener_pids()
-    if foreign:
-        return {"ok": False, "running": False, "blocked": True,
-                "error": f"포트 {PORT}가 다른 프로세스에 사용 중입니다(pid {foreign[0]}). 브릿지를 시작하지 않았습니다."}
-    # The port isn't open for ~40s while the bridge loads models. If a server.py is already starting,
-    # a second launch would load a second 26B model (~52GB RAM) — treat an existing PID as "already
-    # starting" and never double-launch.
-    pids = bridge_pids()
-    if pids:
-        return {"ok": True, "running": False, "starting": True, "already": True, "pid": pids[0],
-                "msg": "이미 기동 중 — 모델 로드 대기"}
-    if not os.path.exists(RUN_BRIDGE):
-        return {"ok": False, "error": f"run_bridge.sh 없음: {RUN_BRIDGE}"}
-    env = _start_env(msg or {})
+    # Every check below is check-then-spawn; concurrent hosts (popup double-click, CLI + popup, a second
+    # profile) could each pass them before either spawns. Serialize the whole section with a file lock.
+    lock = None
     try:
-        logf = open(LOG, "ab")
-        # start_new_session=True -> own process group, detached: survives this host exiting AND Chrome closing.
-        p = subprocess.Popen(["/bin/bash", RUN_BRIDGE], stdin=subprocess.DEVNULL,
-                             stdout=logf, stderr=logf, start_new_session=True, env=env)
-    except Exception as e:
-        hlog(f"spawn err: {e}")
-        return {"ok": False, "error": f"기동 실패: {e}"}
-    time.sleep(0.6)                              # catch an instant crash (bad venv etc.)
-    if p.poll() is not None:
-        return {"ok": False, "error": f"브릿지가 즉시 종료됨(코드 {p.returncode}). 로그: {LOG}"}
-    return {"ok": True, "running": False, "starting": True, "pid": p.pid,
-            "msg": "기동 중 — 모델 로드에 ~40초", "log": LOG}
+        lock = open(START_LOCK, "a+")
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        if lock is not None:                     # lock held by a concurrent start; open failure falls through unlocked
+            lock.close()
+            return {"ok": True, "running": False, "starting": True, "already": True,
+                    "msg": "이미 기동 중 — 다른 시작 요청이 진행 중"}
+        hlog("start lock open failed; proceeding unlocked")
+    try:
+        listener_pids = _own_listener_pids()
+        if listener_pids:
+            return {"ok": True, "running": True, "already": True, "pid": listener_pids[0], "msg": "이미 실행 중"}
+        foreign = _foreign_listener_pids()
+        if foreign:
+            return {"ok": False, "running": False, "blocked": True,
+                    "error": f"포트 {PORT}가 다른 프로세스에 사용 중입니다(pid {foreign[0]}). 브릿지를 시작하지 않았습니다."}
+        # The port isn't open for ~40s while the bridge loads models. If a server.py is already starting,
+        # a second launch would load a second 26B model (~52GB RAM) — treat an existing PID as "already
+        # starting" and never double-launch. _starting_pid() covers the bash preamble ps can't attribute.
+        pids = bridge_pids() or ([p for p in (_starting_pid(),) if p])
+        if pids:
+            return {"ok": True, "running": False, "starting": True, "already": True, "pid": pids[0],
+                    "msg": "이미 기동 중 — 모델 로드 대기"}
+        if not os.path.exists(RUN_BRIDGE):
+            return {"ok": False, "error": f"run_bridge.sh 없음: {RUN_BRIDGE}"}
+        env = _start_env(msg or {})
+        try:
+            logf = open(LOG, "ab")
+            # start_new_session=True -> own process group, detached: survives this host exiting AND Chrome closing.
+            p = subprocess.Popen(["/bin/bash", RUN_BRIDGE], stdin=subprocess.DEVNULL,
+                                 stdout=logf, stderr=logf, start_new_session=True, env=env)
+        except Exception as e:
+            hlog(f"spawn err: {e}")
+            return {"ok": False, "error": f"기동 실패: {e}"}
+        try:
+            with open(START_PID, "w") as f:
+                f.write(json.dumps({"pid": p.pid, "ts": time.time()}))   # run_bridge.sh execs server.py -> same pid
+        except Exception as e:
+            hlog(f"start pidfile err: {e}")
+        time.sleep(0.6)                              # catch an instant crash (bad venv etc.)
+        if p.poll() is not None:
+            return {"ok": False, "error": f"브릿지가 즉시 종료됨(코드 {p.returncode}). 로그: {LOG}"}
+        return {"ok": True, "running": False, "starting": True, "pid": p.pid,
+                "msg": "기동 중 — 모델 로드에 ~40초", "log": LOG}
+    finally:
+        if lock is not None:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                lock.close()
+            except Exception:
+                pass
 
 
 def do_stop():
@@ -276,6 +333,9 @@ def do_stop():
             "detail": data,
         }
     pids = bridge_pids()
+    spid = _starting_pid()                       # a launcher still in its bash preamble is invisible to ps
+    if spid and spid not in pids:
+        pids = sorted(pids + [spid])
     if not pids:
         foreign = _foreign_listener_pids()
         if foreign:
