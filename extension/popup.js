@@ -743,6 +743,9 @@ function setBridgeStatusFromReply(r, loadingText) {
 async function refreshBridge() {
   const r = await nmSend({ cmd: "status" });
   setBridgeStatusFromReply(r);
+  // popup reopened mid-startup: pagehide killed the old poll and nothing else restarts it — without
+  // this the UI sits on "기동 중" forever even after the port opens (the install path already resumes)
+  if (r && r.ok && !r.blocked && r.starting && !bridgePoll) pollBridgeUntilUp(70);
 }
 function pollBridgeUntilUp(maxSec) {
   if (bridgePoll) clearInterval(bridgePoll);
@@ -774,16 +777,25 @@ async function stopBridge() {
   if (!r.ok || r.blocked) { setBridgeUI("blocked", bridgeErrorText(r, tr("stopFailed"))); return; }
   setBridgeUI(r.running ? "on" : "off", r.running ? tr("stopFailed") : tr("off"));
 }
+let bridgeBusy = false;            // one in-flight power-key op at a time: each nmSend spawns its own host
+                                   // process, so a racing stop could lose to a half-spawned start (and the
+                                   // start's continuation then overwrote the user's stop with "starting")
 bridgeBtn.onclick = async () => {
-  if (bridgeState === "on" || bridgeState === "starting") { await stopBridge(); return; }
-  setBridgeUI("starting", tr("startRequested"));
-  const r = await nmSend({ cmd: "start", asrEngine: settings.asrEngine || "granite",
-                           asrRepo: settings.asrRepo || "", lmModel: settings.lmModel || "" });
-  if (r.noHost) { setBridgeUI("nohost", tr("setupHost")); return; }
-  if (!r.ok || r.blocked) { setBridgeUI("blocked", bridgeErrorText(r, tr("failurePrefix").trim())); return; }
-  if (r.running) { setBridgeUI("on", tr("alreadyOn")); return; }
-  if (r.starting) setBridgeUI("starting", r.msg || tr("starting"));
-  pollBridgeUntilUp(70);
+  if (bridgeBusy) return;
+  bridgeBusy = true;
+  try {
+    if (bridgeState === "on" || bridgeState === "starting") { await stopBridge(); return; }
+    setBridgeUI("starting", tr("startRequested"));
+    const r = await nmSend({ cmd: "start", asrEngine: settings.asrEngine || "granite",
+                             asrRepo: settings.asrRepo || "", lmModel: settings.lmModel || "" });
+    if (r.noHost) { setBridgeUI("nohost", tr("setupHost")); return; }
+    if (!r.ok || r.blocked) { setBridgeUI("blocked", bridgeErrorText(r, tr("failurePrefix").trim())); return; }
+    if (r.running) { setBridgeUI("on", tr("alreadyOn")); return; }
+    if (r.starting) setBridgeUI("starting", r.msg || tr("starting"));
+    pollBridgeUntilUp(70);
+  } finally {
+    bridgeBusy = false;
+  }
 };
 refreshBridge();
 
