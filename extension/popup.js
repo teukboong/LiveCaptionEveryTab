@@ -32,9 +32,7 @@ const UI_TEXT = Object.freeze({
     captionStop: "자막 중지",
     bridgeRequired: "로컬 브릿지(server.py)가 실행 중이어야 합니다",
     bridgeStart: "브릿지 켜기",
-    bridgeStarted: "브릿지 켜짐",
-    bridgeStop: "끄기",
-    bridgeStopTitle: "브릿지 끄기",
+    bridgeStop: "브릿지 끄기",
     sectionMode: "동작 모드",
     pageTranslate: "페이지 번역",
     captionTranslate: "동영상 번역",
@@ -185,9 +183,7 @@ const UI_TEXT = Object.freeze({
     captionStop: "Stop captions",
     bridgeRequired: "Local bridge (server.py) must be running",
     bridgeStart: "Start bridge",
-    bridgeStarted: "Bridge on",
-    bridgeStop: "Stop",
-    bridgeStopTitle: "Stop bridge",
+    bridgeStop: "Stop bridge",
     sectionMode: "Mode",
     pageTranslate: "Page translation",
     captionTranslate: "Video translation",
@@ -366,6 +362,7 @@ function applyUiLanguage() {
   }
   populateUiLangSelect();
   setState(capturing);
+  setBridgeUI(bridgeState);   // re-label the bridge power key in the new language without losing its state
 }
 
 function populateTargetLangSelect() {
@@ -718,20 +715,22 @@ function nmSendOne(host, msg) {
   });
 }
 const bridgeBtn = document.getElementById("bridgeBtn");
-const bridgeStopBtn = document.getElementById("bridgeStopBtn");
 const bridgeStatusEl = document.getElementById("bridgeStatus");
 let bridgePoll = null;
 let bridgePollBusy = false;
+let bridgeState = "off";
 function bridgeErrorText(r, fallback) {
   return "" + ((r && (r.error || r.msg)) || fallback);
 }
+// Single power key: the LED (data-state) shows where the bridge is; the label is always the next
+// action — "켜기" when down/errored, "끄기" while starting (= cancel) and while up.
 function setBridgeUI(state, text) {           // state: on | off | starting | nohost | blocked
+  bridgeState = state;
   const errorState = state === "nohost" || state === "blocked";
   bridgeStatusEl.style.color = state === "on" ? "#4cd17c" : (errorState ? "#ff5147" : "#7e8798");
   if (text != null) bridgeStatusEl.textContent = text;
-  bridgeBtn.disabled = (state === "starting");
-  bridgeStopBtn.style.display = (state === "on" || state === "starting") ? "" : "none";
-  bridgeBtn.textContent = state === "on" ? tr("bridgeStarted") : tr("bridgeStart");
+  bridgeBtn.dataset.state = state;
+  bridgeBtn.textContent = (state === "on" || state === "starting") ? tr("bridgeStop") : tr("bridgeStart");
 }
 function setBridgeStatusFromReply(r, loadingText) {
   if (r.noHost) { setBridgeUI("nohost", tr("noHost")); return false; }
@@ -767,7 +766,16 @@ function pollBridgeUntilUp(maxSec) {
     }
   }, 2000);
 }
+async function stopBridge() {
+  if (bridgePoll) { clearInterval(bridgePoll); bridgePoll = null; bridgePollBusy = false; }
+  setBridgeUI("starting", tr("stopping"));
+  const r = await nmSend({ cmd: "stop" });
+  if (r.noHost) { setBridgeUI("nohost", tr("noHost")); return; }
+  if (!r.ok || r.blocked) { setBridgeUI("blocked", bridgeErrorText(r, tr("stopFailed"))); return; }
+  setBridgeUI(r.running ? "on" : "off", r.running ? tr("stopFailed") : tr("off"));
+}
 bridgeBtn.onclick = async () => {
+  if (bridgeState === "on" || bridgeState === "starting") { await stopBridge(); return; }
   setBridgeUI("starting", tr("startRequested"));
   const r = await nmSend({ cmd: "start", asrEngine: settings.asrEngine || "granite",
                            asrRepo: settings.asrRepo || "", lmModel: settings.lmModel || "" });
@@ -776,14 +784,6 @@ bridgeBtn.onclick = async () => {
   if (r.running) { setBridgeUI("on", tr("alreadyOn")); return; }
   if (r.starting) setBridgeUI("starting", r.msg || tr("starting"));
   pollBridgeUntilUp(70);
-};
-bridgeStopBtn.onclick = async () => {
-  if (bridgePoll) { clearInterval(bridgePoll); bridgePoll = null; bridgePollBusy = false; }
-  setBridgeUI("starting", tr("stopping"));
-  const r = await nmSend({ cmd: "stop" });
-  if (r.noHost) { setBridgeUI("nohost", tr("noHost")); return; }
-  if (!r.ok || r.blocked) { setBridgeUI("blocked", bridgeErrorText(r, tr("stopFailed"))); return; }
-  setBridgeUI(r.running ? "on" : "off", r.running ? tr("stopFailed") : tr("off"));
 };
 refreshBridge();
 

@@ -44,12 +44,18 @@
       width:3px; height:2px; background:var(--amber); border-radius:1px; }
     #brandText b{ display:block; font:700 11.5px/1 var(--mono); letter-spacing:.16em; color:var(--text); }
     #brandText small{ display:block; margin-top:3px; font:400 7.5px/1 var(--mono); letter-spacing:.24em; color:var(--faint); }
-    #bridgeCluster{ display:flex; gap:5px; }
-    #bridgeBtn,#bridgeStopBtn{ padding:6px 10px; font:600 10px var(--mono); letter-spacing:.05em;
-      color:var(--dim); background:var(--well); border:1px solid var(--line); border-radius:6px;
-      transition:color .15s,border-color .15s; }
-    #bridgeBtn:hover:not(:disabled),#bridgeStopBtn:hover{ color:var(--amber); border-color:var(--amber-dim); }
-    #bridgeBtn:disabled{ opacity:.45; cursor:default; }
+    /* single bridge power key: LED = state, label = the next action */
+    #bridgeBtn{ display:flex; align-items:center; gap:7px; padding:6px 11px; font:600 10px var(--mono);
+      letter-spacing:.05em; color:var(--dim); background:var(--well); border:1px solid var(--line);
+      border-radius:6px; transition:color .15s,border-color .15s; }
+    #bridgeBtn:hover{ color:var(--amber); border-color:var(--amber-dim); }
+    #bridgeBtn::before{ content:""; flex:none; width:6px; height:6px; border-radius:50%;
+      background:#4a5366; transition:background .2s,box-shadow .2s; }
+    #bridgeBtn[data-state=on]::before{ background:var(--green); box-shadow:0 0 6px rgba(76,209,124,.85); }
+    #bridgeBtn[data-state=starting]::before{ background:var(--amber); box-shadow:0 0 6px rgba(255,200,61,.85);
+      animation:pulse 1.2s ease-in-out infinite; }
+    #bridgeBtn[data-state=nohost]::before,#bridgeBtn[data-state=blocked]::before{
+      background:var(--red); box-shadow:0 0 6px rgba(255,81,71,.7); }
 
     /* ── transport deck: start/stop key + LED readout ────────────────────── */
     #deck{ position:relative; padding:13px 16px 12px;
@@ -206,8 +212,7 @@
       <span id="brandText"><b>LIVE CAPTION</b><small>EVERY TAB · ON-DEVICE</small></span>
     </div>
     <div id="bridgeCluster">
-      <button id="bridgeBtn" data-i18n="bridgeStart">브릿지 켜기</button>
-      <button id="bridgeStopBtn" style="display:none" data-i18n="bridgeStop" data-i18n-title="bridgeStopTitle" title="브릿지 끄기">끄기</button>
+      <button id="bridgeBtn" data-state="off">브릿지 켜기</button>
     </div>
   </header>
 
