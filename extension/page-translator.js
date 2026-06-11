@@ -507,6 +507,8 @@ function lccPageBlockUnitFor(node) {
     if (!parent || parent.closest(LCC_PAGE_EXCLUDE_SELECTOR)) return null;   // excluded text mixed in → bail to per-node
     const core = lccPageTextParts(t.nodeValue).core;
     if (!core || !lccPageHasLetters(core) || /^[\d\s.,:%()+\-–—/\\]+$/.test(core)) continue;
+    const prior = lccPageTranslateState.get(t);
+    if (prior && prior.pending) return null;   // a per-node call is in flight for this fragment — don't double-own it
     members.push(t);
   }
   if (members.length < 2) return null;        // single fragment → the existing per-node path handles it better
@@ -525,9 +527,20 @@ function lccPageBindBlockMembers(members, anchor, key) {
     st.pending = !!key;
   }
 }
+function lccPageCarrierHolds(node) {
+  // the node that will carry a collapsed translation must still hold exactly its recorded source
+  const st = node ? lccPageTranslateState.get(node) : null;
+  return !!(st && node.isConnected && node.nodeValue === st.expectedFull);
+}
+function lccPageClearPendings(nodes) {
+  for (const m of nodes) { const st = lccPageTranslateState.get(m); if (st) st.pending = false; }
+}
 function lccPageApplyBlockTarget(members, anchor, source, target) {
   // Collapse: whole-block translation into the anchor, blank the rest. Each node is touched only if it still
   // holds exactly its recorded source (else a later scan re-queues it) — never corrupts a node that changed.
+  // ATOMIC on the anchor: it carries the whole translation, so if IT can't take the text, blank no sibling —
+  // emptied nodes fall below minChars and would never re-queue (content loss). The next scan re-queues.
+  if (!lccPageCarrierHolds(anchor)) { lccPageClearPendings(members); return 0; }
   let applied = 0;
   for (const m of members) {
     const st = lccPageTranslateState.get(m);
@@ -578,7 +591,7 @@ function lccPageApplyBlockResult(key, work, source, target, engine) {
   if (work.block.kind === "R") { lccPageApplyBlockResultR(key, work, target); return; }
   const { anchor, members } = work.block;
   if (!target) {
-    for (const m of members) { const st = lccPageTranslateState.get(m); if (st) st.pending = false; }
+    lccPageClearPendings(members);
     lccPageTranslateStats.dropEmpty += 1;      // model rendered empty: keep source, next scan re-queues
   } else {
     const applied = lccPageApplyBlockTarget(members, anchor, source || work.text, target);
@@ -648,6 +661,8 @@ function lccPageBlockUnitForR(node) {
     serial += val;
     const core = lccPageTextParts(val).core;
     if (core && lccPageHasLetters(core) && !/^[\d\s.,:%()+\-–—/\\]+$/.test(core)) {
+      const prior = lccPageTranslateState.get(cur);
+      if (prior && prior.pending) return null;           // a per-node call is in flight for this fragment — don't double-own it
       segs[segs.length - 1].nodes.push(cur);             // translatable fragment in the current gap
       hasText = true;
     }
@@ -701,6 +716,9 @@ function lccPageMapPhSegments(text, phCount) {
 }
 function lccPageApplySegCollapse(seg, target) {
   let applied = 0;
+  // Atomic per gap: the first node carries the gap's translation; if IT can't take the text, leave the
+  // whole gap untouched — blanking siblings here would lose the gap's content with nothing painted.
+  if (target && !lccPageCarrierHolds(seg.nodes[0])) { lccPageClearPendings(seg.nodes); return 0; }
   for (let i = 0; i < seg.nodes.length; i += 1) {
     const m = seg.nodes[i];
     const st = lccPageTranslateState.get(m);
@@ -1316,11 +1334,11 @@ function lccPageTranslateApply(msg) {
   const nodes = work ? work.nodes : null;
   if (!nodes || !nodes.size) { lccPageTranslateStats.dropNoNode += 1; if (work) lccPageWork.delete(key); return; }
   if (!target) {
-    // Drop on empty: clear pending + work so the node keeps its source text. Not a permanent loss — the
-    // next scan (scroll/mutation) re-queues it. Requeuing here instead would loop forever on any string
-    // the model deterministically renders empty.
+    // Drop on empty: restore any speculative partial + clear pending/work so the node keeps its source
+    // text. Not a permanent loss — the next scan (scroll/mutation) re-queues it. Requeuing here instead
+    // would loop forever on any string the model deterministically renders empty.
     lccPageTranslateStats.dropEmpty += 1;
-    for (const n of nodes) { const st = lccPageTranslateState.get(n); if (st) st.pending = false; }
+    for (const n of nodes) { const st = lccPageTranslateState.get(n); if (st) { lccPageRestorePartialNode(n, st); st.pending = false; } }
     lccPageWork.delete(key);
     return;
   }
@@ -1336,7 +1354,9 @@ function lccPageTranslateApply(msg) {
     const pre = (isExpected || isPartial) ? (state.pre || "") : currentParts.pre;
     const post = (isExpected || isPartial) ? (state.post || "") : currentParts.post;
     const expectedForState = isPartial ? state.expectedFull : node.nodeValue;
-    lccPageApplyToNode(node, state, source, target, expectedForState, pre, post);
+    // keep the queue-time original (re-translate stores source) — else restore-on-stop restores translations
+    const originalForState = (isExpected || isPartial) ? (state.originalFull || expectedForState) : expectedForState;
+    lccPageApplyToNode(node, state, source, target, expectedForState, pre, post, originalForState);
     applied += 1;
   }
   if (applied > 0) {
