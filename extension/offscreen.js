@@ -10,6 +10,7 @@ let currentPageContext = "";
 let bufferedPcm = [], bufferedBytes = 0, droppedPcmMs = 0;
 let domBatchQueue = [], domBatchBytes = 0;
 let currentDelaySec = 0, streamClockWall = 0, streamClockSent = false;
+let streamClockCorrected = false;                         // a drop moved the anchor -> the corrected clock must go out even in relay mode
 const PCM_RATE = 16000;
 const PCM_BUFFER_BYTES = PCM_RATE * 2 * 6;                // keep up to 6s while the bridge restarts
 const WS_BACKPRESSURE_BYTES = PCM_BUFFER_BYTES * 2;         // browser WebSocket send buffer cap
@@ -222,14 +223,21 @@ function notifyDroppedDomBatch(raw) {
 function resetStreamClock() {
   streamClockWall = 0;
   streamClockSent = false;
+  streamClockCorrected = false;
 }
 function rememberStreamClock() {
-  if (!streamClockWall) streamClockWall = Date.now();
+  // Anchor at the OLDEST retained sample, not "now": after a backpressure close, bufferedPcm may already
+  // hold seconds of PCM, and the server's new audio_ms 0 is that first retained sample — anchoring at now
+  // would hold every caption late by the buffered age until the next reconnect.
+  if (!streamClockWall) streamClockWall = Date.now() - (bufferedBytes / 2 / PCM_RATE) * 1000;
 }
 function announceStreamClock() {
   if (streamClockSent || !streamClockWall) return;
-  if (relayMode && !relayReconnect) return;   // initial video anchor is stamped precisely by delay.js (page perf); offscreen re-anchors only after a reconnect
+  // initial video anchor is stamped precisely by delay.js (page perf); offscreen re-anchors after a
+  // reconnect — or when a buffer drop moved the anchor (streamClockCorrected), which delay.js can't see
+  if (relayMode && !relayReconnect && !streamClockCorrected) return;
   streamClockSent = true;
+  streamClockCorrected = false;
   sendBackgroundBestEffort({
     route: "background",
     type: "stream-clock-start",
@@ -259,7 +267,8 @@ function bufferPcmBytes(bytes) {
   }
   // The anchor just moved forward, but a clock was likely already announced — re-arm so the corrected
   // stream-clock-start is re-sent on the next flush, otherwise captions drift by the dropped duration.
-  if (dropped && streamClockWall) streamClockSent = false;
+  // streamClockCorrected lets the re-send pass announceStreamClock's relay gate (no reconnect happened).
+  if (dropped && streamClockWall) { streamClockSent = false; streamClockCorrected = true; }
 }
 function queueOrSendPcm(pcm) {
   if (!pcm) return;

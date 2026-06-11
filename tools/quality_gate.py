@@ -104,11 +104,11 @@ RULES = (
     ),
     FileRule(
         EXT / "background.js",
-        # Grew with popup model-picker routing, the content-script trust-boundary gate, and tab-memory
+        # Grew with popup model-picker routing, the content-script trust-boundary gate, tab-memory
         # routing (capture/page URL capture + term_memory persistence; the data model lives in
-        # term-memory.js). The real guardrail is the forbidden-IO list below (no DOM, no WebSocket,
-        # no swallowed boundary errors), not raw size.
-        max_lines=520,
+        # term-memory.js), and the 2026-06-11 audit fixes (offscreen create lock, page re-arm). The real
+        # guardrail is the forbidden-IO list below (no DOM, no WebSocket, no swallowed boundary errors).
+        max_lines=540,
         max_function_lines=70,
         max_brace_depth=5,
         forbidden=(

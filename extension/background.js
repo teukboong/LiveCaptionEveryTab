@@ -61,16 +61,26 @@ function warnTabDelivery(tabId, label, e) {
   console.warn("[lcc] tab delivery failed:", tabId, label, lccErrorText(e));
 }
 
+let lccOffscreenCreating = null;   // in-flight createDocument: hasDocument()->createDocument() has an await
+                                   // gap, and 7 callers can overlap — a double create throws "Only a single
+                                   // offscreen document may be created"
 async function ensureOffscreen() {
   if (await chrome.offscreen.hasDocument()) return;
-  await chrome.offscreen.createDocument({
-    url: "offscreen.html",
-    reasons: ["USER_MEDIA"],
-    justification: "Capture tab audio and stream it to the local caption bridge."
-  });
+  if (!lccOffscreenCreating) {
+    lccOffscreenCreating = chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: ["USER_MEDIA"],
+      justification: "Capture tab audio and stream it to the local caption bridge."
+    }).finally(() => { lccOffscreenCreating = null; });
+  }
+  await lccOffscreenCreating;
 }
 
 async function closeOffscreenIfPresent() {
+  if (lccOffscreenCreating) {   // never race a close into a half-created doc
+    try { await lccOffscreenCreating; }
+    catch (e) { console.warn("[lcc] offscreen create failed before close:", lccErrorText(e)); }
+  }
   if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument();
 }
 
@@ -486,6 +496,12 @@ async function reArmCapturedTab(tabId) {
     await ensureOffscreen();
     sendOffscreenBestEffort({ target: "offscreen", cmd: "stop" }, "stop");
     sendOffscreenBestEffort({ target: "offscreen", cmd: "start-relay", delaySec: dsec, pageContext: pageContext || "", config }, "start-relay");
+    // the relay reset's full stop() also cleared offscreen's pageActive — re-arm page translation running
+    // on another tab too (mirrors resendStart), or its DOM batches queue forever with no recovery path
+    const { pageTranslating, pageTabId } = await chrome.storage.session.get(["pageTranslating", "pageTabId"]);
+    if (pageTranslating && pageTabId != null) {
+      sendOffscreenBestEffort({ target: "offscreen", cmd: "start-page", pageContext: pageContext || "", config }, "start-page");
+    }
     sendTab(tabId, { type: "status", on: true, mode: "video", playbackDelayMs: Math.round(dsec * 1000) });
     sendTab(tabId, { type: "vdelay-start", delaySec: dsec, pageContext: pageContext || "" });
     console.log("[lcc] re-armed video delay after navigation for tab", tabId);
