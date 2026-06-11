@@ -419,7 +419,23 @@ async def handle(ws):
     peer = getattr(ws, "remote_address", None)
     print(f"[bridge] client connected origin={origin!r} peer={peer!r}", flush=True)
     loop = asyncio.get_running_loop()        # for thread->loop partial-caption handoff
-    vad = VADIterator(model_runtime.silero, threshold=VAD_THRESH[2], sampling_rate=SR,
+
+    def _own_vad_model():
+        # Per-connection silero instance: OnnxWrapper keeps the RNN state ON the model object, so two live
+        # connections (the supersede handover window, CLI + extension) sharing the global cross-contaminate
+        # each other's windows — and one side's reset_states() clobbers the other mid-utterance. The ONNX
+        # VAD is ~2MB; loading per connection is cheap. fake/test backends keep their shared sentinel.
+        if model_runtime.BACKEND == "fake":
+            return model_runtime.silero
+        try:
+            from silero_vad import load_silero_vad
+            return load_silero_vad(onnx=True)
+        except Exception as e:
+            print(f"[bridge] per-connection VAD load failed; sharing the global: {e}", flush=True)
+            return model_runtime.silero
+
+    vad_model = _own_vad_model()
+    vad = VADIterator(vad_model, threshold=VAD_THRESH[2], sampling_rate=SR,
                       min_silence_duration_ms=SEG_SILENCE_MS, speech_pad_ms=SPEECH_PAD_MS)
     cur_vad_level = 2                       # applied VAD level; rebuild VAD only when this actually changes
     sent_silence_cfg_ms = SENT_SILENCE_MS
@@ -449,7 +465,7 @@ async def handle(ws):
     spk_clusters = None         # per-connection OnlineSpeakerClusters (labels reset with the session)
     translation_epoch = 0        # bumps when target/register/hints change so old-language jobs cannot render later
     preroll = collections.deque(maxlen=PREROLL_WINDOWS)   # pre-onset audio prepended on speech start
-    leftover, voiced, in_speech, sil_windows = b"", bytearray(), False, 0
+    leftover, voiced, in_speech, sil_windows, sil_flushed = b"", bytearray(), False, 0, False
     repeat_cache = collections.OrderedDict()   # context-free exact-repeat cache (short self-contained lines)
     aux_tasks = set()           # in-flight aux-translator preview tasks (cancelled at teardown)
     unit = Unit()               # per-connection translation-unit state (grouped from the nonlocals)
@@ -1315,7 +1331,7 @@ async def handle(ws):
                             if vad_level != cur_vad_level:    # rebuild only on real change — a live config push (glossary/slider/lang)
                                 cur_vad_level = vad_level      # must not discard the in-progress utterance just by arriving
                                 thr = VAD_THRESH.get(vad_level, 0.5)
-                                vad = VADIterator(model_runtime.silero, threshold=thr, sampling_rate=SR,
+                                vad = VADIterator(vad_model, threshold=thr, sampling_rate=SR,
                                                   min_silence_duration_ms=SEG_SILENCE_MS, speech_pad_ms=SPEECH_PAD_MS)
                                 # Rebuilding resets VAD state, so flush any in-flight utterance as a soft clause
                                 # first — otherwise changing the level mid-speech silently drops it.
@@ -1617,6 +1633,10 @@ async def handle(ws):
                                         if partial_task is not None:
                                             partial_q.put_nowait(_PARTIAL_DONE)
                                             await asyncio.gather(partial_task, return_exceptions=True)
+                                    if not _clean(out or ""):
+                                        # the batch path raises on an empty segment; mirror it here — never
+                                        # ship target:"" (the caption path drops empty renders the same way)
+                                        raise RuntimeError("empty render")
                                     sent_ids.add(item["id"])
                                     await _send_seg(item["id"], source, out)
                                 except Exception as e:
@@ -1849,17 +1869,21 @@ async def handle(ws):
                 else:
                     preroll.append(wb)
                     sil_windows += 1
-                    if sil_windows == sent_sil_windows:        # long pause -> sentence boundary (fires once)
+                    # >= + a fired flag (reset with sil_windows): a config change mid-silence can LOWER
+                    # sent_sil_windows below the current count — strict == then never fired and the pending
+                    # sentence silently merged into the next utterance.
+                    if sil_windows >= sent_sil_windows and not sil_flushed:
+                        sil_flushed = True
                         await enqueue_work(("flush", None, None, win_end_ms, False))
                 if ev:
                     if "start" in ev:
-                        in_speech, sil_windows = True, 0
+                        in_speech, sil_windows, sil_flushed = True, 0, False
                         speech_epoch += 1                          # new utterance epoch (guards stale partials)
                         la_prev, la_stable, la_count = [], [], 0   # new utterance -> reset LocalAgreement
                         speech_start_ms = max(0, win_start_ms - len(preroll) * WINDOW_MS)
                         voiced = bytearray(b"".join(preroll)); preroll.clear()
                     elif "end" in ev:
-                        in_speech, sil_windows = False, 0
+                        in_speech, sil_windows, sil_flushed = False, 0, False
                         await enqueue_work(("clause", bytes(voiced), speech_start_ms, win_end_ms, False)); voiced = bytearray()
                 audio_ms = win_end_ms
             leftover = data[nwin * WINDOW_BYTES:]

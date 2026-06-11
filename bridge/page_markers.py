@@ -96,7 +96,10 @@ def _page_partial_should_emit(text: str, last: str, now=None, last_t: float = 0.
     delta = visible - _stream_visible_chars(last)
     if delta >= PAGE_TX_PARTIAL_MIN_DELTA_CHARS:
         return True
-    if now is not None and delta > 0 and (now - float(last_t or 0.0)) >= PAGE_TX_PARTIAL_MIN_INTERVAL_S:
+    if now is not None and (now - float(last_t or 0.0)) >= PAGE_TX_PARTIAL_MIN_INTERVAL_S:
+        # changed but not net-grown: diffusion denoise steps flip or shrink already-streamed draft text
+        # (backend_cuda __final__ semantics) — requiring growth here left the wrong speculative draft
+        # painted until the final arrived. text != last is already established above.
         return True
     return False
 

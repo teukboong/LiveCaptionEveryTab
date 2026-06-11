@@ -32,6 +32,23 @@ _TERM_CAND_RE = re.compile(r"\b(?:[A-Z]{2,}[0-9]*|[A-Z][a-zA-Z0-9]{2,})\b")
 _TERM_SENT_LEAD_RE = re.compile(r"[.!?。！？…\"'»」』)\]]\s*$")
 
 
+def _verbatim_in(term: str, ko: str) -> bool:
+    """True when `term` appears in the translation as a standalone token — a bare substring test locked
+    false pairs: "오픈AI" contains "AI" and "챗GPT" contains "GPT", but those are transliteration
+    compounds, not evidence the model renders the term verbatim. Any alnum char before the match
+    (Latin, digit, or a glued Hangul syllable) disqualifies it; after the match only Latin/digits do —
+    Korean particles attach directly to a verbatim term (GPT가, AI는) and must still count."""
+    for m in re.finditer(re.escape(term), ko):
+        before = ko[m.start() - 1] if m.start() > 0 else ""
+        after = ko[m.end()] if m.end() < len(ko) else ""
+        if before and before.isalnum():
+            continue
+        if after and after.isascii() and after.isalnum():
+            continue
+        return True
+    return False
+
+
 def _mine_terms(source: str, ko: str):
     """Proper-noun-ish term candidates from one committed (source, translation) pair.
     Returns [(term, rendering)] where rendering == term when the translation kept the term verbatim
@@ -71,7 +88,7 @@ def _mine_terms(source: str, ko: str):
         if key in seen:
             continue
         seen.add(key)
-        out.append((term, term if term in ko else ""))
+        out.append((term, term if _verbatim_in(term, ko) else ""))
     return out
 
 

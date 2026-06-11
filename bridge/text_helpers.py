@@ -127,7 +127,10 @@ def _repeat_cache_eligible(source: str) -> bool:
 
 
 def _repeat_key(source: str) -> str:
-    return " ".join(_norm_words(source))
+    # a question must not reuse a declarative rendering ("Okay?" served "Okay."'s cache) — keep the mood
+    # in the key. Other terminal punctuation stays normalized away (case/"!" insensitivity is intended).
+    mood = "?" if (source or "").rstrip().endswith(("?", "？")) else ""
+    return " ".join(_norm_words(source)) + mood
 
 
 _CLEAN_RE = re.compile(r"<\|?channel\|?>.*?<\|?channel\|?>", re.S)
