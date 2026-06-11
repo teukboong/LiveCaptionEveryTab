@@ -261,12 +261,16 @@ let lccPaceTimer = null;   // the 150ms pacer runs only during an active session
 function lccStartPacer() { if (lccPaceTimer == null) lccPaceTimer = setInterval(lccPace, 150); }
 function lccStopPacer() { if (lccPaceTimer != null) { clearInterval(lccPaceTimer); lccPaceTimer = null; } }
 
-// Bridge audio_ms restarts near 0 on every WS reconnect. If a caption's end_ms jumps far backwards we treat
-// it as a stream restart: drop the now-stale queue and re-anchor the clock, so new captions don't render at
-// past timestamps (the rewind + flicker bug). Audio overlay only; video mode re-anchors via delay.js.
+// Bridge audio_ms restarts near 0 on every WS reconnect. The explicit signals own that path (wsstate
+// close -> pace reset, stream-clock-start -> re-anchor); this heuristic is a last-resort fallback for a
+// clock reset that arrives without either signal. It must NOT fire on captions that are merely late:
+// under translation backlog a final's end_ms legitimately trails the live source line by several seconds,
+// and a false reset drops the queue and scrambles display order (flicker + old/new captions interleaving).
+// So fire only when end_ms is back near zero while the stream is well past it — a real clock restart, not
+// lateness. Audio overlay only; video mode re-anchors via delay.js.
 function lccStreamResetIfRewound(endMs) {
   if (lccDelayMode === "video" || !Number.isFinite(endMs)) return;
-  if (lccMaxEndMs >= 0 && endMs < lccMaxEndMs - 2000) {
+  if (lccMaxEndMs >= 30000 && endMs < 5000) {
     lccPaceReset();
     lccStreamStartPerf = lccNow() - endMs - lccPlaybackDelayMs - lccSyncOffsetMs();
   }
