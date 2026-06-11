@@ -241,7 +241,7 @@ def _page_tx_system(target: str, hint: str = "", glossary_pairs=(), custom: str 
          "complete text of one page node or short UI fragment. Output exactly the replacement text for that same "
          "node, with no explanations, prefixes, quotes, markdown, or extra alternatives. Preserve formatting intent, "
          "line breaks when useful, numbers, timestamps, currencies, emoji, handles, subreddit/community names, URLs, "
-         "code, IDs, product names, and proper nouns. If the text is already in {target}, a username/handle, a "
+         f"code, IDs, product names, and proper nouns. If the text is already in {target}, a username/handle, a "
          "subreddit/community name, code, a URL, or not meaningful to translate, return it unchanged. For buttons, "
          "menus, labels, counts, and navigation text, use short native UI wording instead of conversational sentences. "
          "Do not add politeness, commentary, inferred context, or sentence endings that are not present in the source. ")
