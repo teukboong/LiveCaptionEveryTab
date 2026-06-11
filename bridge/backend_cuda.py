@@ -107,16 +107,22 @@ def _iter_sse_deltas(lines):
         final = (ch.get("message") or {}).get("content")
         if final is not None:
             yield ("__final__", final)
+        fin = ch.get("finish_reason")
+        if fin:
+            yield ("__finish__", fin)           # "length" = hit max_tokens -> output is cap-truncated
 
 
-def _collect_stream(deltas, on_update=None, stream_every: int = 4, clean=None) -> str:
+def _collect_stream(deltas, on_update=None, stream_every: int = 4, clean=None, meta=None) -> str:
     """Assemble streamed deltas, invoking on_update(partial) every ``stream_every`` pieces. Pure (clean is a
     fn) so the streaming/coalescing behaviour is testable offline."""
     clean = clean or (lambda s: (s or "").strip())
     out, since = [], 0
     for piece in deltas:
-        if isinstance(piece, tuple) and piece and piece[0] == "__final__":
-            out = [piece[1] or ""]              # authoritative full text: replace, never append
+        if isinstance(piece, tuple) and piece:
+            if piece[0] == "__final__":
+                out = [piece[1] or ""]          # authoritative full text: replace, never append
+            elif piece[0] == "__finish__" and meta is not None:
+                meta["truncated"] = piece[1] == "length"
             continue
         out.append(piece)
         since += 1
@@ -128,7 +134,7 @@ def _collect_stream(deltas, on_update=None, stream_every: int = 4, clean=None) -
     return clean("".join(out))
 
 
-def _chat(messages, max_tokens, stream_every: int = 4, on_update=None, extra_body=None) -> str:
+def _chat(messages, max_tokens, stream_every: int = 4, on_update=None, extra_body=None, meta=None) -> str:
     """One streamed chat.completions call against CHAT_URL. Used for translate AND ask."""
     import server as _srv   # lazy: shared _clean; server is fully loaded by the time any request runs
     payload = {
@@ -147,7 +153,7 @@ def _chat(messages, max_tokens, stream_every: int = 4, on_update=None, extra_bod
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(CHAT_URL, data=data, headers=_headers(), method="POST")
     with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-        return _collect_stream(_iter_sse_deltas(resp), on_update, stream_every, _srv._clean)
+        return _collect_stream(_iter_sse_deltas(resp), on_update, stream_every, _srv._clean, meta)
 
 
 # --- Audio helpers ------------------------------------------------------------------------------------
@@ -198,7 +204,7 @@ def _postprocess_asr(text):
 # --- Backend interface (the names server.py rebinds to) -----------------------------------------------
 def translate_once(text, recent_pairs=(), target="Korean", hint="", register="casual",
                    glossary_pairs=(), on_update=None, kv_reuse=None, max_tokens=None, stream_every=None,
-                   profile="caption", custom="", runtime=None):
+                   profile="caption", custom="", runtime=None, meta=None):
     """Stateless per-clause translation. Same prompt as the MLX path (shared _translate_messages), streamed
     so the live loop's on_update preview works identically. kv_reuse is ignored — the remote server manages
     its own prefix/KV caching (llama.cpp prompt cache, vLLM automatic prefix caching). custom mirrors the MLX
@@ -209,7 +215,7 @@ def translate_once(text, recent_pairs=(), target="Korean", hint="", register="ca
     import server as _srv
     msgs = _srv._translate_messages(text, recent_pairs, target, hint, register, glossary_pairs, profile, custom)
     gen_max = max(1, int(max_tokens or TX_GEN_MAX))
-    return _chat(msgs, gen_max, int(stream_every or 4), on_update)
+    return _chat(msgs, gen_max, int(stream_every or 4), on_update, meta=meta)
 
 
 def translate_page_batch_once(items, recent_pairs=(), target="Korean", hint="", register="casual",
@@ -274,12 +280,12 @@ def bind_tx_only(warm_native):
 
     def tx(text, recent_pairs=(), target="Korean", hint="", register="casual", glossary_pairs=(),
            on_update=None, kv_reuse=None, max_tokens=None, stream_every=None, profile="caption",
-           custom="", runtime=None):
+           custom="", runtime=None, meta=None):
         # the diffusion server streams stable WORD-PREFIX deltas (a handful per line), not tokens —
         # the MLX-tuned cadence (every 4 deltas) starves the overlay to 0-1 paints per caption and the
         # screen looks dead while a 2-5s final denoises. Paint every delta instead.
         return translate_once(text, recent_pairs, target, hint, register, glossary_pairs,
-                              on_update, kv_reuse, max_tokens, 1, profile, custom, runtime)
+                              on_update, kv_reuse, max_tokens, 1, profile, custom, runtime, meta)
 
     return tx, translate_page_batch_once, run_ask, warm
 

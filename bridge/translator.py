@@ -130,7 +130,7 @@ def _vlm_generate_text(msgs, gen_max, on_update=None, model=None, proc=None):
 def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str = "",
                    register: str = "casual", glossary_pairs=(), on_update=None, kv_reuse=None,
                    max_tokens=None, stream_every=None, profile: str = "caption", custom: str = "",
-                   runtime=None):
+                   runtime=None, meta=None):
     """Stateless per-clause translation, primed for quality: a strong register-aware instruction,
     source-language-matched few-shot anchors, a pinned glossary, and the last few (source -> target)
     pairs as conversation context so terminology/tone stay consistent across the stream. Re-callable on
@@ -142,6 +142,8 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
     msgs = _translate_messages(text, recent_pairs, target, hint, register, glossary_pairs, profile, custom)
     model, tok, is_vlm = (model_runtime.lm_model, model_runtime.lm_tok, model_runtime._LM_IS_VLM) if runtime is None else runtime
     if is_vlm:
+        if meta is not None:
+            meta["truncated"] = None    # vlm path has no finish reason — truncation unknowable
         return _vlm_generate_text(msgs, max(1, int(max_tokens or _TX_GEN_MAX)), on_update, model, tok)
     model_runtime.mx.set_default_device(model_runtime.mx.gpu)
     try:
@@ -180,13 +182,16 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
                 common -= 1; feed = prompt[common:]
         cache = _tx_cache
     else:
-        cache = model_runtime.make_prompt_cache(model, max_kv_size=2048)
+        # size the fresh cache to hold the WHOLE call: a fixed cap smaller than prompt+generation makes the
+        # rotating cache evict the system prompt mid-prefill (long input_translate drafts) — silent quality collapse
+        cache = model_runtime.make_prompt_cache(model, max_kv_size=max(2048, len(prompt) + gen_max + _TX_WINDOW_MARGIN))
         feed = prompt
-    out, since = [], 0
+    out, since, finish = [], 0, None
     try:
         every = max(1, int(stream_every or 4))
         for r in model_runtime.lm_stream(model, tok, feed, max_tokens=gen_max, sampler=model_runtime._sampler, prompt_cache=cache):
             out.append(r.text)
+            finish = getattr(r, "finish_reason", None) or finish
             since += 1
             if on_update is not None and since >= every:
                 since = 0
@@ -197,6 +202,10 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
         if reuse:
             _reset_tx_cache()              # cache mutated mid-generation; tracked ids are now stale
         raise
+    if meta is not None:
+        # hit the token cap without a natural stop -> output is cut mid-sentence; callers must not
+        # promote it to a final caption or cache it (fallback: count tokens when finish_reason is absent)
+        meta["truncated"] = (finish == "length") if finish is not None else (len(out) >= gen_max)
     if reuse and _tx_cache is not None:
         actual = _tx_cache_offset(_tx_cache)
         if actual is None:
@@ -206,7 +215,7 @@ def translate_once(text: str, recent_pairs=(), target: str = "Korean", hint: str
             print(f"[txkv] invariant breach: offset {actual} < prompt {len(prompt)} -> fresh retry", flush=True)
             return translate_once(
                 text, recent_pairs, target, hint, register, glossary_pairs, None, kv_reuse=False,
-                max_tokens=max_tokens, stream_every=stream_every, profile=profile, custom=custom,
+                max_tokens=max_tokens, stream_every=stream_every, profile=profile, custom=custom, meta=meta,
             )
         elif actual > len(prompt):
             if _tx_trim_or_reset(actual - len(prompt), len(prompt)):   # drop generated suffix -> prompt-only
@@ -284,7 +293,7 @@ def translate_page_batch_once(items, recent_pairs=(), target: str = "Korean", hi
                 common -= 1; feed = prompt[common:]
         cache = _page_tx_cache
     else:
-        cache = model_runtime.make_prompt_cache(model, max_kv_size=max(2048, min(_TX_KV_MAX, len(prompt) + gen_max + _TX_WINDOW_MARGIN)))
+        cache = model_runtime.make_prompt_cache(model, max_kv_size=max(2048, len(prompt) + gen_max + _TX_WINDOW_MARGIN))
         feed = prompt
     out = []
     since = 0

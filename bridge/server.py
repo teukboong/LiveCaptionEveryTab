@@ -909,10 +909,13 @@ async def handle(ws):
                 )
                 ko = None
                 hit = False
+                tx_meta = {}
                 if job["final"]:
                     prev = preview_results.get(job["unit_id"])
-                    # aux previews are speed-layer output; never promote them into a final
-                    if prev and prev.get("engine", "main") != "aux" and _preview_promotable(prev["source"], source):
+                    # aux previews are speed-layer output; never promote them into a final. A preview that hit
+                    # its 40-token cap is cut mid-sentence — only promote renders that finished naturally.
+                    if prev and prev.get("engine", "main") != "aux" and prev.get("truncated") is False \
+                            and _preview_promotable(prev["source"], source):
                         ko = prev["ko"]
                         hit = True
                         preview_promoted = True
@@ -964,7 +967,8 @@ async def handle(ws):
                                     ko = await loop.run_in_executor(
                                         model_runtime._mlx_pool, translate_once, source, recent_ctx,
                                         target_lang, context_hint, register, effective_glossary(), _on_tx,
-                                        None, tx_max_tokens_for(True), tx_stream_every_for(True), "caption", custom_prompt)
+                                        None, tx_max_tokens_for(True), tx_stream_every_for(True), "caption", custom_prompt,
+                                        None, tx_meta)   # runtime=None, meta -> truncation flag
                                 except Exception as e:
                                     print(f"[trans err] {e}", flush=True); tx_ok = False   # never kill the loop
                                     _lp = _clean(tslot.get("ko", ""))
@@ -981,7 +985,8 @@ async def handle(ws):
                                     ko = await loop.run_in_executor(
                                         model_runtime._mlx_pool, translate_once, source, recent_ctx,
                                         target_lang, context_hint, register, effective_glossary(), None,
-                                        None, tx_max_tokens_for(job["final"]), tx_stream_every_for(job["final"]), "caption", custom_prompt)
+                                        None, tx_max_tokens_for(job["final"]), tx_stream_every_for(job["final"]), "caption", custom_prompt,
+                                        None, tx_meta)   # runtime=None, meta -> truncation flag
                                 except Exception as e:
                                     # preview is UX-only — leave ko unset and drop below; never flash the source
                                     print(f"[trans err] {e}", flush=True); tx_ok = False
@@ -993,8 +998,8 @@ async def handle(ws):
                     if tx_ok and not _clean(ko or ""):
                         tx_ok = False        # empty render: treat like a failed translation
                         ko = source          # a final then shows the source (degraded) instead of a blank line
-                    if tx_ok:
-                        cache_put(key, ko)   # don't cache the untranslated fallback
+                    if tx_ok and tx_meta.get("truncated") is not True:
+                        cache_put(key, ko)   # don't cache the untranslated fallback or a cap-truncated render
                         repeat_put(source, ko)
             if not job["final"] and not tx_ok:
                 # preview is UX-only: a failed translation must NOT flash the English source as a caption
@@ -1011,6 +1016,8 @@ async def handle(ws):
                     "source": source,
                     "ko": ko,
                     "at": time.perf_counter(),
+                    # cache-served previews are finished renders; generated ones carry the cap flag (None = unknowable)
+                    "truncated": False if hit else tx_meta.get("truncated"),
                 }
                 if len(preview_results) > 256:
                     for k in list(preview_results)[:-128]:

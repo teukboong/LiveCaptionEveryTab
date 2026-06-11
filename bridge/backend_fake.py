@@ -52,8 +52,10 @@ def transcribe_pcm(pcm: bytes, hint: str = "", asr_engine=None):
 
 def translate_once(text, recent_pairs=(), target="Korean", hint="", register="casual",
                    glossary_pairs=(), on_update=None, kv_reuse=None, max_tokens=None,
-                   stream_every=None, profile="caption", custom="", runtime=None):
+                   stream_every=None, profile="caption", custom="", runtime=None, meta=None):
     del recent_pairs, hint, register, glossary_pairs, kv_reuse, max_tokens, stream_every, custom, runtime
+    if meta is not None:
+        meta["truncated"] = False    # deterministic fake render: never cap-truncated
     out = fake_translate_text(text, target=target, profile=profile)
     if on_update is not None and out:
         on_update(out)
