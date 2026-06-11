@@ -926,11 +926,11 @@ async def handle(ws):
                     ko = repeat_get(source)              # context-free exact repeat (catchphrases)
                     hit = ko is not None
                 if ko is None:
-                    # MLX ASR shares the MLX worker with translation. Sherpa ASR (Parakeet) has its own
-                    # CPU pool, so do not stall translation behind sherpa speech backlog.
-                    if not model_runtime._is_sherpa_engine(asr_engine):
+                    # MLX ASR has its own pool + device lock (disjoint) — only a ≤200ms courtesy yield so queued ASR
+                    # starts first; the old 1s drain added ~1s per final (the main backlog source). Skip under backlog.
+                    if not model_runtime._is_sherpa_engine(asr_engine) and final_backlog_count() == 0:
                         guard = 0
-                        while not work_q.empty() and guard < 50:
+                        while not work_q.empty() and guard < 10:
                             await asyncio.sleep(0.02); guard += 1
                     active_tx_job = job
                     try:
