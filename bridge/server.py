@@ -1127,7 +1127,11 @@ async def handle(ws):
                 break
             batch = [item]
             stop_after_batch = False
-            while not work_q.empty():
+            # Drain stops AT a flush/eos boundary: a backlogged drain used to pull [flush, clause] into one
+            # batch, where the flush degraded to a bare finalize_now flag and the post-pause clause was
+            # appended to unit.src BEFORE decide_commit ran — merging sentences across the very pause that
+            # was supposed to separate them. Items after the boundary wait for the next iteration (new unit).
+            while batch[-1][0] not in ("flush", "eos") and not work_q.empty():
                 nxt = work_q.get_nowait()
                 if nxt is None:
                     stop_after_batch = True
@@ -1244,6 +1248,24 @@ async def handle(ws):
 
     inf_task = asyncio.create_task(inference_loop())
     trans_task = asyncio.create_task(translation_loop())
+
+    control_tasks = set()
+
+    def _spawn_control(coro, label):
+        # Heavy control work (ask/dom/ocr/input/warm) must NOT run inline in the reader loop — it blocks
+        # `async for msg in ws` for its whole duration, freezing audio intake (and live captions) while a
+        # page translates or an answer generates. Run it as a task; GPU access stays serialized by
+        # mlx_lock / the aux device lock exactly as before.
+        async def _run():
+            try:
+                await coro
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                print(f"[bridge] {label} task err: {e}", flush=True)
+        t = asyncio.create_task(_run())
+        control_tasks.add(t)
+        t.add_done_callback(control_tasks.discard)
 
     try:
         async for msg in ws:
@@ -1390,15 +1412,17 @@ async def handle(ws):
                         try: vad.reset_states()
                         except Exception: pass
                     elif d.get("type") == "ask":           # on-demand summary / Q&A over the transcript
-                        tr = str(d.get("transcript", ""))[-8000:]    # recent window (v1: long talks summarize the tail)
-                        q = str(d.get("question", ""))[:500]
-                        mode = "qa" if (d.get("mode") == "qa" and q.strip()) else "summary"
-                        if not tr.strip():
-                            await send_json({"type": "answer", "text": "(아직 자막 기록이 없어요)"})
-                        elif not await wait_aux_translation_slot(2200):
-                            await send_json({"type": "answer", "text": "지금은 자막 번역을 우선 처리 중이라 요약/질문은 잠시 뒤 다시 눌러줘."})
-                            print("[ask defer] live caption backlog has priority", flush=True)
-                        else:
+                        async def _ask_job(d=d):
+                            tr = str(d.get("transcript", ""))[-8000:]    # recent window (v1: long talks summarize the tail)
+                            q = str(d.get("question", ""))[:500]
+                            mode = "qa" if (d.get("mode") == "qa" and q.strip()) else "summary"
+                            if not tr.strip():
+                                await send_json({"type": "answer", "text": "(아직 자막 기록이 없어요)"})
+                                return
+                            if not await wait_aux_translation_slot(2200):
+                                await send_json({"type": "answer", "text": "지금은 자막 번역을 우선 처리 중이라 요약/질문은 잠시 뒤 다시 눌러줘."})
+                                print("[ask defer] live caption backlog has priority", flush=True)
+                                return
                             a_slot = {"t": ""}; a_ev = asyncio.Event(); a_done = False
                             def a_partial(p):
                                 a_slot["t"] = p; loop.call_soon_threadsafe(a_ev.set)
@@ -1410,24 +1434,32 @@ async def handle(ws):
                                         except Exception: pass
                             t0 = time.perf_counter()
                             print(f"[ask] mode={mode} q={q[:40]!r} tr={len(tr)}c", flush=True)
-                            async with mlx_lock:
-                                apt = asyncio.create_task(a_pump())
-                                try:
-                                    ans = await loop.run_in_executor(model_runtime._mlx_pool, run_ask, mode, tr, q, target_lang, a_partial)
-                                finally:
-                                    a_done = True; a_ev.set()
-                                    await asyncio.gather(apt, return_exceptions=True)
+                            try:
+                                async with mlx_lock:
+                                    apt = asyncio.create_task(a_pump())
+                                    try:
+                                        ans = await loop.run_in_executor(model_runtime._mlx_pool, run_ask, mode, tr, q, target_lang, a_partial)
+                                    finally:
+                                        a_done = True; a_ev.set()
+                                        await asyncio.gather(apt, return_exceptions=True)
+                            except Exception as e:
+                                # the popup awaits an answer — a swallowed exception used to leave it hanging forever
+                                print(f"[ask err] {e}", flush=True)
+                                await send_json({"type": "answer", "text": f"(오류로 답을 만들지 못했어요: {str(e)[:160]})"})
+                                return
                             await send_json({"type": "answer", "text": ans})
                             print(f"[ask {time.perf_counter()-t0:.1f}s] -> {ans[:60]}", flush=True)
+                        _spawn_control(_ask_job(), "ask")
                     elif d.get("type") == "dom_translate_batch":
+                      async def _dom_job(d=d):
                         request_id = str(d.get("request_id", ""))[:100]
                         items = _dom_translate_items(d)
                         if not request_id:
                             await send_json({"type": "dom_translate_err", "request_id": "", "text": "missing request_id"})
-                            continue
+                            return
                         if not items:
                             await send_json({"type": "dom_translate_done", "request_id": request_id, "count": 0})
-                            continue
+                            return
                         page_glossary = effective_page_glossary()   # user page/caption glossary + auto-pinned terms
                         page_hint = page_context_hint or context_hint
                         # short items ride the marker microbatch; long paragraphs take the sentence-chunked,
@@ -1646,7 +1678,9 @@ async def handle(ws):
                                         "item_id": item["id"], "source": source, "text": str(e)[:240],
                                     })
                         await send_json({"type": "dom_translate_done", "request_id": request_id, "count": sent[0]})
+                      _spawn_control(_dom_job(), "dom-tx")
                     elif d.get("type") == "input_translate":
+                      async def _input_job(d=d):
                         # Write-back: translate the user's DRAFT (their language) into the page's language for
                         # posting. One-shot + user-initiated + published-by-the-user, so it always renders on
                         # the MAIN model (quality layer) — it yields briefly to caption backlog, then proceeds.
@@ -1654,10 +1688,10 @@ async def handle(ws):
                         wb_text = str(d.get("text", ""))[:4000].strip()
                         wb_target = _normalize_target_lang(d.get("target_lang"), "English")
                         if not request_id:
-                            continue
+                            return
                         if not wb_text:
                             await send_json({"type": "input_translate_err", "request_id": request_id, "text": "empty draft"})
-                            continue
+                            return
                         await wait_aux_translation_slot(1500)   # best-effort yield; user is waiting -> proceed regardless
                         t0 = time.perf_counter()
                         try:
@@ -1673,18 +1707,20 @@ async def handle(ws):
                         except Exception as e:
                             print(f"[input-tx err] {e}", flush=True)
                             await send_json({"type": "input_translate_err", "request_id": request_id, "text": str(e)[:240]})
+                      _spawn_control(_input_job(), "input-tx")
                     elif d.get("type") == "ocr_translate":
+                      async def _ocr_job(d=d):
                         # Image OCR translation: the extension ships a cropped JPEG of a hovered image;
                         # Apple Vision (ANE, CPU pool) reads the lines and they ride the page-translation
                         # path (aux when resident, else main with a brief caption yield). macOS only.
                         request_id = str(d.get("request_id", ""))[:100]
                         img_b64 = str(d.get("image_b64", ""))
                         if not request_id:
-                            continue
+                            return
                         if not img_b64 or len(img_b64) > 240_000:
                             await send_json({"type": "ocr_translate_err", "request_id": request_id,
                                              "text": "이미지가 없거나 너무 큽니다"})
-                            continue
+                            return
                         t0 = time.perf_counter()
                         try:
                             ocr_img = base64.b64decode(img_b64)
@@ -1700,10 +1736,10 @@ async def handle(ws):
                         except Exception as e:
                             print(f"[ocr err] {e}", flush=True)
                             await send_json({"type": "ocr_translate_err", "request_id": request_id, "text": str(e)[:240]})
-                            continue
+                            return
                         if not ocr_lines:
                             await send_json({"type": "ocr_translate_result", "request_id": request_id, "blocks": []})
-                            continue
+                            return
                         ocr_glossary = effective_page_glossary()
                         ocr_hint = page_context_hint or context_hint
                         # OCR renders on the MAIN translator: the overlay is one-shot (no idle re-check can
@@ -1751,18 +1787,27 @@ async def handle(ws):
                         except Exception as e:
                             print(f"[ocr tx err] {e}", flush=True)
                             await send_json({"type": "ocr_translate_err", "request_id": request_id, "text": str(e)[:240]})
+                      _spawn_control(_ocr_job(), "ocr-tx")
                     elif d.get("type") == "warm":          # on-demand model warm-up (popup button)
+                      async def _warm_job():
                         t0 = time.perf_counter()
                         if not await wait_aux_translation_slot(1200):
                             await send_json({"type": "warmed", "sec": 0, "deferred": True})
                             print("[warm defer] live caption backlog has priority", flush=True)
-                            continue
-                        await _on_asr_pool(asr_engine, warm_mlx_selected, True, False, asr_engine)
-                        async with mlx_lock:
-                            await loop.run_in_executor(model_runtime._mlx_pool, warm_mlx_selected, False, True, asr_engine)
+                            return
+                        try:
+                            await _on_asr_pool(asr_engine, warm_mlx_selected, True, False, asr_engine)
+                            async with mlx_lock:
+                                await loop.run_in_executor(model_runtime._mlx_pool, warm_mlx_selected, False, True, asr_engine)
+                        except Exception as e:
+                            # the popup awaits "warmed" — reply even on failure so it doesn't hang forever
+                            print(f"[warm err] {e}", flush=True)
+                            await send_json({"type": "warmed", "sec": 0, "error": str(e)[:240]})
+                            return
                         sec = round(time.perf_counter() - t0, 1)
                         await send_json({"type": "warmed", "sec": sec})
                         print(f"[warm] {sec}s", flush=True)
+                      _spawn_control(_warm_job(), "warm")
                 except Exception as e:
                     print(f"[bridge] bad control msg: {e}", flush=True)
                 continue
@@ -1833,9 +1878,9 @@ async def handle(ws):
             trans_seq += 1
             await trans_q.put((99, trans_seq, None))
             await asyncio.gather(trans_task, return_exceptions=True)
-            for t in list(aux_tasks):
+            for t in list(aux_tasks) + list(control_tasks):
                 t.cancel()
-            await asyncio.gather(*aux_tasks, return_exceptions=True)
+            await asyncio.gather(*aux_tasks, *control_tasks, return_exceptions=True)
             el = time.perf_counter() - t_conn
             rate = (100 * nospeech_count / seg_count) if seg_count else 0
             print(f"[bridge] client disconnected — {seg_count} segs, {nospeech_count} no-speech "
