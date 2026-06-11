@@ -21,8 +21,13 @@ const RANGES = { fontSize: "fontSize", bottomPct: "bottomPct", leftPct: "leftPct
                  sentSilenceMs: "sentSilenceMs", vadLevel: "vadLevel", syncOffsetMs: "syncOffsetMs" };
 const UI_TEXT = Object.freeze({
   ko: Object.freeze({
-    modeSimple: "Simple",
-    modeAdvanced: "Advanced",
+    tabLive: "라이브",
+    tabCaption: "자막",
+    tabLog: "기록",
+    tabAdvanced: "고급",
+    previewSource: "This is how your live captions will look",
+    previewTranslated: "라이브 자막은 이렇게 표시됩니다",
+    logEmptyHint: "자막을 시작하면 기록이 여기에 쌓입니다",
     captionStart: "자막 시작",
     captionStop: "자막 중지",
     bridgeRequired: "로컬 브릿지(server.py)가 실행 중이어야 합니다",
@@ -49,7 +54,7 @@ const UI_TEXT = Object.freeze({
     diarize: "화자 구분 (베타 · 첫 사용 시 모델 ~109MB 자동 다운로드)",
     sectionPreset: "프리셋",
     labelUserPreset: "내 프리셋",
-    userPresetHint: "advanced에서 저장한 번역 설정 묶음을 골라 적용 (말투·대상 언어·용어집·커스텀 프롬프트).",
+    userPresetHint: "고급 탭에서 저장한 번역 설정 묶음을 골라 적용 (말투·대상 언어·용어집·커스텀 프롬프트).",
     userPresetNone: "(저장된 프리셋 없음)",
     labelCustomPrompt: "커스텀 프롬프트",
     customPromptPlaceholder: "번역 방식 직접 지시 (비우면 기본)",
@@ -57,7 +62,7 @@ const UI_TEXT = Object.freeze({
     presetNamePlaceholder: "프리셋 이름",
     presetSave: "프리셋 저장",
     presetDelete: "삭제",
-    presetSaveHint: "지금 번역 설정(말투·대상 언어·용어집·커스텀 프롬프트)을 이름 붙여 저장. simple의 '내 프리셋'에서 꺼내 씀.",
+    presetSaveHint: "지금 번역 설정(말투·대상 언어·용어집·커스텀 프롬프트)을 이름 붙여 저장. 라이브 탭의 '내 프리셋'에서 꺼내 씀.",
     presetSaved: "'{name}' 저장됨",
     presetNeedName: "프리셋 이름을 입력하세요",
     sectionTranscript: "자막 기록 · AI",
@@ -169,8 +174,13 @@ const UI_TEXT = Object.freeze({
     installed: "{model} 설치됨",
   }),
   en: Object.freeze({
-    modeSimple: "Simple",
-    modeAdvanced: "Advanced",
+    tabLive: "Live",
+    tabCaption: "Display",
+    tabLog: "Log",
+    tabAdvanced: "Advanced",
+    previewSource: "ライブ字幕はこのように表示されます",
+    previewTranslated: "This is how your live captions will look",
+    logEmptyHint: "Start captions and the transcript will collect here",
     captionStart: "Start captions",
     captionStop: "Stop captions",
     bridgeRequired: "Local bridge (server.py) must be running",
@@ -197,7 +207,7 @@ const UI_TEXT = Object.freeze({
     diarize: "Speaker tagging (beta · auto-downloads ~109MB model on first use)",
     sectionPreset: "Presets",
     labelUserPreset: "My presets",
-    userPresetHint: "Apply a translation bundle you saved in Advanced (tone, target language, glossary, custom prompt).",
+    userPresetHint: "Apply a translation bundle you saved in the Advanced tab (tone, target language, glossary, custom prompt).",
     userPresetNone: "(no saved presets)",
     labelCustomPrompt: "Custom prompt",
     customPromptPlaceholder: "Your own translation instructions (empty = default)",
@@ -205,7 +215,7 @@ const UI_TEXT = Object.freeze({
     presetNamePlaceholder: "Preset name",
     presetSave: "Save preset",
     presetDelete: "Delete",
-    presetSaveHint: "Save the current translation settings (tone, target language, glossary, custom prompt) under a name. Pick it from 'My presets' in Simple.",
+    presetSaveHint: "Save the current translation settings (tone, target language, glossary, custom prompt) under a name. Pick it from 'My presets' in the Live tab.",
     presetSaved: "Saved '{name}'",
     presetNeedName: "Enter a preset name",
     sectionTranscript: "Transcript · AI",
@@ -372,10 +382,12 @@ function populateTargetLangSelect() {
 }
 
 function formatRangeValue(key, value) {
-  if (key === "syncOffsetMs") {
-    const n = Number(value) || 0;
-    return (n > 0 ? "+" : "") + n + "ms";
-  }
+  const n = Number(value) || 0;
+  if (key === "syncOffsetMs") return (n > 0 ? "+" : "") + n + "ms";
+  if (key === "fontSize") return n + "px";
+  if (key === "bottomPct" || key === "leftPct") return n + "%";
+  if (key === "delaySec") return n.toFixed(1) + "s";
+  if (key === "sentSilenceMs") return n + "ms";
   return value;
 }
 
@@ -444,7 +456,7 @@ async function loadSettings() {
   document.getElementById("glossary").value = settings.glossary;
   document.getElementById("pageContextHint").value = settings.pageContextHint;
   document.getElementById("pageGlossary").value = settings.pageGlossary;
-  setMode(settings.uiMode || "simple");
+  updateCapPreview();
   applyUiLanguage();
   renderModelSelects();
   populateUserPresets();
@@ -492,11 +504,13 @@ for (const [key, id] of Object.entries(RANGES)) {
     document.getElementById(id + "V").textContent = formatRangeValue(key, settings[key]);
     saveSettings();
     if (BRIDGE_RANGE_KEYS.has(key)) pushBridgeConfigDebounced();   // live-tune VAD / sentence-silence on the bridge
+    if (key === "fontSize" || key === "bottomPct" || key === "leftPct") updateCapPreview();
   });
 }
 document.getElementById("showSource").addEventListener("change", (e) => {
   settings.showSource = e.target.checked;
   saveSettings();
+  updateCapPreview();
 });
 document.getElementById("videoDelay").addEventListener("change", (e) => {
   settings.videoDelay = e.target.checked;
@@ -530,7 +544,7 @@ function setConn(capturing, wsOpen) {
   const el = document.getElementById("conn");
   if (!capturing) { el.textContent = ""; return; }
   el.textContent = wsOpen ? tr("connConnected") : tr("connReconnecting");
-  el.style.color = wsOpen ? "#16a34a" : "#dc2626";
+  el.style.color = wsOpen ? "#4cd17c" : "#ff5147";
 }
 chrome.runtime.sendMessage({ type: "popup-status" }, (res) => {
   if (chrome.runtime.lastError) return;
@@ -713,7 +727,7 @@ function bridgeErrorText(r, fallback) {
 }
 function setBridgeUI(state, text) {           // state: on | off | starting | nohost | blocked
   const errorState = state === "nohost" || state === "blocked";
-  bridgeStatusEl.style.color = state === "on" ? "#16a34a" : (errorState ? "#dc2626" : "#666");
+  bridgeStatusEl.style.color = state === "on" ? "#4cd17c" : (errorState ? "#ff5147" : "#7e8798");
   if (text != null) bridgeStatusEl.textContent = text;
   bridgeBtn.disabled = (state === "starting");
   bridgeStopBtn.style.display = (state === "on" || state === "starting") ? "" : "none";
@@ -773,15 +787,33 @@ bridgeStopBtn.onclick = async () => {
 };
 refreshBridge();
 
-// ---- Simple / Advanced mode ----
-function setMode(mode) {
-  const adv = mode === "advanced";
-  document.getElementById("adv").hidden = !adv;
-  document.getElementById("modeAdv").classList.toggle("active", adv);
-  document.getElementById("modeSimple").classList.toggle("active", !adv);
+// ---- console tabs (Live / Display / Log / Advanced) — replaces the old Simple/Advanced toggle ----
+const LCC_TAB_NAMES = ["Live", "Caption", "Log", "Adv"];
+function setTab(name) {
+  const tab = LCC_TAB_NAMES.includes(name) ? name : "Live";
+  for (const t of LCC_TAB_NAMES) {
+    document.getElementById("tab" + t).className = "tab" + (t === tab ? " active" : "");
+    document.getElementById("panel" + t).hidden = t !== tab;
+  }
 }
-document.getElementById("modeSimple").onclick = () => { settings.uiMode = globalThis.lccCanonicalUiMode("simple"); setMode(settings.uiMode); saveSettings(); };
-document.getElementById("modeAdv").onclick = () => { settings.uiMode = globalThis.lccCanonicalUiMode("advanced"); setMode(settings.uiMode); saveSettings(); };
+for (const t of LCC_TAB_NAMES) {
+  document.getElementById("tab" + t).addEventListener("click", () => {
+    setTab(t);
+    chrome.storage.local.set({ "lcc-popup-tab": t });
+  });
+}
+chrome.storage.local.get("lcc-popup-tab").then((r) => setTab(r["lcc-popup-tab"]));
+
+// ---- caption preview (display tab): mirrors the real overlay box against the display sliders ----
+function updateCapPreview() {
+  const box = document.getElementById("capPrevBox");
+  box.style.left = settings.leftPct + "%";
+  box.style.bottom = settings.bottomPct + "%";
+  document.getElementById("capPrevKo").style.fontSize = (settings.fontSize * 0.42).toFixed(1) + "px";
+  const src = document.getElementById("capPrevSrc");
+  src.style.fontSize = Math.max(7, settings.fontSize * 0.3).toFixed(1) + "px";
+  src.style.display = settings.showSource ? "" : "none";
+}
 
 // ---- advanced parameter controls (the raw knobs; ranges handled by the generic RANGES loop) ----
 document.getElementById("latencyMode").addEventListener("change", (e) => {
@@ -887,7 +919,7 @@ async function refreshModelStatus() {
     if (r && r.ok && Array.isArray(r.lm) && Array.isArray(r.asr)) { modelStatus = { asr: r.asr, lm: r.lm }; renderModelSelects(); }
   } catch (_) { /* host not installed yet — selects keep the Auto/custom options */ }
 }
-function setInstStatus(text, color) { const el = document.getElementById("instStatus"); el.textContent = text; el.style.color = color || "#999"; }
+function setInstStatus(text, color) { const el = document.getElementById("instStatus"); el.textContent = text; el.style.color = color || "#5f6878"; }
 function setInstBusy(busy) { for (const id of ["lmDownload", "asrDownload"]) { const b = document.getElementById(id); if (b) b.disabled = busy; } }
 function pollInstall() {
   if (instPoll) clearInterval(instPoll);
@@ -898,25 +930,25 @@ function pollInstall() {
     instPollBusy = true;
     try {
       const r = await nmSend({ cmd: "install_status" });
-      if (r.noHost) { clearInterval(instPoll); instPoll = null; setInstBusy(false); setInstStatus(tr("noHost"), "#dc2626"); return; }
+      if (r.noHost) { clearInterval(instPoll); instPoll = null; setInstBusy(false); setInstStatus(tr("noHost"), "#ff5147"); return; }
       if (!r.ok) {
         clearInterval(instPoll); instPoll = null; setInstBusy(false);
-        setInstStatus(tr("installFailed", { error: r.error || "" }), "#dc2626");
+        setInstStatus(tr("installFailed", { error: r.error || "" }), "#ff5147");
         return;
       }
       if (r.idle) {
         clearInterval(instPoll); instPoll = null; setInstBusy(false);
-        setInstStatus(tr("installIdle"), "#999");
+        setInstStatus(tr("installIdle"), "#5f6878");
         return;
       }
       if (r.done) {
         clearInterval(instPoll); instPoll = null; setInstBusy(false);
-        if (r.ok) { setInstStatus(tr("installComplete", { model: r.model || "" }), "#16a34a"); refreshModelStatus(); }
-        else setInstStatus(tr("installFailed", { error: r.error || "" }), "#dc2626");
+        if (r.ok) { setInstStatus(tr("installComplete", { model: r.model || "" }), "#4cd17c"); refreshModelStatus(); }
+        else setInstStatus(tr("installFailed", { error: r.error || "" }), "#ff5147");
         return;
       }
       const n = (r.index || 0) + 1, t = r.total || "?";
-      setInstStatus(tr("downloading", { name: r.current || tr("downloadingDefault"), index: n, total: t }), "#666");
+      setInstStatus(tr("downloading", { name: r.current || tr("downloadingDefault"), index: n, total: t }), "#7e8798");
     } finally {
       instPollBusy = false;
     }
@@ -925,10 +957,10 @@ function pollInstall() {
 async function startInstall(role, model) {
   if (!model) return;
   setInstBusy(true);
-  setInstStatus(tr("installRequest", { model }), "#666");
+  setInstStatus(tr("installRequest", { model }), "#7e8798");
   const r = await nmSend({ cmd: "install", role, model });
-  if (r.noHost) { setInstBusy(false); setInstStatus(tr("setupHost"), "#dc2626"); return; }
-  if (!r.ok) { setInstBusy(false); setInstStatus("" + (r.error || tr("failurePrefix").trim()), "#dc2626"); return; }
+  if (r.noHost) { setInstBusy(false); setInstStatus(tr("setupHost"), "#ff5147"); return; }
+  if (!r.ok) { setInstBusy(false); setInstStatus("" + (r.error || tr("failurePrefix").trim()), "#ff5147"); return; }
   pollInstall();
 }
 function onLmModelChange(val) {
@@ -982,12 +1014,12 @@ async function loadUserPresets() {
 async function saveUserPresets() { await chrome.storage.local.set({ [globalThis.LCC_USER_PRESETS_KEY]: userPresets }); }
 document.getElementById("presetSave").onclick = async () => {
   const name = (document.getElementById("presetName").value || "").trim();
-  if (!name) { setInstStatus(tr("presetNeedName"), "#dc2626"); return; }
+  if (!name) { setInstStatus(tr("presetNeedName"), "#ff5147"); return; }
   userPresets = globalThis.lccUpsertUserPreset(userPresets, name, globalThis.lccUserPresetBundle(settings));
   await saveUserPresets();
   populateUserPresets();
   document.getElementById("userPreset").value = globalThis.lccCanonicalPresetName(name);
-  setInstStatus(tr("presetSaved", { name }), "#16a34a");
+  setInstStatus(tr("presetSaved", { name }), "#4cd17c");
 };
 document.getElementById("presetDelete").onclick = async () => {
   const name = document.getElementById("userPreset").value;
