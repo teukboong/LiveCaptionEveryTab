@@ -88,14 +88,38 @@ def _download_repo(repo, **kw):
     return snapshot_download(repo, **kw)
 
 
+_WEIGHT_EXTS = (".safetensors", ".gguf", ".bin", ".npz", ".onnx")
+
+
 def _hf_cached(repo):
-    """True if `repo` already has a snapshot in the local HF cache (no network)."""
+    """True if `repo` has a COMPLETE snapshot in the local HF cache (no network). snapshot_download
+    creates snapshots/<rev> immediately and links files in as each finishes — a download interrupted
+    at 0% still leaves a non-empty snapshot dir, so mere presence must not count as installed."""
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
     except Exception:
         HF_HUB_CACHE = os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
-    snaps = os.path.join(HF_HUB_CACHE, "models--" + str(repo).replace("/", "--"), "snapshots")
-    return os.path.isdir(snaps) and any(os.scandir(snaps))
+    root = os.path.join(HF_HUB_CACHE, "models--" + str(repo).replace("/", "--"))
+    snaps = os.path.join(root, "snapshots")
+    if not os.path.isdir(snaps):
+        return False
+    if glob.glob(os.path.join(root, "blobs", "*.incomplete")):
+        return False                       # a file of this repo is mid-download (or its download was killed)
+    for rev in os.scandir(snaps):
+        if not rev.is_dir():
+            continue
+        entries = [f for f in glob.glob(os.path.join(rev.path, "**", "*"), recursive=True)
+                   if os.path.islink(f) or os.path.isfile(f)]
+        if not entries or any(not os.path.exists(f) for f in entries):   # dangling symlink = interrupted
+            continue
+        # config/tokenizer files land first — only a present weights file means the model is usable
+        if any(f.lower().endswith(_WEIGHT_EXTS) for f in entries):
+            return True
+    return False
+
+
+def _cuda_whisper_gguf():
+    return os.path.join(CUDA_MODEL_ROOT, "asr-gguf-q6", "whisper", "whisper-large-v3-q6_k.gguf")
 
 
 def _looks_quantized_mlx(repo):
@@ -177,8 +201,12 @@ def is_installed(role, model, backend):
         return os.access(os.path.join(dg, "run-diffusion-server.sh"), os.X_OK) and bool(
             glob.glob(os.path.join(dg, "models", "*.gguf")))
     if backend == "cuda":
-        # cuda translation/asr artifacts live under CUDA_MODEL_ROOT (gguf); presence is best-effort.
-        return _hf_cached(repo) or bool(glob.glob(os.path.join(CUDA_MODEL_ROOT, "**", "*.gguf"), recursive=True))
+        # cuda whisper is the only artifact under CUDA_MODEL_ROOT (a fixed q6 gguf — mirror install_asr);
+        # everything else lands in the HF cache. A root-wide *.gguf glob marked EVERY cuda model installed
+        # the moment any one gguf existed.
+        if entry and entry.get("engine") == "whisper":
+            return os.path.isfile(_cuda_whisper_gguf())
+        return _hf_cached(repo)
     if entry and entry.get("engine") == "whisper":
         return _looks_quantized_mlx(repo) and _hf_cached(repo) or os.path.isfile(
             os.path.join(_whisper_quant_dir(repo, 6), "config.json"))
@@ -237,7 +265,7 @@ def install_asr(model, backend, dry):
         if backend == "cuda":
             # q6 gguf: prefer a ready q6 download; else the whisper.cpp quantize helper (cuda/).
             quant = os.path.join(HERE, "cuda", "quantize_whisper_q6.sh")
-            target = os.path.join(CUDA_MODEL_ROOT, "asr-gguf-q6", "whisper", "whisper-large-v3-q6_k.gguf")
+            target = _cuda_whisper_gguf()
             if not dry:
                 if not os.path.isfile(target) and os.path.isfile(quant):
                     subprocess.run(["bash", quant, repo, target], check=True)
